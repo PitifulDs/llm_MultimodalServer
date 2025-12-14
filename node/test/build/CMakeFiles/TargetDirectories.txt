@@ -1,0 +1,3 @@
+/work/node/test/build/CMakeFiles/rebuild_cache.dir
+/work/node/test/build/CMakeFiles/edit_cache.dir
+/work/node/test/build/CMakeFiles/test.dir

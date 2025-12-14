@@ -1,0 +1,31 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/unit_manager.dir/src/config.cpp.o"
+  "CMakeFiles/unit_manager.dir/src/main.cpp.o"
+  "CMakeFiles/unit_manager.dir/src/remote_action.cpp.o"
+  "CMakeFiles/unit_manager.dir/src/remote_server.cpp.o"
+  "CMakeFiles/unit_manager.dir/src/tcp_comm.cpp.o"
+  "CMakeFiles/unit_manager.dir/src/unit_data.cpp.o"
+  "CMakeFiles/unit_manager.dir/src/zmq_bus.cpp.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/Acceptor.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/Buffer.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/Channel.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/Connector.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/EventLoop.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/EventLoopThread.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/EventLoopThreadPool.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/InetAddress.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/Poller.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/Socket.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/SocketsOps.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/TcpClient.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/TcpConnection.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/TcpServer.cc.o"
+  "CMakeFiles/unit_manager.dir/work/network/src/util.cc.o"
+  "unit_manager"
+  "unit_manager.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/unit_manager.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

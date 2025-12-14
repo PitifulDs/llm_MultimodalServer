@@ -1,0 +1,7 @@
+/work/unit-manager/build/CMakeFiles/install/strip.dir
+/work/unit-manager/build/CMakeFiles/install/local.dir
+/work/unit-manager/build/CMakeFiles/install.dir
+/work/unit-manager/build/CMakeFiles/list_install_components.dir
+/work/unit-manager/build/CMakeFiles/rebuild_cache.dir
+/work/unit-manager/build/CMakeFiles/edit_cache.dir
+/work/unit-manager/build/CMakeFiles/unit_manager.dir

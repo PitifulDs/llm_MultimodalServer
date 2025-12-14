@@ -1,0 +1,2 @@
+/usr/bin/ar qc libstackflow.a  CMakeFiles/stackflow.dir/work/hybrid-comm/src/pzmq_data.cpp.o CMakeFiles/stackflow.dir/src/StackFlow.cpp.o CMakeFiles/stackflow.dir/src/StackFlowUtil.cpp.o CMakeFiles/stackflow.dir/src/channel.cpp.o
+/usr/bin/ranlib libstackflow.a

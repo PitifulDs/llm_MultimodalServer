@@ -1,0 +1,1 @@
+/usr/bin/c++     CMakeFiles/test.dir/src/main.cpp.o  -o test  -lpthread ../../../install/lib/libstackflow.a -lzmq 

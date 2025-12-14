@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/rpc_server.dir/rpc_server.cc.o "CMakeFiles/rpc_server.dir/home/dongsong/workspace/Edge-LLM-Infra/Edge-LLM-Infra/hybrid-comm/src/pzmq_data.cpp.o" -o rpc_server  -lzmq -lpthread 
