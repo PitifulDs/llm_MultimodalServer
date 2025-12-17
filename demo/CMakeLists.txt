@@ -14,9 +14,22 @@ add_executable(llm_demo
     ../node/llm/LLMUnit.cpp
 )
 
+add_executable(llm_server
+    llm_server.cpp
+    ../node/llm/LLMUnit.cpp
+)
+
+# 公共的 include 目录
 target_include_directories(llm_demo PRIVATE
     ../node/llm
     ../thirds/llama.cpp/include
 )
 
+target_include_directories(llm_server PRIVATE
+    ../node/llm
+    ../thirds/llama.cpp/include
+)
+
+# 链接 llama 库（llama.cpp 子目录里生成的 target）
 target_link_libraries(llm_demo PRIVATE llama)
+target_link_libraries(llm_server PRIVATE llama)
