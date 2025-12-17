@@ -1,0 +1,13 @@
+# ===== build artifacts =====
+build/
+*/build/
+**/build/
+
+# docker build artifacts
+docker/build/install/
+
+# optional: cmake
+CMakeFiles/
+cmake-build-*/
+
+models/qwen2.5-1.5b/
