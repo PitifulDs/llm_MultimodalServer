@@ -51,6 +51,8 @@ public:
     // 可选：重置会话（清空 KV cache，相当于重新开始聊天）
     void Reset();
 
+    int CountTokens(const std::string &text) const;
+
 private:
     // 构建 Qwen 风格 Chat Prompt
     std::string BuildPrompt(const std::string &user_prompt) const;

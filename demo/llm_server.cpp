@@ -7,11 +7,43 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <memory>
+#include <mutex>
 
 #include "../node/llm/LLMUnit.h"
 #include "../utils/json.hpp" // nlohmann::json
 
 // 在另一个窗口使用 nc 127.0.0.1 9000
+static const int kListenPort = 9000;
+
+// 最大 token 上限
+constexpr int MAX_CONTEXT_TOKENS = 1800; // < n_ctx
+
+// 只保留最近 N 轮对话,每一轮 = user + assistant
+constexpr size_t MAX_TURNS = 8;
+constexpr size_t MAX_MESSAGES = MAX_TURNS * 2;
+
+// System prompt（你可以改成更强的指令）
+static const std::string kSystemPrompt =
+    "<|system|>\n"
+    "你是一个有帮助、准确、简洁的中文智能助手。\n";
+
+struct Message
+{
+    std::string role; // "user" | "assistant"
+    std::string content;
+};
+
+struct Session
+{
+    std::unique_ptr<LLMUnit> llm;
+    std::vector<Message> history;
+};
+
+
+std::unordered_map<std::string, Session> g_sessions; // session_id -> Session(会话状态)
+std::mutex g_sessions_mtx;
 
 using json = nlohmann::json;
 
@@ -40,7 +72,77 @@ namespace
 
 } // anonymous namespace
 
-static const int kListenPort = 9000;
+int count_prompt_tokens(LLMUnit &llm, const std::string &prompt)
+{
+    return llm.CountTokens(prompt);
+}
+
+void trim_history_by_tokens(
+    Session &session,
+    LLMUnit &llm,
+    const std::string &system_prompt)
+{
+    while (true)
+    {
+        // 1. 拼完整 prompt
+        std::string full_prompt = system_prompt;
+
+        for (const auto &msg : session.history)
+        {
+            if (msg.role == "user")
+            {
+                full_prompt += "<|user|>\n" + msg.content + "\n";
+            }
+            else if (msg.role == "assistant")
+            {
+                full_prompt += "<|assistant|>\n" + msg.content + "\n";
+            }
+        }
+        full_prompt += "<|assistant|>\n";
+
+        // 2. 计算 token 数
+        int tokens = llm.CountTokens(full_prompt);
+
+        // 3. 如果安全，结束
+        if (tokens <= MAX_CONTEXT_TOKENS)
+        {
+            break;
+        }
+
+        // 4. 否则：删除最老的一轮（user + assistant）
+        if (session.history.size() >= 2)
+        {
+            session.history.erase(session.history.begin(),
+                                  session.history.begin() + 2);
+        }
+        else
+        {
+            // 极端情况，防死循环
+            session.history.clear();
+            break;
+        }
+    }
+}
+
+
+Session &get_or_create_session(const std::string& session_id , const std::string& model_path, const LLMUnit::Config &cfg)
+{
+    std::lock_guard<std::mutex> lk(g_sessions_mtx);
+
+    auto it = g_sessions.find(session_id);
+    if(it != g_sessions.end()){
+        return it->second;
+    }
+
+    Session s;
+    s.llm = std::make_unique<LLMUnit>(model_path, cfg);
+
+    auto res = g_sessions.emplace(session_id, std::move(s));
+    return res.first->second;
+}
+
+
+
 
 // 发送完整字符串（不加换行）
 bool send_all(int fd, const std::string &data)
@@ -100,7 +202,7 @@ bool recv_line(int fd, std::string &out)
     return true;
 }
 
-void handle_client(int client_fd, LLMUnit &llm)
+void handle_client(int client_fd, const std::string &model_path, const LLMUnit::Config &cfg)
 {
     // 欢迎信息，用纯文本提示一下协议
     {
@@ -168,7 +270,13 @@ void handle_client(int client_fd, LLMUnit &llm)
         bool reset_flag = req.value("reset", false);
         if (type == "reset" || reset_flag)
         {
-            llm.Reset();
+            // llm.Reset();
+            // 只重置当前 session
+            {
+                std::lock_guard<std::mutex> lock(g_sessions_mtx);
+                g_sessions.erase(session_id);
+            }
+
             json resp = {
                 {"type", "reset"},
                 {"session_id", session_id},
@@ -181,6 +289,12 @@ void handle_client(int client_fd, LLMUnit &llm)
         // 聊天请求：{"type":"chat","prompt":"...","stream":true/false}
         if (type == "chat")
         {
+            // 按 session_id 获取或创建 session
+            Session &session = get_or_create_session(session_id, model_path, cfg);
+
+            // 当前请求使用该 session 的 llm
+            LLMUnit &llm = *session.llm;
+
             if (!req.contains("prompt"))
             {
                 json err = {
@@ -194,6 +308,30 @@ void handle_client(int client_fd, LLMUnit &llm)
             std::string prompt = req["prompt"].get<std::string>();
             bool stream = req.value("stream", false);
 
+            // 记录用户输入
+            session.history.push_back({"user", prompt});
+            std::cerr << "[HISTORY SIZE][" << session_id << "] "
+                      << session.history.size() << std::endl;
+
+            trim_history_by_tokens(session, llm, kSystemPrompt);
+            std::string full_prompt = kSystemPrompt;
+
+            for (const auto &msg : session.history)
+            {
+                if (msg.role == "user")
+                {
+                    full_prompt += "<|user|>\n" + msg.content + "\n";
+                }
+                else if (msg.role == "assistant")
+                {
+                    full_prompt += "<|assistant|>\n" + msg.content + "\n";
+                }
+            }
+
+            // 最后补 assistant，让模型继续生成
+            full_prompt += "<|assistant|>\n";
+
+
             // 目前 top_k / temperature 是在 LLMUnit 内部写死的
             // 这里预留字段，后续可以接 Config 或 per-request 参数
             // int   top_k       = req.value("top_k", 20);
@@ -204,7 +342,14 @@ void handle_client(int client_fd, LLMUnit &llm)
                 // 非流式：直接返回完整 reply
                 try
                 {
-                    std::string reply = llm.Generate(prompt);
+                    std::string reply = llm.Generate(full_prompt);
+                    // 把 assistant 回复加入 history
+                    session.history.push_back({"assistant", reply});
+                    // 如果 history 太长，裁剪最前面的
+                    if (session.history.size() > MAX_MESSAGES)
+                    {
+                        session.history.erase(session.history.begin(), session.history.begin() + (session.history.size() - MAX_MESSAGES));
+                    }
 
                     json resp = {
                         {"type", "response"},
@@ -239,7 +384,7 @@ void handle_client(int client_fd, LLMUnit &llm)
                     std::string stream_buffer;
                     // 流式生成：每个 chunk 发一条 JSON
                     std::string full_reply = llm.GenerateStream(
-                        prompt,
+                        full_prompt,
                         [&](const std::string &chunk)
                         {
                             if (chunk.empty())
@@ -261,6 +406,17 @@ void handle_client(int client_fd, LLMUnit &llm)
                             }
                         });
 
+                    // 流式生成结束后，把 assistant 回复写回 history
+                    session.history.push_back({"assistant", full_reply});
+
+                    // message 数兜底裁剪（可保留）
+                    if (session.history.size() > MAX_MESSAGES)
+                    {
+                        session.history.erase(
+                            session.history.begin(),
+                            session.history.begin() + (session.history.size() - MAX_MESSAGES));
+                    }
+                    
                     // flush 剩余 buffer
                     if (!stream_buffer.empty())
                     {
@@ -371,7 +527,7 @@ int main()
         std::cout << "New client connected\n";
 
         // 简单起见：每个连接一个线程（后续可以改线程池 / Reactor）
-        std::thread t(handle_client, client_fd, std::ref(llm));
+        std::thread t(handle_client, client_fd, std::cref(model_path), std::cref(cfg));
         t.detach();
     }
 

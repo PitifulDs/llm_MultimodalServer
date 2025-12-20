@@ -500,3 +500,22 @@ void LLMUnit::Reset()
 
     cur_pos_ = 0;
 }
+
+int LLMUnit::CountTokens(const std::string &text) const
+{
+    int n = llama_tokenize(
+        vocab_,
+        text.c_str(),
+        text.size(),
+        nullptr,
+        0,
+        true,
+        false);
+
+    if (n < 0)
+    {
+        n = -n;
+    }
+    return n;
+}
+
