@@ -128,11 +128,12 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req,
         LOG(INFO) << "[stream] recv event type=" << evt.type;
         session.OnEvent(evt);
 
-        // 若客户端断开或 session 结束，反订阅
-        if (!session.IsAlive()) {
-            LOG(INFO) << "[stream] session closed, unsubscribe";
+        if (evt.type == "done" || evt.type == "error")
+        {
+            LOG(INFO) << "[stream] stream finished, unsubscribe";
             sf_client_->Unsubscribe(topic);
-        } });
+        } 
+    });
 
     // 注意：
     // - 不要在这里 return JSON
