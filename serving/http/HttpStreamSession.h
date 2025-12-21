@@ -33,7 +33,11 @@ public:
     // 查询是否仍可写
     bool IsAlive() const;
 
-private:
+    // OpenAI Streaming JSON
+    void OnDelta(const std::string &text);
+    void OnDone();
+
+private: 
     void write_sse(const std::string &data);
 
 private:

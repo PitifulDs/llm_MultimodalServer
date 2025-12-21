@@ -1,5 +1,5 @@
 #pragma once
-
+#include <memory>
 #include <string>
 #include "protocol/Protocol.h"
 
@@ -29,7 +29,7 @@ public:
 
     // 流式 completion（SSE）
     void HandleCompletionStream(const HttpRequest &req,
-                                HttpResponse &res);
+                                std::shared_ptr<HttpResponse> res_ptr);
 
 private:
     StackFlowsClient *sf_client_; // 不持有所有权

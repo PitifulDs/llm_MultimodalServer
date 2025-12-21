@@ -1,8 +1,10 @@
 #include "http_types.h" 
 #include "HttpStreamSession.h"
 #include "protocol/Protocol.h"
-
+#include "../../utils/json.hpp" // nlohmann::json
 #include <sstream>
+
+using json = nlohmann::json;
 
 HttpStreamSession::HttpStreamSession(const std::string &request_id, HttpResponse& response)
                     : request_id_(request_id), response_(response)
@@ -22,16 +24,12 @@ void HttpStreamSession::Start()
     response_.SetHeader("Connection", "keep-alive");
 
     // 可选：告诉客户端我们开始了
-    write_sse(R"({"type":"open"})");
+    // write_sse(R"({"type":"open"})");
 }
 
 bool HttpStreamSession::IsAlive() const
 {
-    if (closed_.load()){
-        return false;
-    }
-
-    return response_.IsAlive();
+    return !closed_.load();
 }
 
 void HttpStreamSession::OnEvent(const ZmqEvent &event)
@@ -44,15 +42,17 @@ void HttpStreamSession::OnEvent(const ZmqEvent &event)
 
     if (event.type == "delta")
     {
-        // 直接转发增量
-        write_sse(event.data);
+        // // 直接转发增量
+        // write_sse(event.data);
+        OnDelta(event.data);
         return;
     }
 
     if (event.type == "done")
     {
-        write_sse("[DONE]");
-        Close();
+        // write_sse("[DONE]");
+        // Close();
+        OnDone();
         return;
     }
 
@@ -86,4 +86,47 @@ void HttpStreamSession::write_sse(const std::string &data)
     std::ostringstream oss;
     oss << "data: " << data << "\n\n";
     response_.Write(oss.str());
+}
+
+void HttpStreamSession::OnDelta(const std::string &text)
+{
+    if (closed_.load())
+        return;
+
+    json chunk = {
+        {"id", request_id_},
+        {"object", "text_completion.chunk"},
+        {"created", static_cast<int>(std::time(nullptr))},
+        {"model", "dummy"},
+        {"choices", {{
+            {"index", 0}, 
+            {"delta", {{"content", text}}}, 
+            {"finish_reason", nullptr}
+        }}}
+    };
+
+    write_sse(chunk.dump());
+}
+
+void HttpStreamSession::OnDone()
+{
+    if (closed_.load())
+        return;
+
+    json chunk = {
+        {"id", request_id_},
+        {"object", "text_completion.chunk"},
+        {"created", static_cast<int>(std::time(nullptr))},
+        {"model", "dummy"},
+        {"choices", {{
+            {"index", 0}, 
+            {"delta", json::object()}, 
+            {"finish_reason", "stop"}
+        }}}
+    };
+
+    write_sse(chunk.dump());
+    write_sse("[DONE]");
+
+    closed_.store(true);
 }

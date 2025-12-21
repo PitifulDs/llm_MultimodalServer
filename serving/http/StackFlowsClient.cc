@@ -88,7 +88,14 @@ void StackFlowsClient::Unsubscribe(const std::string &topic)
     it->second->running = false;
     if (it->second->th.joinable())
     {
-        it->second->th.join();
+        if (it->second->th.get_id() == std::this_thread::get_id())
+        {
+            it->second->th.detach(); // 或者延迟回收
+        }
+        else
+        {
+            it->second->th.join();
+        }
     }
     g_stream_workers.erase(it);
 }

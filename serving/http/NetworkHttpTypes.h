@@ -72,6 +72,8 @@ struct NetworkHttpResponse : public HttpResponse
 
         buf.append(data);
         conn->send(&buf);
+
+        conn->shutdown();
     }
 
     bool IsAlive() const override

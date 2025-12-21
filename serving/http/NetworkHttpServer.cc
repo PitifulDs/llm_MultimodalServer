@@ -171,10 +171,11 @@ void NetworkHttpServer::handleHttpRequest(
     // 6. 路由
     if (method == "POST" && url == "/v1/completions")
     {
+        auto res_ptr = std::make_shared<NetworkHttpResponse>(conn, is_stream);
         if (is_stream)
-            gateway_->HandleCompletionStream(req, res);
+            gateway_->HandleCompletionStream(req, res_ptr);
         else
-            gateway_->HandleCompletion(req, res);
+            gateway_->HandleCompletion(req, *res_ptr);
     }
     else
     {

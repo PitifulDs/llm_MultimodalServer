@@ -7,7 +7,9 @@
 
 #include "../../utils/json.hpp"
 #include <random>
-
+#include <ctime>
+#include <string>
+#include <memory>
 using json = nlohmann::json;
 
 namespace
@@ -27,8 +29,7 @@ HttpGateway::HttpGateway(StackFlowsClient *client)
 {
 }
 
-void HttpGateway::HandleCompletion(const HttpRequest &req,
-                                   HttpResponse &res)
+void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
 {
     // 1) 解析 JSON
     json body;
@@ -38,19 +39,21 @@ void HttpGateway::HandleCompletion(const HttpRequest &req,
     }
     catch (...)
     {
-        res.SetHeader("Content-Type", "application/json");
-        res.Write(R"({"error":"invalid json"})");
+        // res.SetHeader("Content-Type", "application/json");
+        // res.Write(R"({"error":"invalid json"})");
+        res.Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
         return;
     }
 
     const std::string prompt = body.value("prompt", "");
-    const std::string session_id = body.value("session_id", "");
+    const std::string model = body.value("model", "unkown");
+    // const std::string session_id = body.value("session_id", "");
 
     // 2) 构造 RPC 请求（非流式）
     RpcRequest rpc;
     rpc.version = "v1";
     rpc.request_id = gen_request_id();
-    rpc.session_id = session_id;
+    rpc.session_id = body.value("session_id", "");
     rpc.action = "completion";
     rpc.stream = false;
     rpc.payload["prompt"] = prompt;
@@ -58,19 +61,39 @@ void HttpGateway::HandleCompletion(const HttpRequest &req,
     // 3) 调用 StackFlows
     RpcResponse resp = sf_client_->Call(rpc);
 
-    res.SetHeader("Content-Type", "application/json");
+    // 4) 构造openai-style 回复
     json out;
-    out["status"] = resp.status;
-    out["request_id"] = resp.request_id;
-    if (!resp.result.empty())
+    out["id"] = "cmpl-" + rpc.request_id;
+    out["object"] = "text_completion";
+    out["created"] = static_cast<int>(std::time(nullptr));
+    out["model"] = model;
+
+    json choices;
+    choices["index"] = 0;
+
+    std::string text;
+    auto it = resp.result.find("text");
+    if (it != resp.result.end())
     {
-        out["result"] = resp.result;
+        text = it->second;
     }
+    else
+    {
+        text.clear();
+    }
+
+    choices["text"] = text;
+    choices["finish_reason"] = "stop";
+
+    out["choices"] = json::array({choices});
+   
+    res.SetHeader("Content-Type", "application/json");
     res.Write(out.dump());
 }
 
 void HttpGateway::HandleCompletionStream(const HttpRequest &req,
-                                         HttpResponse &res)
+                                         std::shared_ptr<HttpResponse> res_ptr)
+
 {
     LOG(INFO) << "[stream] enter HandleCompletionStream";
     LOG(INFO) << "[stream] raw body >>>" << req.body << "<<<";
@@ -85,7 +108,7 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req,
     {
         // res.SetHeader("Content-Type", "application/json");
         LOG(ERROR) << "[stream] json parse failed";
-        res.Write(R"({"error":"invalid json"})");
+        res_ptr->Write(R"({"error":"invalid json"})");
         return;
     }
 
@@ -110,30 +133,30 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req,
 
     if (ack.status != "accepted" || ack.stream_topic.empty())
     {
-        res.SetHeader("Content-Type", "application/json");
-        res.Write(R"({"error":"stream not accepted"})");
+        res_ptr->SetHeader("Content-Type", "application/json");
+        res_ptr->Write(R"({"error":"stream not accepted"})");
         return;
     }
 
     const std::string topic = ack.stream_topic;
 
     // 4) 建立 SSE 会话
-    HttpStreamSession session(rpc.request_id, res);
-    session.Start();
+    // HttpStreamSession session(rpc.request_id, res);
+    // session.Start();
+    // 更换为智能指针，放到堆上并保持引用
+    auto session = std::make_shared<HttpStreamSession>(rpc.request_id, *res_ptr);
+    session->Start();
     LOG(INFO) << "[stream] sse session started";
 
-    // 5) 订阅流式事件
-    sf_client_->Subscribe(topic, [&](const ZmqEvent &evt)
+    // 5) 订阅流式事件，捕获 shared_ptr 保证存活
+    sf_client_->Subscribe(topic, [session, res_ptr, this, topic](const ZmqEvent &evt)
                           {
-        LOG(INFO) << "[stream] recv event type=" << evt.type;
-        session.OnEvent(evt);
-
-        if (evt.type == "done" || evt.type == "error")
-        {
-            LOG(INFO) << "[stream] stream finished, unsubscribe";
-            sf_client_->Unsubscribe(topic);
-        } 
-    });
+    LOG(INFO) << "[stream] recv event type=" << evt.type;
+    session->OnEvent(evt);
+    if (!session->IsAlive() || evt.type == "done" || evt.type == "error") {
+        LOG(INFO) << "[stream] stream finished, unsubscribe";
+        sf_client_->Unsubscribe(topic);
+    } });
 
     // 注意：
     // - 不要在这里 return JSON
