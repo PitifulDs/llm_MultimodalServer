@@ -166,19 +166,38 @@ void NetworkHttpServer::handleHttpRequest(
     }
 
     // 5. Response
-    NetworkHttpResponse res(conn, is_stream);
+    // NetworkHttpResponse res(conn, is_stream);
+    auto res_ptr = std::make_shared<NetworkHttpResponse>(conn, is_stream);
 
     // 6. 路由
+    if (method != "POST")
+    {
+        // 405
+        return;
+    }
+
     if (method == "POST" && url == "/v1/completions")
     {
-        auto res_ptr = std::make_shared<NetworkHttpResponse>(conn, is_stream);
         if (is_stream)
             gateway_->HandleCompletionStream(req, res_ptr);
         else
             gateway_->HandleCompletion(req, *res_ptr);
-    }
-    else
+    }else if(method == "POST" && url == "/v1/chat/completions")
     {
-        res.Write("Not Found");
+        if(is_stream){
+            gateway_->HandleChatCompletionStream(req, res_ptr);
+        }else{
+            gateway_->HandleChatCompletion(req, *res_ptr);
+        }
+
+    }else
+    {
+        res_ptr->SetHeader("Content-Type", "application/json");
+        res_ptr->Write(R"({
+            "error": {
+                "message": "Not Found",
+                "type": "invalid_request_error"
+            }
+        })");
     }
 }

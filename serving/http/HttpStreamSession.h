@@ -7,6 +7,12 @@
 // 前向声明
 struct ZmqEvent;
 class HttpResponse;
+enum class StreamMode { 
+    Completion, Chat 
+};
+
+
+
 /**
  * @brief HTTP 流式会话
  *
@@ -18,7 +24,8 @@ class HttpResponse;
 class HttpStreamSession
 {
 public:
-    HttpStreamSession(const std::string &request_id, HttpResponse &response);
+    HttpStreamSession(const std::string &request_id, HttpResponse &response, 
+                        StreamMode mode, const std::string &model);
     ~HttpStreamSession();
 
     // 初始化 SSE 响应
@@ -43,5 +50,8 @@ private:
 private:
     std::string request_id_;
     HttpResponse &response_;
+    StreamMode mode_;
+    std::string model_;
+    bool sent_role_{false};
     std::atomic<bool> closed_{false};
 };

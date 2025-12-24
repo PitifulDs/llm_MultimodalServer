@@ -3,11 +3,12 @@
 #include "protocol/Protocol.h"
 #include "../../utils/json.hpp" // nlohmann::json
 #include <sstream>
+#include <ctime>
 
 using json = nlohmann::json;
 
-HttpStreamSession::HttpStreamSession(const std::string &request_id, HttpResponse& response)
-                    : request_id_(request_id), response_(response)
+HttpStreamSession::HttpStreamSession(const std::string &request_id, HttpResponse &response, StreamMode mode, const std::string &model)
+    : request_id_(request_id), response_(response),  mode_(mode), model_(model)
 {
 }
 
@@ -93,14 +94,21 @@ void HttpStreamSession::OnDelta(const std::string &text)
     if (closed_.load())
         return;
 
+    json delta = json::object();
+    if(mode_ == StreamMode::Chat && !sent_role_){
+        delta["role"] = "assistant";
+        sent_role_ = true;
+    }
+    delta["content"] = text;
+
     json chunk = {
-        {"id", request_id_},
-        {"object", "text_completion.chunk"},
+        {"id", (mode_ == StreamMode::Chat ? "chatcmpl-" : "cmpl-") + request_id_},
+        {"object", mode_ == StreamMode::Chat ? "chat.completion.chunk" : "text_completion.chunk"},
         {"created", static_cast<int>(std::time(nullptr))},
-        {"model", "dummy"},
+        {"model", model_},
         {"choices", {{
             {"index", 0}, 
-            {"delta", {{"content", text}}}, 
+            {"delta", delta}, 
             {"finish_reason", nullptr}
         }}}
     };
@@ -114,10 +122,10 @@ void HttpStreamSession::OnDone()
         return;
 
     json chunk = {
-        {"id", request_id_},
-        {"object", "text_completion.chunk"},
+        {"id", (mode_ == StreamMode::Chat ? "chatcmpl-" : "cmpl-") + request_id_},
+        {"object", mode_ == StreamMode::Chat ? "chat.completion.chunk" : "text_completion.chunk"},
         {"created", static_cast<int>(std::time(nullptr))},
-        {"model", "dummy"},
+        {"model", model_},
         {"choices", {{
             {"index", 0}, 
             {"delta", json::object()}, 

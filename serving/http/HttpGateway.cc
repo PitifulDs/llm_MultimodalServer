@@ -22,6 +22,30 @@ namespace
         return "req-" + std::to_string(++seq);
     }
 
+    static std::string build_chat_prompt(const json& messages){
+        std::ostringstream oss;
+        for(const auto &m : messages){
+            std::string role = m.value("role", "");
+            std::string content = m.value("content", "");
+
+            if(role == "system"){
+                oss << "[SYSTEM]";
+            }
+            else if (role == "user")
+            {
+                oss << "[USER]";
+            }
+            else if (role == "assistant")
+            {
+                oss << "[ASSISTANT]";
+            }
+            oss << content << "\n";
+        }
+        oss << "[ASSISTANT]";
+        return oss.str();
+    }
+
+
 } // namespace
 
 HttpGateway::HttpGateway(StackFlowsClient *client)
@@ -114,6 +138,7 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req,
 
     const std::string prompt = body.value("prompt", "");
     const std::string session_id = body.value("session_id", "");
+    const std::string model = body.value("model", "unknown");
     LOG(INFO) << "[stream] prompt len=" << prompt.size();
 
     // 2) 构造 RPC 请求（启动流）
@@ -144,7 +169,7 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req,
     // HttpStreamSession session(rpc.request_id, res);
     // session.Start();
     // 更换为智能指针，放到堆上并保持引用
-    auto session = std::make_shared<HttpStreamSession>(rpc.request_id, *res_ptr);
+    auto session = std::make_shared<HttpStreamSession>(rpc.request_id, *res_ptr, StreamMode::Completion, model);
     session->Start();
     LOG(INFO) << "[stream] sse session started";
 
@@ -161,4 +186,126 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req,
     // 注意：
     // - 不要在这里 return JSON
     // - HTTP 连接保持，由 SSE 持续写
+}
+
+void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res)
+{
+    json body;
+    try
+    {
+        body = json::parse(req.body);
+    }
+    catch (...)
+    {
+        res.Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
+        return;
+    }
+
+    const std::string model = body.value("model", "unknown");
+    const auto &messages = body["messages"];
+
+    if (!messages.is_array())
+    {
+        res.Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
+        return;
+    }
+
+    // 1️.messages → prompt
+    std::string prompt = build_chat_prompt(messages);
+
+    // 2️.构造 RPC
+    RpcRequest rpc;
+    rpc.version = "v1";
+    rpc.request_id = gen_request_id();
+    rpc.session_id = body.value("session_id", "");
+    rpc.action = "chat_completion";
+    rpc.stream = false;
+    rpc.payload["prompt"] = prompt;
+
+    // 3️.调用后端
+    RpcResponse resp = sf_client_->Call(rpc);
+
+    // 4️.取模型输出
+    std::string text;
+    auto it = resp.result.find("text");
+    if (it != resp.result.end())
+        text = it->second;
+
+    // 5️.组装 OpenAI Chat JSON
+    json out = {
+        {"id", "chatcmpl-" + rpc.request_id},
+        {"object", "chat.completion"},
+        {"created", static_cast<int>(std::time(nullptr))},
+        {"model", model},
+        {"choices", {{
+            {"index", 0}, 
+            {"message", {
+                {"role", "assistant"}, 
+                {"content", text}}}, 
+                {"finish_reason", "stop"}
+            }}}
+        };
+
+    res.SetHeader("Content-Type", "application/json");
+    res.Write(out.dump());
+}
+
+void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
+{
+    LOG(INFO) << "[chat-stream] enter HandleChatCompletionStream";
+    json body;
+    try
+    {
+        body = json::parse(req.body);
+    }
+    catch (...)
+    {
+        res_ptr->Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
+        return;
+    }
+
+    const auto &messages = body["messages"];
+    const std::string model = body.value("model", "unknown");
+    if (!messages.is_array())
+    {
+        res_ptr->Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
+        return;
+    }
+
+    // messages → prompt
+    std::string prompt = build_chat_prompt(messages);
+    
+    // 构造 RPC(流式)
+    RpcRequest rpc;
+    rpc.version = "v1";
+    rpc.request_id = gen_request_id();
+    rpc.session_id = body.value("session_id", "");
+    rpc.action = "chat_completion";
+    rpc.stream = true;
+    rpc.payload["prompt"] = prompt;
+
+    LOG(INFO) << "[chat-stream] send rpc, req_id=" << rpc.request_id;
+
+    // 启动流
+    RpcResponse ack = sf_client_->Call(rpc);
+    if (ack.status != "accepted" || ack.stream_topic.empty())
+    {
+        res_ptr->Write(R"({"error":"stream not accepted"})");
+        return;
+    }
+
+    const std::string topic = ack.stream_topic;
+
+    // SSE 会话（复用你现在的实现）
+    auto session = std::make_shared<HttpStreamSession>(rpc.request_id, *res_ptr, StreamMode::Chat, model);
+    session->Start();
+    sf_client_->Subscribe(topic, [session, res_ptr, this, topic](const ZmqEvent &evt){
+    LOG(INFO) << "[chat-stream] recv event type=" << evt.type;
+    session->OnEvent(evt);
+    if (!session->IsAlive() || evt.type == "done" || evt.type == "error") {
+        LOG(INFO) << "[chat-stream] stream finished, unsubscribe";
+        sf_client_->Unsubscribe(topic);
+    } });
+
+    // - HTTP 连接由 SSE session 维持
 }

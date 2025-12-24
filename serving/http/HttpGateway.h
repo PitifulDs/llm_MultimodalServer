@@ -31,6 +31,11 @@ public:
     void HandleCompletionStream(const HttpRequest &req,
                                 std::shared_ptr<HttpResponse> res_ptr);
 
+    // 新增：Chat
+    void HandleChatCompletion(const HttpRequest &req, HttpResponse &res);
+    void HandleChatCompletionStream(const HttpRequest &req,
+                                    std::shared_ptr<HttpResponse> res_ptr);
+
 private:
     StackFlowsClient *sf_client_; // 不持有所有权
 };
