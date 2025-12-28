@@ -7,6 +7,9 @@
 struct HttpRequest;
 struct HttpResponse;
 class StackFlowsClient;
+// 新增
+struct ServingContext;
+class ModelEngine;
 
 /**
  * @brief HTTP Gateway
@@ -20,7 +23,8 @@ class StackFlowsClient;
 class HttpGateway
 {
 public:
-    explicit HttpGateway(StackFlowsClient *client);
+    // explicit HttpGateway(StackFlowsClient *client);
+    explicit HttpGateway(StackFlowsClient *client, ModelEngine *engine);
     ~HttpGateway() = default;
 
     // 非流式 completion
@@ -37,5 +41,6 @@ public:
                                     std::shared_ptr<HttpResponse> res_ptr);
 
 private:
-    StackFlowsClient *sf_client_; // 不持有所有权
+    StackFlowsClient *sf_client_;   // 不持有所有权
+    ModelEngine *engine_;           // 不持有所有权
 };

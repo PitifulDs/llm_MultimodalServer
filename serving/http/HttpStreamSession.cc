@@ -2,13 +2,14 @@
 #include "HttpStreamSession.h"
 #include "protocol/Protocol.h"
 #include "../../utils/json.hpp" // nlohmann::json
+#include <glog/logging.h>
 #include <sstream>
 #include <ctime>
 
 using json = nlohmann::json;
 
-HttpStreamSession::HttpStreamSession(const std::string &request_id, HttpResponse &response, StreamMode mode, const std::string &model)
-    : request_id_(request_id), response_(response),  mode_(mode), model_(model)
+HttpStreamSession::HttpStreamSession(const std::string &request_id, std::shared_ptr<HttpResponse> response, StreamMode mode, const std::string &model)
+    : request_id_(request_id), response_(std::move(response)), mode_(mode), model_(model)
 {
 }
 
@@ -19,10 +20,13 @@ HttpStreamSession::~HttpStreamSession()
 
 void HttpStreamSession::Start()
 {
+    self_ = shared_from_this();
+    LOG(INFO) << "[session] Start() request_id=" << request_id_;
+
     // SSE 必要头
-    response_.SetHeader("Content-Type", "text/event-stream");
-    response_.SetHeader("Cache-Control", "no-cache");
-    response_.SetHeader("Connection", "keep-alive");
+    response_->SetHeader("Content-Type", "text/event-stream");
+    response_->SetHeader("Cache-Control", "no-cache");
+    response_->SetHeader("Connection", "keep-alive");
 
     // 可选：告诉客户端我们开始了
     // write_sse(R"({"type":"open"})");
@@ -86,7 +90,7 @@ void HttpStreamSession::write_sse(const std::string &data)
     // SSE 格式：data: <payload>\n\n
     std::ostringstream oss;
     oss << "data: " << data << "\n\n";
-    response_.Write(oss.str());
+    response_->Write(oss.str());
 }
 
 void HttpStreamSession::OnDelta(const std::string &text)
@@ -120,7 +124,8 @@ void HttpStreamSession::OnDone()
 {
     if (closed_.load())
         return;
-
+    LOG(INFO) << "[session] OnDone request_id=" << request_id_;
+    
     json chunk = {
         {"id", (mode_ == StreamMode::Chat ? "chatcmpl-" : "cmpl-") + request_id_},
         {"object", mode_ == StreamMode::Chat ? "chat.completion.chunk" : "text_completion.chunk"},
@@ -137,4 +142,5 @@ void HttpStreamSession::OnDone()
     write_sse("[DONE]");
 
     closed_.store(true);
+    self_.reset();
 }

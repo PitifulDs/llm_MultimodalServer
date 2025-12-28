@@ -2,6 +2,7 @@
 
 #include <string>
 #include <atomic>
+#include <memory>
 #include "protocol/Protocol.h"
 
 // 前向声明
@@ -21,11 +22,11 @@ enum class StreamMode {
  *  2.只负责流式转发，把内部流式事件转成 SSE 输出
  *  3.不理解业务含义
  */
-class HttpStreamSession
+class HttpStreamSession : public std::enable_shared_from_this<HttpStreamSession>
 {
 public:
-    HttpStreamSession(const std::string &request_id, HttpResponse &response, 
-                        StreamMode mode, const std::string &model);
+    HttpStreamSession(const std::string &request_id, std::shared_ptr<HttpResponse> response,
+                      StreamMode mode, const std::string &model);
     ~HttpStreamSession();
 
     // 初始化 SSE 响应
@@ -49,7 +50,9 @@ private:
 
 private:
     std::string request_id_;
-    HttpResponse &response_;
+    // HttpResponse &response_;
+    std::shared_ptr<HttpStreamSession> self_;
+    std::shared_ptr<HttpResponse> response_; // 持有，保证生命周期
     StreamMode mode_;
     std::string model_;
     bool sent_role_{false};

@@ -5,6 +5,8 @@
 #include "HttpGateway.h"
 #include "StackFlowsClient.h"
 
+#include "engine/DummyEngine.h"
+
 #include <memory>
 #include <iostream>
 /*
@@ -27,7 +29,8 @@ int main(int argc, char **argv)
     network::EventLoop loop;
 
     auto sf_client = std::make_unique<StackFlowsClient>();
-    HttpGateway gateway(sf_client.get());
+    auto engine = std::make_unique<DummyEngine>();
+    HttpGateway gateway(sf_client.get(), engine.get());
 
     network::InetAddress listen_addr(port);
     NetworkHttpServer server(&loop, listen_addr, &gateway);
