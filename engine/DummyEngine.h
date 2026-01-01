@@ -1,7 +1,7 @@
 #pragma once
 
-#include "engine/ModelEngine.h"
-#include "serving/ServingContext.h"
+#include "serving/core/ModelEngine.h"
+#include "serving/core/ServingContext.h"
 #include <memory>
 
 struct ServingContext;

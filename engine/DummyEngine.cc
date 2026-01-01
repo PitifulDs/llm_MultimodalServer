@@ -1,5 +1,5 @@
 #include "engine/DummyEngine.h"
-#include "serving/ServingContext.h"
+#include "serving/core/ServingContext.h"
 
 #include <sstream>
 #include <thread>
