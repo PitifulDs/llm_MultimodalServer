@@ -5,6 +5,8 @@
 #include <functional>
 
 #include "llama.h"
+#include "protocol/Protocol.h"
+#include "serving/core/ServingContext.h"
 
 // 一个简单的 C++ LLM 单元：负责
 //  - 加载 GGUF 模型
@@ -42,11 +44,13 @@ public:
     // 简单单轮/多轮对话接口：
     //  - 你每次传入一个 user_prompt
     //  - 它会在当前上下文基础上继续生成
-    std::string Generate(const std::string &user_prompt);
+    // std::string Generate(const std::string &user_prompt);
 
-    // 流式生成，每生成一小段就回调给上层
-    std::string GenerateStream(const std::string &user_prompt,
-                               const ChunkCallback &on_chunk);
+    // // 流式生成，每生成一小段就回调给上层
+    // std::string GenerateStream(const std::string &user_prompt,
+    //                            const ChunkCallback &on_chunk);
+
+    void LLMUnit::Generate(ServingContext *ctx);
 
     // 可选：重置会话（清空 KV cache，相当于重新开始聊天）
     void Reset();

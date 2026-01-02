@@ -4,8 +4,8 @@
 #include "HttpStreamSession.h"
 #include "StackFlowsClient.h"
 #include "protocol/Protocol.h"
-#include "serving/ServingContext.h"
-#include "engine/ModelEngine.h"
+#include "serving/core/ServingContext.h"
+#include "serving/core/ModelEngine.h"
 #include "../../utils/json.hpp"
 #include <random>
 #include <ctime>
@@ -292,6 +292,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req,
     {
         if (!session->IsAlive())
             return;
+
         if (!ch.is_finished)
         {
             LOG(INFO) << "[chat-stream] delta=" << ch.delta; 

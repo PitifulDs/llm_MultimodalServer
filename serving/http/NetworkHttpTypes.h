@@ -73,7 +73,10 @@ struct NetworkHttpResponse : public HttpResponse
         buf.append(data);
         conn->send(&buf);
 
-        conn->shutdown();
+        if (!sse)
+        { // 只有非流式才关闭
+            conn->shutdown();
+        }
     }
 
     bool IsAlive() const override

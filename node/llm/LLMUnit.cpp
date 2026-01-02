@@ -184,298 +184,330 @@ std::vector<llama_token> LLMUnit::Tokenize(const std::string &text) const
     return tokens;
 }
 
-std::string LLMUnit::Generate(const std::string &user_prompt)
+void LLMUnit::Generate(ServingContext *ctx)
 {
-    // 1. 构建真正喂给模型的 prompt（带 system/user/assistant）
-    std::string prompt = BuildPrompt(user_prompt);
+    bool reached_limit = false;
 
-    // 2. 分词
-    std::vector<llama_token> tokens = Tokenize(prompt);
-    if (tokens.empty())
+    while (!ctx->cancelled && !ctx->finished)
     {
-        throw std::runtime_error("Tokenize returned empty token list");
-    }
-
-    // 3. 先把整个 prompt decode 一遍，构建 KV cache
-    {
-        llama_batch batch = llama_batch_init((int32_t)tokens.size(), 0, 1);
-
-        for (int i = 0; i < (int)tokens.size(); ++i)
-        {
-            batch.token[i] = tokens[i];  // token id
-            batch.pos[i] = cur_pos_ + i; // 从全局 cur_pos_ 开始排
-            batch.seq_id[i][0] = 0;      // 单条对话：seq 0
-            batch.n_seq_id[i] = 1;
-            batch.logits[i] = (i == (int)tokens.size() - 1); // 只最后一个要 logits
-        }
-        batch.n_tokens = (int32_t)tokens.size();
-
-        if (llama_decode(ctx_, batch) != 0)
-        {
-            llama_batch_free(batch);
-            throw std::runtime_error("Prompt decode failed");
-        }
-
-        llama_batch_free(batch);
-
-        // prompt 用完，更新全局 position
-        cur_pos_ += (int)tokens.size();
-    }
-
-    std::string output;
-
-    // 4. 多轮自回归生成：每次从 logits 中选一个 token（手写 greedy）
-    for (int step = 0; step < cfg_.max_new_tokens; ++step)
-    {
-        // 4.1 拿到最后一个 token 的 logits
-        float *logits = llama_get_logits_ith(ctx_, -1);
-        if (!logits)
-        {
-            std::cerr << "llama_get_logits_ith returned nullptr\n";
+        auto piece = DecodeOneToken();
+        if (piece.empty())
             break;
-        }
 
-        int32_t n_vocab = llama_vocab_n_tokens(vocab_);
-        if (n_vocab <= 0)
-        {
-            std::cerr << "Invalid vocab size: " << n_vocab << "\n";
-            break;
-        }
-
-        // 4.2 使用 top-k + 温度采样
-        int top_k = 20;           // 你可以调，比如 20、40
-        float temperature = 0.8f; // 稍微有点随机，但不会太跑偏
-
-        llama_token best_token = sample_top_k(
-            logits,
-            n_vocab,
-            top_k,
-            temperature);
-
-        // 遇到 EOS，停止生成
-        if (best_token == llama_vocab_eos(vocab_))
-        {
-            break;
-        }
-
-        // 4.3 token → 文本，追加到输出
-        {
-            char buf[4096];
-            int n = llama_token_to_piece(
-                vocab_,
-                best_token,
-                buf,
-                (int32_t)sizeof(buf),
-                0,   // flags
-                true // special tokens 也转成文本
-            );
-            if (n > 0)
-            {
-                output.append(buf, n);
-            }
-        }
-
-        // 4.4 把刚才生成的 token 再喂回模型，更新 KV cache，产生新的 logits
-        {
-            llama_batch batch = llama_batch_init(1, 0, 1);
-
-            batch.token[0] = best_token;
-            batch.pos[0] = cur_pos_++; // 使用并递增全局 cur_pos_
-            batch.seq_id[0][0] = 0;
-            batch.n_seq_id[0] = 1;
-            batch.logits[0] = true; // 这个 token 需要输出 logits
-            batch.n_tokens = 1;
-
-            if (llama_decode(ctx_, batch) != 0)
-            {
-                llama_batch_free(batch);
-                std::cerr << "Decode failed at step " << step << "\n";
-                break;
-            }
-
-            llama_batch_free(batch);
-        }
+        ctx->EmitDelta(piece);
     }
 
-    // 5. 收尾清洗：把模板标记 / Human 之类裁掉
+    if (ctx->finished)
     {
-        size_t cut_pos = output.size();
-
-        auto cut_if_found = [&](const std::string &marker)
-        {
-            size_t p = output.find(marker);
-            if (p != std::string::npos && p < cut_pos)
-            {
-                cut_pos = p;
-            }
-        };
-
-        cut_if_found("<|system|>");
-        cut_if_found("<|user|>");
-        cut_if_found("<|assistant|>");
-        cut_if_found("<|endoftext|>");
-        cut_if_found("Human:");
-
-        if (cut_pos < output.size())
-        {
-            output.resize(cut_pos);
-        }
+        return;
     }
 
-    return output;
+    if (ctx->cancelled)
+    {
+        ctx->EmitFinish(FinishReason::cancelled);
+    } 
+    else if(reached_limit)
+    {
+        ctx->EmitFinish(FinishReason::length);
+    }
+    else
+    {
+        ctx->EmitFinish(FinishReason::stop);
+    }
 }
 
-std::string LLMUnit::GenerateStream(const std::string &user_prompt,
-                                    const ChunkCallback &on_chunk)
-{
-    // 1. 构建真正喂给模型的 prompt（带 system/user/assistant）
-    std::string prompt = BuildPrompt(user_prompt);
+// std::string LLMUnit::Generate(const std::string &user_prompt)
+// {
+//     // 1. 构建真正喂给模型的 prompt（带 system/user/assistant）
+//     std::string prompt = BuildPrompt(user_prompt);
 
-    // 2. 分词
-    std::vector<llama_token> tokens = Tokenize(prompt);
-    if (tokens.empty())
-    {
-        throw std::runtime_error("Tokenize returned empty token list");
-    }
+//     // 2. 分词
+//     std::vector<llama_token> tokens = Tokenize(prompt);
+//     if (tokens.empty())
+//     {
+//         throw std::runtime_error("Tokenize returned empty token list");
+//     }
 
-    // 3. 先把整个 prompt decode 一遍，构建 KV cache
-    {
-        llama_batch batch = llama_batch_init((int32_t)tokens.size(), 0, 1);
+//     // 3. 先把整个 prompt decode 一遍，构建 KV cache
+//     {
+//         llama_batch batch = llama_batch_init((int32_t)tokens.size(), 0, 1);
 
-        for (int i = 0; i < (int)tokens.size(); ++i)
-        {
-            batch.token[i] = tokens[i];
-            batch.pos[i] = cur_pos_ + i; // 从全局 cur_pos_ 开始排
-            batch.seq_id[i][0] = 0;      // 单条对话：seq 0
-            batch.n_seq_id[i] = 1;
-            batch.logits[i] = (i == (int)tokens.size() - 1); // 只最后一个要 logits
-        }
-        batch.n_tokens = (int32_t)tokens.size();
+//         for (int i = 0; i < (int)tokens.size(); ++i)
+//         {
+//             batch.token[i] = tokens[i];  // token id
+//             batch.pos[i] = cur_pos_ + i; // 从全局 cur_pos_ 开始排
+//             batch.seq_id[i][0] = 0;      // 单条对话：seq 0
+//             batch.n_seq_id[i] = 1;
+//             batch.logits[i] = (i == (int)tokens.size() - 1); // 只最后一个要 logits
+//         }
+//         batch.n_tokens = (int32_t)tokens.size();
 
-        if (llama_decode(ctx_, batch) != 0)
-        {
-            llama_batch_free(batch);
-            throw std::runtime_error("Prompt decode failed");
-        }
+//         if (llama_decode(ctx_, batch) != 0)
+//         {
+//             llama_batch_free(batch);
+//             throw std::runtime_error("Prompt decode failed");
+//         }
 
-        llama_batch_free(batch);
+//         llama_batch_free(batch);
 
-        // prompt 用完，更新全局 position
-        cur_pos_ += (int)tokens.size();
-    }
+//         // prompt 用完，更新全局 position
+//         cur_pos_ += (int)tokens.size();
+//     }
 
-    std::string output;
+//     std::string output;
 
-    // 4. 多轮自回归生成：每次从 logits 中选一个 token（top-k 采样）
-    for (int step = 0; step < cfg_.max_new_tokens; ++step)
-    {
-        float *logits = llama_get_logits_ith(ctx_, -1);
-        if (!logits)
-        {
-            std::cerr << "llama_get_logits_ith returned nullptr\n";
-            break;
-        }
+//     // 4. 多轮自回归生成：每次从 logits 中选一个 token（手写 greedy）
+//     for (int step = 0; step < cfg_.max_new_tokens; ++step)
+//     {
+//         // 4.1 拿到最后一个 token 的 logits
+//         float *logits = llama_get_logits_ith(ctx_, -1);
+//         if (!logits)
+//         {
+//             std::cerr << "llama_get_logits_ith returned nullptr\n";
+//             break;
+//         }
 
-        int32_t n_vocab = llama_vocab_n_tokens(vocab_);
-        if (n_vocab <= 0)
-        {
-            std::cerr << "Invalid vocab size: " << n_vocab << "\n";
-            break;
-        }
+//         int32_t n_vocab = llama_vocab_n_tokens(vocab_);
+//         if (n_vocab <= 0)
+//         {
+//             std::cerr << "Invalid vocab size: " << n_vocab << "\n";
+//             break;
+//         }
 
-        int top_k = 20;
-        float temperature = 0.8f;
+//         // 4.2 使用 top-k + 温度采样
+//         int top_k = 20;           // 你可以调，比如 20、40
+//         float temperature = 0.8f; // 稍微有点随机，但不会太跑偏
 
-        llama_token token = sample_top_k(
-            logits,
-            n_vocab,
-            top_k,
-            temperature);
+//         llama_token best_token = sample_top_k(
+//             logits,
+//             n_vocab,
+//             top_k,
+//             temperature);
 
-        if (token == llama_vocab_eos(vocab_))
-        {
-            break;
-        }
+//         // 遇到 EOS，停止生成
+//         if (best_token == llama_vocab_eos(vocab_))
+//         {
+//             break;
+//         }
 
-        // token → 文本
-        char buf[4096];
-        int n = llama_token_to_piece(
-            vocab_,
-            token,
-            buf,
-            (int32_t)sizeof(buf),
-            0,
-            true);
+//         // 4.3 token → 文本，追加到输出
+//         {
+//             char buf[4096];
+//             int n = llama_token_to_piece(
+//                 vocab_,
+//                 best_token,
+//                 buf,
+//                 (int32_t)sizeof(buf),
+//                 0,   // flags
+//                 true // special tokens 也转成文本
+//             );
+//             if (n > 0)
+//             {
+//                 output.append(buf, n);
+//             }
+//         }
 
-        std::string piece;
-        if (n > 0)
-        {
-            piece.assign(buf, n);
-            output.append(piece);
-        }
+//         // 4.4 把刚才生成的 token 再喂回模型，更新 KV cache，产生新的 logits
+//         {
+//             llama_batch batch = llama_batch_init(1, 0, 1);
 
-        // ⭐ 立刻把这一小段通过回调抛给上层（流式）
-        if (!piece.empty() && on_chunk)
-        {
-            on_chunk(piece);
-        }
+//             batch.token[0] = best_token;
+//             batch.pos[0] = cur_pos_++; // 使用并递增全局 cur_pos_
+//             batch.seq_id[0][0] = 0;
+//             batch.n_seq_id[0] = 1;
+//             batch.logits[0] = true; // 这个 token 需要输出 logits
+//             batch.n_tokens = 1;
 
-        // 把刚才生成的 token 再喂回模型
-        {
-            llama_batch batch = llama_batch_init(1, 0, 1);
+//             if (llama_decode(ctx_, batch) != 0)
+//             {
+//                 llama_batch_free(batch);
+//                 std::cerr << "Decode failed at step " << step << "\n";
+//                 break;
+//             }
 
-            batch.token[0] = token;
-            batch.pos[0] = cur_pos_++;
-            batch.seq_id[0][0] = 0;
-            batch.n_seq_id[0] = 1;
-            batch.logits[0] = true;
-            batch.n_tokens = 1;
+//             llama_batch_free(batch);
+//         }
+//     }
 
-            if (llama_decode(ctx_, batch) != 0)
-            {
-                llama_batch_free(batch);
-                std::cerr << "Decode failed at step " << step << "\n";
-                break;
-            }
+//     // 5. 收尾清洗：把模板标记 / Human 之类裁掉
+//     {
+//         size_t cut_pos = output.size();
 
-            llama_batch_free(batch);
-        }
+//         auto cut_if_found = [&](const std::string &marker)
+//         {
+//             size_t p = output.find(marker);
+//             if (p != std::string::npos && p < cut_pos)
+//             {
+//                 cut_pos = p;
+//             }
+//         };
 
-        // 提前发现模板标记可以提前停（避免刷太多垃圾）
-        if (output.find("<|system|>") != std::string::npos ||
-            output.find("<|user|>") != std::string::npos)
-        {
-            break;
-        }
-    }
+//         cut_if_found("<|system|>");
+//         cut_if_found("<|user|>");
+//         cut_if_found("<|assistant|>");
+//         cut_if_found("<|endoftext|>");
+//         cut_if_found("Human:");
 
-    // 5. 收尾清洗：把模板标记 / Human 之类裁掉（返回值用）
-    {
-        size_t cut_pos = output.size();
+//         if (cut_pos < output.size())
+//         {
+//             output.resize(cut_pos);
+//         }
+//     }
 
-        auto cut_if_found = [&](const std::string &marker)
-        {
-            size_t p = output.find(marker);
-            if (p != std::string::npos && p < cut_pos)
-            {
-                cut_pos = p;
-            }
-        };
+//     return output;
+// }
 
-        cut_if_found("<|system|>");
-        cut_if_found("<|user|>");
-        cut_if_found("<|assistant|>");
-        cut_if_found("<|endoftext|>");
-        cut_if_found("Human:");
+// std::string LLMUnit::GenerateStream(const std::string &user_prompt,
+//                                     const ChunkCallback &on_chunk)
+// {
+//     // 1. 构建真正喂给模型的 prompt（带 system/user/assistant）
+//     std::string prompt = BuildPrompt(user_prompt);
 
-        if (cut_pos < output.size())
-        {
-            output.resize(cut_pos);
-        }
-    }
+//     // 2. 分词
+//     std::vector<llama_token> tokens = Tokenize(prompt);
+//     if (tokens.empty())
+//     {
+//         throw std::runtime_error("Tokenize returned empty token list");
+//     }
 
-    return output;
-}
+//     // 3. 先把整个 prompt decode 一遍，构建 KV cache
+//     {
+//         llama_batch batch = llama_batch_init((int32_t)tokens.size(), 0, 1);
+
+//         for (int i = 0; i < (int)tokens.size(); ++i)
+//         {
+//             batch.token[i] = tokens[i];
+//             batch.pos[i] = cur_pos_ + i; // 从全局 cur_pos_ 开始排
+//             batch.seq_id[i][0] = 0;      // 单条对话：seq 0
+//             batch.n_seq_id[i] = 1;
+//             batch.logits[i] = (i == (int)tokens.size() - 1); // 只最后一个要 logits
+//         }
+//         batch.n_tokens = (int32_t)tokens.size();
+
+//         if (llama_decode(ctx_, batch) != 0)
+//         {
+//             llama_batch_free(batch);
+//             throw std::runtime_error("Prompt decode failed");
+//         }
+
+//         llama_batch_free(batch);
+
+//         // prompt 用完，更新全局 position
+//         cur_pos_ += (int)tokens.size();
+//     }
+
+//     std::string output;
+
+//     // 4. 多轮自回归生成：每次从 logits 中选一个 token（top-k 采样）
+//     for (int step = 0; step < cfg_.max_new_tokens; ++step)
+//     {
+//         float *logits = llama_get_logits_ith(ctx_, -1);
+//         if (!logits)
+//         {
+//             std::cerr << "llama_get_logits_ith returned nullptr\n";
+//             break;
+//         }
+
+//         int32_t n_vocab = llama_vocab_n_tokens(vocab_);
+//         if (n_vocab <= 0)
+//         {
+//             std::cerr << "Invalid vocab size: " << n_vocab << "\n";
+//             break;
+//         }
+
+//         int top_k = 20;
+//         float temperature = 0.8f;
+
+//         llama_token token = sample_top_k(
+//             logits,
+//             n_vocab,
+//             top_k,
+//             temperature);
+
+//         if (token == llama_vocab_eos(vocab_))
+//         {
+//             break;
+//         }
+
+//         // token → 文本
+//         char buf[4096];
+//         int n = llama_token_to_piece(
+//             vocab_,
+//             token,
+//             buf,
+//             (int32_t)sizeof(buf),
+//             0,
+//             true);
+
+//         std::string piece;
+//         if (n > 0)
+//         {
+//             piece.assign(buf, n);
+//             output.append(piece);
+//         }
+
+//         // ⭐ 立刻把这一小段通过回调抛给上层（流式）
+//         if (!piece.empty() && on_chunk)
+//         {
+//             on_chunk(piece);
+//         }
+
+//         // 把刚才生成的 token 再喂回模型
+//         {
+//             llama_batch batch = llama_batch_init(1, 0, 1);
+
+//             batch.token[0] = token;
+//             batch.pos[0] = cur_pos_++;
+//             batch.seq_id[0][0] = 0;
+//             batch.n_seq_id[0] = 1;
+//             batch.logits[0] = true;
+//             batch.n_tokens = 1;
+
+//             if (llama_decode(ctx_, batch) != 0)
+//             {
+//                 llama_batch_free(batch);
+//                 std::cerr << "Decode failed at step " << step << "\n";
+//                 break;
+//             }
+
+//             llama_batch_free(batch);
+//         }
+
+//         // 提前发现模板标记可以提前停（避免刷太多垃圾）
+//         if (output.find("<|system|>") != std::string::npos ||
+//             output.find("<|user|>") != std::string::npos)
+//         {
+//             break;
+//         }
+//     }
+
+//     // 5. 收尾清洗：把模板标记 / Human 之类裁掉（返回值用）
+//     {
+//         size_t cut_pos = output.size();
+
+//         auto cut_if_found = [&](const std::string &marker)
+//         {
+//             size_t p = output.find(marker);
+//             if (p != std::string::npos && p < cut_pos)
+//             {
+//                 cut_pos = p;
+//             }
+//         };
+
+//         cut_if_found("<|system|>");
+//         cut_if_found("<|user|>");
+//         cut_if_found("<|assistant|>");
+//         cut_if_found("<|endoftext|>");
+//         cut_if_found("Human:");
+
+//         if (cut_pos < output.size())
+//         {
+//             output.resize(cut_pos);
+//         }
+//     }
+
+//     return output;
+// }
 
 
 void LLMUnit::Reset()

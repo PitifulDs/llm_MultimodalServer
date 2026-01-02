@@ -58,4 +58,34 @@ struct ServingContext
     std::string final_text;
     FinishReason finish_reason = FinishReason::stop;
     std::string error_message;
+
+    void EmitDelta(const std::string& text)
+    {
+        StreamChunk c;
+        c.delta = text;
+        c.is_finished = false;
+
+        if(stream){
+            on_chunk(c);
+        }else{
+            final_text += text;
+        }
+    }
+
+    void EmitFinish(FinishReason reason)
+    { 
+        StreamChunk c;
+        c.is_finished = true;
+        c.finish_reason = reason;
+
+        if(stream){
+            on_chunk(c);
+
+        }else{
+            finish_reason = reason;
+        }
+    }
 };
+
+
+

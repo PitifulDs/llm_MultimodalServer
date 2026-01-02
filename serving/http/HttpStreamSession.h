@@ -4,7 +4,7 @@
 #include <atomic>
 #include <memory>
 #include "protocol/Protocol.h"
-
+#include "serving/core/ServingContext.h"
 // 前向声明
 struct ZmqEvent;
 class HttpResponse;

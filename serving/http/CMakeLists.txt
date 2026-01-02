@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.10)
 # =====================================
 add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/../engine/DummyEngine.cc
+    ${CMAKE_SOURCE_DIR}/../engine/RpcEngine.cc
 )
 
 target_include_directories(serving_core
