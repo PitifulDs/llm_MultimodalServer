@@ -144,21 +144,3 @@ void HttpStreamSession::OnDone()
     closed_.store(true);
     self_.reset();
 }
-
-void HttpStreamSession::OnFinish(FinishReason reason)
-{
-    json j;
-    j["id"] = request_id_;
-    j["object"] = "chat.completion.chunk";
-    j["model"] = model_;
-
-    json choice;
-    choice["index"] = 0;
-    choice["delta"] = json::object(); // 空 delta
-    choice["finish_reason"] = FinishReasonToString(reason);
-
-    j["choices"] = json::array({choice});
-
-    write_sse(j.dump());
-    OnDone();
-}
