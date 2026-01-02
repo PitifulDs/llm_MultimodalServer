@@ -288,10 +288,13 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req,
     auto session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr, StreamMode::Chat, ctx->model);
     session->Start();
 
-    ctx->on_chunk = [session](const StreamChunk &ch)
+    ctx->on_chunk = [session, ctx](const StreamChunk &ch)
     {
         if (!session->IsAlive())
+        {
+            ctx->cancelled = true;
             return;
+        }    
 
         if (!ch.is_finished)
         {
