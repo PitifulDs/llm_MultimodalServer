@@ -23,7 +23,7 @@ struct Message
 struct StreamChunk
 {
     std::string delta;
-    bool is_finished = false;
+    bool is_finished = false; // 是否为“最后一个 chunk”
     FinishReason finish_reason = FinishReason::stop;
 };
 

@@ -1,18 +1,23 @@
 #pragma once
 
-#include "serving/core/ModelEngine.h"
-#include "serving/core/ServingContext.h"
+#include "engine/LLMEngine.h"
+#include <string>
 #include <memory>
 
 struct ServingContext;
 
 // DummyEngine：用于验证 ServingContext 与 stream/non-stream 逻辑
-class DummyEngine : public ModelEngine
+class DummyEngine final : public LLMEngine
 {
 public:
-    void run(std::shared_ptr<ServingContext> ctx) override;
+    explicit DummyEngine(std::string text = "Hello") : text_(std::move(text))
+    {
+    }
+    
+    void Generate(ServingContext& ctx) override;
+    void GenerateStream(ServingContext& ctx) override;
 
-    // void RunStream(const ServingContext &ctx,
-    //                const std::function<void(const std::string &)> &on_delta,
-    //                const std::function<void()> &on_done) override;
+private:
+    std::string text_;
+
 };

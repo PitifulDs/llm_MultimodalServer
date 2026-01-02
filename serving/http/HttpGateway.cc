@@ -1,12 +1,14 @@
-#include <glog/logging.h>
 #include "HttpGateway.h"
 #include "http_types.h"
 #include "HttpStreamSession.h"
 #include "StackFlowsClient.h"
 #include "protocol/Protocol.h"
+#include "engine/EngineFactory.h"
 #include "serving/core/ServingContext.h"
 #include "serving/core/ModelEngine.h"
 #include "../../utils/json.hpp"
+
+#include <glog/logging.h>
 #include <random>
 #include <ctime>
 #include <string>
@@ -227,8 +229,9 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     
     }
 
-    // 调用Engine
-    engine_->run(ctx);
+    // 使用 LLMEngine
+    auto llm_engine = EngineFactory::Create(ctx->model);
+    llm_engine->Generate(*ctx);
 
     // non-stream：从 ctx 取结果
     json out = {
@@ -309,6 +312,6 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req,
         }
     };
 
-    // 4) 调 engine（DummyEngine 会发 delta + finish）
-    engine_->run(ctx);
+    auto llm_engine = EngineFactory::Create(ctx->model);
+    llm_engine->GenerateStream(*ctx);
 }
