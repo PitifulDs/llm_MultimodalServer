@@ -1,15 +1,11 @@
-#include "http_types.h" 
 #include "HttpStreamSession.h"
-#include "protocol/Protocol.h"
-#include "../../utils/json.hpp" // nlohmann::json
+#include "http_types.h"
+
 #include <glog/logging.h>
 #include <sstream>
-#include <ctime>
 
-using json = nlohmann::json;
-
-HttpStreamSession::HttpStreamSession(const std::string &request_id, std::shared_ptr<HttpResponse> response, StreamMode mode, const std::string &model)
-    : request_id_(request_id), response_(std::move(response)), mode_(mode), model_(model)
+HttpStreamSession::HttpStreamSession(const std::string &request_id, std::shared_ptr<HttpResponse> response)
+                                    : request_id_(request_id), response_(std::move(response)) 
 {
 }
 
@@ -23,13 +19,10 @@ void HttpStreamSession::Start()
     self_ = shared_from_this();
     LOG(INFO) << "[session] Start() request_id=" << request_id_;
 
-    // SSE 必要头
+    // SSE headers
     response_->SetHeader("Content-Type", "text/event-stream");
     response_->SetHeader("Cache-Control", "no-cache");
     response_->SetHeader("Connection", "keep-alive");
-
-    // 可选：告诉客户端我们开始了
-    // write_sse(R"({"type":"open"})");
 }
 
 bool HttpStreamSession::IsAlive() const
@@ -37,110 +30,19 @@ bool HttpStreamSession::IsAlive() const
     return !closed_.load();
 }
 
-void HttpStreamSession::OnEvent(const ZmqEvent &event)
+void HttpStreamSession::Write(const std::string &data)
 {
     if (!IsAlive())
-    {
-        Close();
         return;
-    }
 
-    if (event.type == "delta")
-    {
-        // // 直接转发增量
-        // write_sse(event.data);
-        OnDelta(event.data);
-        return;
-    }
-
-    if (event.type == "done")
-    {
-        // write_sse("[DONE]");
-        // Close();
-        OnDone();
-        return;
-    }
-
-    if (event.type == "error")
-    {
-        // 统一错误格式（最小）
-        write_sse(R"({"error":"stream error"})");
-        Close();
-        return;
-    }
-
-    // 其它未知类型，直接忽略或记录
+    response_->Write(data);
 }
 
 void HttpStreamSession::Close()
 {
     bool expected = false;
     if (!closed_.compare_exchange_strong(expected, true))
-    {
-        return; // 已关闭
-    }
-    // 不再写数据；订阅的释放在 Gateway/Client 层做
-}
-
-void HttpStreamSession::write_sse(const std::string &data)
-{
-    if (!IsAlive())
         return;
 
-    // SSE 格式：data: <payload>\n\n
-    std::ostringstream oss;
-    oss << "data: " << data << "\n\n";
-    response_->Write(oss.str());
-}
-
-void HttpStreamSession::OnDelta(const std::string &text)
-{
-    if (closed_.load())
-        return;
-
-    json delta = json::object();
-    if(mode_ == StreamMode::Chat && !sent_role_){
-        delta["role"] = "assistant";
-        sent_role_ = true;
-    }
-    delta["content"] = text;
-
-    json chunk = {
-        {"id", (mode_ == StreamMode::Chat ? "chatcmpl-" : "cmpl-") + request_id_},
-        {"object", mode_ == StreamMode::Chat ? "chat.completion.chunk" : "text_completion.chunk"},
-        {"created", static_cast<int>(std::time(nullptr))},
-        {"model", model_},
-        {"choices", {{
-            {"index", 0}, 
-            {"delta", delta}, 
-            {"finish_reason", nullptr}
-        }}}
-    };
-
-    write_sse(chunk.dump());
-}
-
-void HttpStreamSession::OnDone()
-{
-    if (closed_.load())
-        return;
-    LOG(INFO) << "[session] OnDone request_id=" << request_id_;
-    
-    json chunk = {
-        {"id", (mode_ == StreamMode::Chat ? "chatcmpl-" : "cmpl-") + request_id_},
-        {"object", mode_ == StreamMode::Chat ? "chat.completion.chunk" : "text_completion.chunk"},
-        {"created", static_cast<int>(std::time(nullptr))},
-        {"model", model_},
-        {"choices", {{
-            {"index", 0}, 
-            {"delta", json::object()}, 
-            {"finish_reason", "stop"}
-        }}}
-    };
-
-    write_sse(chunk.dump());
-    write_sse("[DONE]");
-
-    closed_.store(true);
     self_.reset();
 }

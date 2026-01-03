@@ -31,6 +31,7 @@ target_compile_features(serving_core
 add_library(serving_http STATIC
     HttpGateway.cc
     HttpStreamSession.cc
+    OpenAIStreamWriter.cc 
     StackFlowsClient.cc
     NetworkHttpServer.cc
 )
