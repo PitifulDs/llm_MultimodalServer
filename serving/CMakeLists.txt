@@ -7,4 +7,6 @@ set(CMAKE_CXX_STANDARD 17)
 # 只负责把各个 northbound adapter 挂进来
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/../network/src ${CMAKE_BINARY_DIR}/network)
+# llama.cpp 库
+add_subdirectory(${CMAKE_SOURCE_DIR}/../thirds/llama.cpp ${CMAKE_BINARY_DIR}/llama)
 add_subdirectory(http)

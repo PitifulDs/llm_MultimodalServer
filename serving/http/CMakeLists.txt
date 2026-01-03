@@ -7,11 +7,18 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/../engine/DummyEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/RpcEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/EngineFactory.cc
+    ${CMAKE_SOURCE_DIR}/../engine/LlamaEngine.cc
 )
 
 target_include_directories(serving_core
     PUBLIC
         ${CMAKE_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/../thirds/llama.cpp/include
+        ${CMAKE_SOURCE_DIR}/../thirds/llama.cpp/ggml/include
+)
+
+target_link_libraries(serving_core
+    PRIVATE llama
 )
 
 target_compile_features(serving_core
