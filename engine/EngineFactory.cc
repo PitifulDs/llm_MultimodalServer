@@ -1,9 +1,10 @@
 #include "engine/EngineFactory.h"
 #include "engine/DummyEngine.h"
 #include "engine/LlamaEngine.h"
+#include "serving/core/ModelEngine.h" // 返回 ModelEngine
 #include <memory>
 
-std::shared_ptr<LLMEngine> EngineFactory::Create(const std::string &model)
+std::shared_ptr<ModelEngine> EngineFactory::Create(const std::string &model)
 {
     if(model == "llama")
     {

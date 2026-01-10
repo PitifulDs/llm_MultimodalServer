@@ -2,6 +2,7 @@
 #include <memory>
 #include <string>
 #include "protocol/Protocol.h"
+#include "serving/core/SessionManager.h"
 
 // 前向声明
 struct HttpRequest;
@@ -24,7 +25,8 @@ class HttpGateway
 {
 public:
     // explicit HttpGateway(StackFlowsClient *client);
-    explicit HttpGateway(StackFlowsClient *client, ModelEngine *engine);
+    // explicit HttpGateway(StackFlowsClient *client, ModelEngine *engine);
+    HttpGateway();
     ~HttpGateway() = default;
 
     // 非流式 completion
@@ -43,4 +45,5 @@ public:
 private:
     StackFlowsClient *sf_client_;   // 不持有所有权
     ModelEngine *engine_;           // 不持有所有权
+    std::unique_ptr<SessionManager> session_mgr_;
 };

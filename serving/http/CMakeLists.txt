@@ -8,6 +8,8 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/../engine/RpcEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/EngineFactory.cc
     ${CMAKE_SOURCE_DIR}/../engine/LlamaEngine.cc
+    ${CMAKE_SOURCE_DIR}/../serving/core/SessionManager.cc
+    ${CMAKE_SOURCE_DIR}/../serving/core/Session.cc
 )
 
 target_include_directories(serving_core

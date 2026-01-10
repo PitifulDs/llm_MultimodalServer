@@ -1,10 +1,12 @@
 #pragma once
-
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
+
+struct Session;
 
 enum class FinishReason
 {
@@ -29,6 +31,14 @@ struct StreamChunk
 
 struct ServingContext
 {
+    ServingContext() = default;
+    ServingContext(const ServingContext &) = delete;            // 禁用 copy
+    ServingContext &operator=(const ServingContext &) = delete; // 禁用 copy
+
+    ServingContext(ServingContext &&) = default;                // 允许 move
+    ServingContext &operator=(ServingContext &&) = default;
+
+
     // ===== Request Identity =====
     std::string request_id;
     std::string session_id;
@@ -37,9 +47,14 @@ struct ServingContext
     // ===== Request Type =====
     bool is_chat = false;
     bool stream = false;
+    // 首轮标记（Engine 内设置，只读给下游）
+    bool is_first_turn = false;
 
     // ChatCompletion
     std::vector<Message> messages;
+    
+    // ===== Session =====
+    std::shared_ptr<Session> session; //
 
     // Completion
     std::string prompt;

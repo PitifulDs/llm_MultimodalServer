@@ -2,9 +2,9 @@
 
 #include <memory>
 #include <string>
-#include "engine/LLMEngine.h"
 
+class ModelEngine;
 class EngineFactory {
 public:
-    static std::shared_ptr<LLMEngine> Create(const std::string& model_);
+    static std::shared_ptr<ModelEngine> Create(const std::string &model_);
 };

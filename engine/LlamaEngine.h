@@ -1,19 +1,20 @@
 #pragma once
 #include "serving/core/ServingContext.h"
-#include "engine/LLMEngine.h"
+#include "serving/core/ModelEngine.h"
+
 #include <string>
+#include <memory>
 
 struct llama_model;
 struct llama_context;
 struct llama_sampler;
 
-class LlamaEngine final : public LLMEngine {
+class LlamaEngine final : public ModelEngine {
 public:
     explicit LlamaEngine(const std::string& model_path);
     ~LlamaEngine();
 
-    void Generate(ServingContext& ctx) override;
-    void GenerateStream(ServingContext& ctx) override;
+    void Run(std::shared_ptr<ServingContext> ctx) override;
 
 private:
     std::string model_path_;

@@ -33,9 +33,10 @@ int main(int argc, char **argv)
     // auto engine = std::make_unique<DummyEngine>();
     // HttpGateway gateway(sf_client.get(), engine.get());
 
-    auto sf_client = std::make_unique<StackFlowsClient>();
-    auto engine = std::make_unique<RpcEngine>(sf_client.get());
-    HttpGateway gateway(sf_client.get(), engine.get());
+    // auto sf_client = std::make_unique<StackFlowsClient>();
+    // auto engine = std::make_unique<RpcEngine>(sf_client.get());
+    // HttpGateway gateway(sf_client.get(), engine.get());
+    HttpGateway gateway;
 
     network::InetAddress listen_addr(port);
     NetworkHttpServer server(&loop, listen_addr, &gateway);

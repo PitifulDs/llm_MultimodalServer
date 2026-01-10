@@ -15,7 +15,7 @@ RpcEngine::RpcEngine(StackFlowsClient *client)
 }
 
 
-void RpcEngine::run(std::shared_ptr<ServingContext> ctx)
+void RpcEngine::Run(std::shared_ptr<ServingContext> ctx)
 {
     LOG(INFO) << "[RpcEngine] run: request_id=" << ctx->request_id
               << " stream=" << ctx->stream

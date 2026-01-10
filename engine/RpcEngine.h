@@ -20,7 +20,7 @@ class StackFlowsClient;
 class RpcEngine : public ModelEngine {
 public:
     explicit RpcEngine(StackFlowsClient* client);
-    void run(std::shared_ptr<ServingContext> ctx) override;
+    void Run(std::shared_ptr<ServingContext> ctx) override;
 
 private:
     StackFlowsClient *sf_client_; // 不持有
