@@ -7,6 +7,7 @@
 
 // #include "engine/DummyEngine.h"
 #include "engine/RpcEngine.h"
+#include "engine/EngineFactory.h"
 
 #include <memory>
 #include <iostream>
@@ -29,13 +30,11 @@ int main(int argc, char **argv)
 
     network::EventLoop loop;
 
-    // auto sf_client = std::make_unique<StackFlowsClient>();
-    // auto engine = std::make_unique<DummyEngine>();
-    // HttpGateway gateway(sf_client.get(), engine.get());
+    // 模型 warmup
+    std::cout << "[serving-http] warming up model..." << std::endl;
+    EngineFactory::Create("llama");
+    std::cout << "[serving-http] warmup done" << std::endl;
 
-    // auto sf_client = std::make_unique<StackFlowsClient>();
-    // auto engine = std::make_unique<RpcEngine>(sf_client.get());
-    // HttpGateway gateway(sf_client.get(), engine.get());
     HttpGateway gateway;
 
     network::InetAddress listen_addr(port);
