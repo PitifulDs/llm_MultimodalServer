@@ -15,6 +15,9 @@
 #include <ctime>
 #include <string>
 #include <memory>
+#include <thread>
+#include <chrono>
+
 using json = nlohmann::json;
 
 namespace
@@ -65,82 +68,49 @@ HttpGateway::HttpGateway()
     SessionManager::Options opt;
     opt.idle_ttl = std::chrono::minutes(30);
     opt.max_sessions = 1024;
+    opt.gc_batch = 64; // 显示设置batch
 
     session_mgr_ = std::make_unique<SessionManager>(opt);
+
+    // Session GC 后台线程：定期回收空闲 session（释放 KV cache）
+    // 注意：detach 是可以接受的（HttpGateway 生命周期 = 进程生命周期）
+    std::thread([mgr = session_mgr_.get()](){
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(60));
+            const size_t removed = mgr->gc();
+            if (removed > 0) {
+                LOG(INFO) << "[session-gc] removed=" << removed
+                          << " remaining=" << mgr->size();
+            }
+        } 
+    }).detach();
 }
+
+
 
 void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
 {
-    // 1) 解析 JSON
-    json body;
-    try
-    {
-        body = json::parse(req.body);
-    }
-    catch (...)
-    {
-        // res.SetHeader("Content-Type", "application/json");
-        // res.Write(R"({"error":"invalid json"})");
-        res.Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
-        return;
-    }
+    (void)req; // 明确表示不使用请求参数
 
-    const std::string prompt = body.value("prompt", "");
-    const std::string model = body.value("model", "unkown");
-    // const std::string session_id = body.value("session_id", "");
-
-    // 2) 构造 RPC 请求（非流式）
-    RpcRequest rpc;
-    rpc.version = "v1";
-    rpc.request_id = gen_request_id();
-    rpc.session_id = body.value("session_id", "");
-    rpc.action = "completion";
-    rpc.stream = false;
-    rpc.payload["prompt"] = prompt;
-
-    // 3) 调用 StackFlows
-    RpcResponse resp = sf_client_->Call(rpc);
-
-    // 4) 构造openai-style 回复
-    json out;
-    out["id"] = "cmpl-" + rpc.request_id;
-    out["object"] = "text_completion";
-    out["created"] = static_cast<int>(std::time(nullptr));
-    out["model"] = model;
-
-    json choices;
-    choices["index"] = 0;
-
-    std::string text;
-    auto it = resp.result.find("text");
-    if (it != resp.result.end())
-    {
-        text = it->second;
-    }
-    else
-    {
-        text.clear();
-    }
-
-    choices["text"] = text;
-    choices["finish_reason"] = "stop";
-
-    out["choices"] = json::array({choices});
-   
     res.SetHeader("Content-Type", "application/json");
-    res.Write(out.dump());
+    res.SetHeader("Connection", "close");
+
+    // 3. 构建规范的 OpenAI 风格错误响应
+    res.Write(R"({
+        "error": {
+            "message": "The /v1/completions endpoint is deprecated in Serving v2. Please use /v1/chat/completions instead.",
+            "type": "invalid_request_error",
+            "param": null,
+            "code": "endpoint_deprecated"
+        }
+    })");
 }
 
 void HttpGateway::HandleCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
-
 {
+    (void)req;
     res_ptr->SetHeader("Content-Type", "application/json");
-    res_ptr->Write(R"({
-        "error":{
-            "message":"completion stream not supported in Step 4.4",
-            "type":"not_implemented"
-        }
-    })");
+    res_ptr->Write(R"({"error":{"message":"completion stream not supported","type":"not_implemented"}})");
 }
 
 void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res)
@@ -181,18 +151,19 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         session_id = ctx->request_id;
     }
 
-    // ctx->session_id = session_id;
+    ctx->session_id = session_id;
     ctx->session = session_mgr_->getOrCreate(session_id, model);
 
+    // parse messages（只 push 一遍）
+    ctx->messages.clear();
     for (const auto &m : messages)
     {
         ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
     }
 
-    for (const auto &m : messages)
-    {
-        ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
-    }
+    // 保存客户端“全量 messages”，后面要用来写 session->history
+    // 因为 ctx->messages 会被 auto-diff 改成增量
+    const std::vector<Message> client_messages = ctx->messages;
 
     // 使用 LLMEngine
     auto& session = ctx->session;
@@ -286,14 +257,21 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     ctx->session_id = session_id;
     ctx->session = session_mgr_->getOrCreate(session_id, model);
 
+    ctx->messages.clear();
     for (const auto &m : messages)
     {
         ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
     }
 
+    // 保存客户端全量 messages（因为 ctx->messages 会被 auto-diff 改成增量）
+    const std::vector<Message> client_messages = ctx->messages;
+
     // 2) 用 session 托管 response 生命周期
     auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);
     http_session->Start();
+
+    // stream 模式下累计 assistant 文本，用于写 session->history
+    auto assistant_acc = std::make_shared<std::string>();
 
     // 3) OpenAI Stream Writer（协议层）
     OpenAIStreamWriter writer(ctx->request_id, ctx->model, [&](const std::string &s)
@@ -307,6 +285,10 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     // 4) Engine → Writer
     ctx->on_chunk = [&](const StreamChunk &chunk)
     {
+        // [NEW] 累计内容（stream 模式下 ServingContext::EmitDelta 不会填 final_text） if (!chunk.is_finished)
+        {
+            assistant_acc->append(chunk.delta);
+        }
         writer.OnChunk(chunk);
     };
 
@@ -342,4 +324,9 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
 
     auto llm_engine = EngineFactory::Create(ctx->model);
     llm_engine->Run(ctx);
+
+    // 更新 session 历史（客户端全量 + 本次生成 assistant）
+    session->history = client_messages;
+    session->history.push_back({"assistant", *assistant_acc});
+    session->touch();
 }
