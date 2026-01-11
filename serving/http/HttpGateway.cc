@@ -68,13 +68,26 @@ HttpGateway::HttpGateway()
     SessionManager::Options opt;
     opt.idle_ttl = std::chrono::minutes(30);
     opt.max_sessions = 1024;
-    opt.gc_batch = 64; // 显示设置batch
+    opt.gc_batch = 64;
 
     session_mgr_ = std::make_unique<SessionManager>(opt);
 
-    // Session GC 后台线程：定期回收空闲 session（释放 KV cache）
-    // 注意：detach 是可以接受的（HttpGateway 生命周期 = 进程生命周期）
-    std::thread([mgr = session_mgr_.get()](){
+    // 1) 创建唯一 Engine
+    engine_ = EngineFactory::Create("llama");
+
+    // 2) warmup（同步，一次即可）
+    LOG(INFO) << "[serving-http] warming up model...";
+    auto warmup_ctx = std::make_shared<ServingContext>();
+    warmup_ctx->model = "llama";
+    warmup_ctx->stream = false;
+    warmup_ctx->messages = {
+        {"user", "Hello"}};
+    engine_->Run(warmup_ctx);
+    LOG(INFO) << "[serving-http] warmup done";
+
+    // 3) Session GC 后台线程
+    std::thread([mgr = session_mgr_.get()]()
+                {
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(60));
             const size_t removed = mgr->gc();
@@ -82,11 +95,9 @@ HttpGateway::HttpGateway()
                 LOG(INFO) << "[session-gc] removed=" << removed
                           << " remaining=" << mgr->size();
             }
-        } 
-    }).detach();
+        } })
+        .detach();
 }
-
-
 
 void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
 {
@@ -199,8 +210,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
               << " delta=" << ctx->messages.size()
               << " hist=" << session->history.size();
 
-    auto llm_engine = EngineFactory::Create(ctx->model);
-    llm_engine->Run(ctx);
+    engine_->Run(ctx);
 
     // non-stream：从 ctx 取结果
     json out = {
@@ -322,8 +332,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
               << " delta=" << ctx->messages.size()
               << " hist=" << session->history.size();
 
-    auto llm_engine = EngineFactory::Create(ctx->model);
-    llm_engine->Run(ctx);
+    engine_->Run(ctx);
 
     // 更新 session 历史（客户端全量 + 本次生成 assistant）
     session->history = client_messages;
