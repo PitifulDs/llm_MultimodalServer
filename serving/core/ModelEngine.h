@@ -3,7 +3,7 @@
 #include <functional>
 #include <string>
 #include "serving/core/ServingContext.h"
-#include "memory"
+#include <memory>
 struct ServingContext;
 
 // 统一的模型执行抽象（与具体模型实现解耦）

@@ -31,7 +31,7 @@ void OpenAIStreamWriter::OnChunk(const StreamChunk &chunk)
     write_("data: " + j.dump() + "\n\n");
 
     if(chunk.is_finished) {
-        write_("[DONE]\n");
+        write_("data: [DONE]\n\n");
     }
 }
 

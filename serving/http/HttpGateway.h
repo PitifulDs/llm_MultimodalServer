@@ -4,7 +4,7 @@
 #include "protocol/Protocol.h"
 #include "serving/core/SessionManager.h"
 #include "serving/core/ModelEngine.h"
-
+#include "serving/core/EngineExecutor.h"
 // 前向声明
 struct HttpRequest;
 struct HttpResponse;
@@ -40,4 +40,5 @@ private:
     StackFlowsClient *sf_client_{nullptr};   // 不持有所有权
     std::unique_ptr<SessionManager> session_mgr_;
     std::shared_ptr<ModelEngine> engine_;
+    EngineExecutor executor_; // 共享一个 executor，所有请求都走这里
 };

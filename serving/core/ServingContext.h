@@ -6,6 +6,7 @@
 #include <vector>
 #include <unordered_map>
 
+#include "glog/logging.h"
 struct Session;
 
 enum class FinishReason
@@ -69,6 +70,9 @@ struct ServingContext
     // ===== Streaming Callback =====
     std::function<void(const StreamChunk &)> on_chunk;
 
+    // ===== Finish Callback (always) =====
+    std::function<void(FinishReason)> on_finish;
+
     // ===== Result (non-stream) =====
     std::string final_text;
     FinishReason finish_reason = FinishReason::stop;
@@ -81,7 +85,11 @@ struct ServingContext
         c.is_finished = false;
 
         if(stream){
-            on_chunk(c);
+            if (on_chunk)
+            {
+                on_chunk(c);
+            }
+                
         }else{
             final_text += text;
         }
@@ -94,11 +102,23 @@ struct ServingContext
         c.finish_reason = reason;
 
         if(stream){
-            on_chunk(c);
-
+            if (on_chunk)
+            {
+                on_chunk(c);
+            }    
         }else{
             finish_reason = reason;
         }
+
+        // 无论 stream/non-stream，都触发 finish
+        LOG(INFO) << "[ctx] before on_finish req=" << request_id;
+        if (on_finish)
+            on_finish(reason);
+        LOG(INFO) << "[ctx] after  on_finish req=" << request_id;
+
+        LOG(INFO) << "[ctx] EmitFinish req=" << request_id
+                  << " reason=" << static_cast<int>(reason)
+                  << " stream=" << stream;
     }
 };
 

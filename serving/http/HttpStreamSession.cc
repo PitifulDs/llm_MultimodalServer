@@ -23,6 +23,8 @@ void HttpStreamSession::Start()
     response_->SetHeader("Content-Type", "text/event-stream");
     response_->SetHeader("Cache-Control", "no-cache");
     response_->SetHeader("Connection", "keep-alive");
+
+    response_->Write(":\n\n");
 }
 
 bool HttpStreamSession::IsAlive() const
@@ -44,5 +46,6 @@ void HttpStreamSession::Close()
     if (!closed_.compare_exchange_strong(expected, true))
         return;
 
+    LOG(INFO) << "[session] Close() request_id=" << request_id_;
     self_.reset();
 }

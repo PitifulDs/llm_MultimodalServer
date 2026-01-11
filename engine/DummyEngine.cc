@@ -9,5 +9,7 @@ void DummyEngine::Run(std::shared_ptr<ServingContext> ctx)
     // 简单模拟生成
     ctx->EmitDelta(text_);
 
+    LOG(INFO) << "[dummy] before EmitFinish req=" << ctx->request_id;
     ctx->EmitFinish(FinishReason::stop);
+    LOG(INFO) << "[dummy] after EmitFinish req=" << ctx->request_id;
 }
