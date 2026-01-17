@@ -34,16 +34,3 @@ void OpenAIStreamWriter::OnChunk(const StreamChunk &chunk)
         write_("data: [DONE]\n\n");
     }
 }
-
-void OpenAIStreamWriter::Collect(const StreamChunk &chunk)
-{
-    if (!chunk.is_finished)
-    {
-        buffer_ += chunk.delta;
-    }
-}
-
-std::string OpenAIStreamWriter::Result() const
-{
-    return buffer_;
-}

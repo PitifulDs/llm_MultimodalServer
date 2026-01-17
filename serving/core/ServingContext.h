@@ -80,45 +80,38 @@ struct ServingContext
 
     void EmitDelta(const std::string& text)
     {
-        StreamChunk c;
-        c.delta = text;
-        c.is_finished = false;
-
-        if(stream){
-            if (on_chunk)
-            {
-                on_chunk(c);
-            }
-                
-        }else{
-            final_text += text;
+        if(finished.load()){
+            return;
         }
+
+        final_text += text;
+
+        if(stream && on_chunk){
+            StreamChunk c;
+            c.delta = text;
+            c.is_finished = false;
+            on_chunk(c);
+        }
+
     }
 
     void EmitFinish(FinishReason reason)
-    { 
-        StreamChunk c;
-        c.is_finished = true;
-        c.finish_reason = reason;
+    {
+        if (finished.exchange(true))
+            return;
 
-        if(stream){
-            if (on_chunk)
-            {
-                on_chunk(c);
-            }    
-        }else{
-            finish_reason = reason;
+        if (stream && on_chunk)
+        {
+            StreamChunk c;
+            c.is_finished = true;
+            c.finish_reason = reason;
+            on_chunk(c);
         }
 
-        // 无论 stream/non-stream，都触发 finish
-        LOG(INFO) << "[ctx] before on_finish req=" << request_id;
+        finish_reason = reason;
+
         if (on_finish)
             on_finish(reason);
-        LOG(INFO) << "[ctx] after  on_finish req=" << request_id;
-
-        LOG(INFO) << "[ctx] EmitFinish req=" << request_id
-                  << " reason=" << static_cast<int>(reason)
-                  << " stream=" << stream;
     }
 };
 

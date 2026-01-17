@@ -335,59 +335,38 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);
     http_session->Start();
 
-    // 累计 assistant 内容（加锁，避免未来多线程 chunk 回调 data race）
-    auto assistant_acc = std::make_shared<std::string>();
-    auto acc_mu = std::make_shared<std::mutex>();
-
-    // writer 用 shared_ptr，避免回调晚到导致悬挂引用
-    auto writer = std::make_shared<OpenAIStreamWriter>(
-        ctx->request_id,
-        ctx->model,
-        [http_session, ctx](const std::string &s)
+    auto writer = std::make_shared<OpenAIStreamWriter>(ctx->request_id, ctx->model, [http_session, ctx](const std::string &s)
         {
             if (http_session->IsAlive())
             {
                 http_session->Write(s);
-            }
-            else
+            }    
+            if (!http_session->IsAlive())
             {
                 ctx->cancelled = true;
             }
         });
 
-    // chunk 回调
-    ctx->on_chunk = [writer, assistant_acc, acc_mu, http_session, ctx](const StreamChunk &chunk) mutable
+    ctx->on_chunk = [writer, ctx](const StreamChunk &chunk)
     {
         if (!chunk.is_finished)
         {
-            std::lock_guard<std::mutex> lk(*acc_mu);
-            assistant_acc->append(chunk.delta);
-        }
+            ctx->final_text += chunk.delta;
+        } 
         writer->OnChunk(chunk);
     };
 
     // finish 回调：更新 session 历史 + 关闭 SSE
     auto session = ctx->session;
-    ctx->on_finish = [session, client_messages, assistant_acc, acc_mu, http_session](FinishReason r)
+    ctx->on_finish = [session, ctx, client_messages, http_session](FinishReason)
     {
-        std::string assistant_text;
-        {
-            std::lock_guard<std::mutex> lk(*acc_mu);
-            assistant_text = *assistant_acc;
-        }
-
         {
             std::lock_guard<std::mutex> lk(session->mu);
             session->history = client_messages;
-            session->history.push_back({"assistant", assistant_text});
+            session->history.push_back({"assistant", ctx->final_text});
             session->touch();
         }
-
-        if (http_session->IsAlive())
-        {
-            // 如果你的 OpenAIStreamWriter 已经在 finished chunk 里写了 data:[DONE]，这里只 Close 即可
-            http_session->Close();
-        }
+        http_session->Close();
     };
 
     // auto-diff（锁内只处理 session 状态，锁外 Execute）

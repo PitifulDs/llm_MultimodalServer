@@ -12,15 +12,9 @@ public:
     // streaming
     void OnChunk(const StreamChunk& chunk);
 
-    // non-streaming
-    void Collect(const StreamChunk& chunk);
-
-    std::string Result() const;
-
 private:
     std::string request_id_;
     std::string model_;
     WriteFn write_;
 
-    std::string buffer_;
 };

@@ -37,7 +37,18 @@ void HttpStreamSession::Write(const std::string &data)
     if (!IsAlive())
         return;
 
+    if(!response_->IsAlive()){
+        LOG(INFO) << "[session] response not alive, close session req=" << request_id_;
+        Close();
+        return;
+    }
+
     response_->Write(data);
+    if (!response_->IsAlive())
+    {
+        LOG(INFO) << "[session] response dead after write, close req=" << request_id_;
+        Close();
+    }
 }
 
 void HttpStreamSession::Close()

@@ -11,4 +11,7 @@ public:
 
     // 统一入口：一次请求执行（当前阶段=透明转发）
     void Execute(std::shared_ptr<ServingContext> ctx);
+
+    // 投递并等待完成（用于 non-stream）
+    void ExecuteAndWait(std::shared_ptr<ServingContext> ctx);
 };
