@@ -11,6 +11,7 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/../serving/core/SessionManager.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/Session.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/EngineExecutor.cc
+    ${CMAKE_SOURCE_DIR}/../serving/core/ThreadPool.cc
 )
 
 target_include_directories(serving_core

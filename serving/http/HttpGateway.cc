@@ -2,7 +2,6 @@
 
 #include "http_types.h"
 #include "HttpStreamSession.h"
-#include "engine/EngineFactory.h"
 #include "serving/core/ServingContext.h"
 #include "serving/core/SessionManager.h"
 #include "OpenAIStreamWriter.h"
@@ -86,24 +85,6 @@ HttpGateway::HttpGateway()
     opt.gc_batch = 64;
 
     session_mgr_ = std::make_unique<SessionManager>(opt);
-
-    // 可选：如果你有 warmup 需求
-    engine_ = EngineFactory::Create("llama");
-    if (engine_)
-    {
-        LOG(INFO) << "[serving-http] warming up model...";
-        auto warmup_ctx = std::make_shared<ServingContext>();
-        warmup_ctx->request_id = "warmup";
-        warmup_ctx->model = "llama";
-        warmup_ctx->stream = false;
-        warmup_ctx->messages = {{"user", "Hello"}};
-        engine_->Run(warmup_ctx);
-        LOG(INFO) << "[serving-http] warmup done";
-    }
-    else
-    {
-        LOG(WARNING) << "[serving-http] warmup skipped: EngineFactory::Create(llama) failed";
-    }
 
     // Session GC 后台线程
     std::thread([mgr = session_mgr_.get()]()

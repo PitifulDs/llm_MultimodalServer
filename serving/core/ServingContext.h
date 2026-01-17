@@ -8,6 +8,7 @@
 
 #include "glog/logging.h"
 struct Session;
+class ModelEngine;
 
 enum class FinishReason
 {
@@ -77,6 +78,8 @@ struct ServingContext
     std::string final_text;
     FinishReason finish_reason = FinishReason::stop;
     std::string error_message;
+
+    std::shared_ptr<ModelEngine> engine;
 
     void EmitDelta(const std::string& text)
     {

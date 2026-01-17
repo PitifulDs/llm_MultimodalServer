@@ -84,6 +84,11 @@ LlamaEngine::~LlamaEngine()
 // - decode 输出 token -> EmitDelta，并把最终 assistant 写入 session->history
 void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 {
+    static std::atomic<int> in_flight{0};
+    int v = ++in_flight;
+    LOG(INFO) << "[LlamaEngine::Run] in_flight=" << v << " req=" << ctx->request_id;
+    --in_flight;
+
     if (!ctx)
     {
         return;
