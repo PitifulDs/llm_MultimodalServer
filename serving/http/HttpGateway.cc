@@ -77,7 +77,7 @@ namespace
 
 } // namespace
 
-HttpGateway::HttpGateway()
+HttpGateway::HttpGateway() : pool_(4), executor_(pool_), session_executor_(pool_)
 {
     SessionManager::Options opt;
     opt.idle_ttl = std::chrono::minutes(30);
@@ -88,18 +88,18 @@ HttpGateway::HttpGateway()
 
     // Session GC 后台线程
     std::thread([mgr = session_mgr_.get()]()
-                {
-                    while (true)
-                    {
-                        std::this_thread::sleep_for(std::chrono::seconds(60));
-                        const size_t removed = mgr->gc();
-                        if (removed > 0)
-                        {
-                            LOG(INFO) << "[session-gc] removed=" << removed
-                                      << " remaining=" << mgr->size();
-                        }
-                    } })
-        .detach();
+    {
+        while (true)
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(60));
+            const size_t removed = mgr->gc();
+            if (removed > 0)
+            {
+                LOG(INFO) << "[session-gc] removed=" << removed
+                            << " remaining=" << mgr->size();
+            }
+        } 
+    }).detach();
 }
 
 void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
@@ -216,7 +216,8 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     {
         final_reason = r;
 
-        // 更新 session 历史（assistant 内容用 ctx->final_text）
+        // 仅 stop/length 更新 history，避免 cancelled/error 污染 session
+        if (r == FinishReason::stop || r == FinishReason::length)
         {
             std::lock_guard<std::mutex> lk(session->mu);
             session->history = client_messages;
@@ -231,7 +232,9 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         done_cv.notify_one();
     };
 
-    executor_.Execute(ctx);
+    session_executor_.Submit(ctx->session, [this, ctx]{
+        executor_.Execute(ctx); // accepted 返回值非 stream 不用管
+    });     
 
     // 等完成（如果 executor 同步，这里会立刻 done；如果异步，这里阻塞到完成）
     {
@@ -404,26 +407,12 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         http_session->Close();
     };
 
-    // 只 Execute 一次：先入队判断是否被接收
-    bool accepted = executor_.Execute(ctx);
-    if (!accepted)
-    {
-        const bool overloaded =
-            (ctx->params.count("error_code") && ctx->params["error_code"] == "overloaded") ||
-            (ctx->error_message.find("queue full") != std::string::npos);
-
-        res_ptr->SetStatus(overloaded ? 429 : 500,
-                           overloaded ? "Too Many Requests" : "Internal Server Error");
-        res_ptr->SetHeader("Content-Type", "application/json");
-        res_ptr->SetHeader("Connection", "close");
-
-        json err = {{"error",
-                     {{"message", ctx->error_message.empty() ? "engine error" : ctx->error_message},
-                      {"type", overloaded ? "rate_limit_error" : "internal_error"}}}};
-        res_ptr->Write(err.dump());
-        return;
-    }
-
     // accepted 后再发 SSE 头（避免队列满却先发 200 event-stream）
     http_session->Start();
+
+    // 同 session 串行执行（只 Execute 一次）
+    session_executor_.Submit(session, [this, ctx] {
+        executor_.Execute(ctx);
+        // executor 内部会在 queue full 时 EmitFinish(error)，writer 会输出对应 SSE 并结束
+    });
 }

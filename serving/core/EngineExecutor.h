@@ -9,12 +9,14 @@
 #include <atomic>
 #include <thread>
 
+#include "ThreadPool.h"
+
 struct ServingContext;
 
 class EngineExecutor
 {
 public:
-    EngineExecutor(size_t worker_threads = 4);
+    EngineExecutor(ThreadPool &pool);
     ~EngineExecutor();
 
     // 异步：提交后立即返回（stream / non-stream 都走这条）
@@ -24,23 +26,6 @@ public:
     void ExecuteAndWait(std::shared_ptr<ServingContext> ctx);
 
 private:
-    // ===== ThreadPool (minimal) =====
-    class ThreadPool
-    {
-    public:
-        explicit ThreadPool(size_t n_threads);
-        ~ThreadPool();
-        void Submit(std::function<void()> fn);
-
-    private:
-        void WorkerLoop();
-        std::mutex mu_;
-        std::condition_variable cv_;
-        std::deque<std::function<void()>> q_;
-        std::vector<std::thread> workers_;
-        std::atomic<bool> stop_{false};
-    };
-
     // ===== per-model queue =====
     struct ModelQueue
     {
@@ -53,7 +38,7 @@ private:
     void RunModelQueue(const std::string model, std::shared_ptr<ModelQueue> mq);
 
 private:
-    ThreadPool pool_;
+    ThreadPool& pool_;
 
     std::mutex map_mu_;
     std::unordered_map<std::string, std::shared_ptr<ModelQueue>> queues_;

@@ -5,60 +5,12 @@
 
 #include <utility>
 
-// ================= ThreadPool =================
-
-EngineExecutor::ThreadPool::ThreadPool(size_t n_threads)
-{
-    workers_.reserve(n_threads);
-    for (size_t i = 0; i < n_threads; ++i)
-    {
-        workers_.emplace_back([this]
-                              { WorkerLoop(); });
-    }
-}
-
-EngineExecutor::ThreadPool::~ThreadPool()
-{
-    stop_.store(true);
-    cv_.notify_all();
-    for (auto &t : workers_)
-    {
-        if (t.joinable())
-            t.join();
-    }
-}
-
-void EngineExecutor::ThreadPool::Submit(std::function<void()> fn)
-{
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        q_.push_back(std::move(fn));
-    }
-    cv_.notify_one();
-}
-
-void EngineExecutor::ThreadPool::WorkerLoop()
-{
-    while (!stop_.load())
-    {
-        std::function<void()> task;
-        {
-            std::unique_lock<std::mutex> lk(mu_);
-            cv_.wait(lk, [&]
-                     { return stop_.load() || !q_.empty(); });
-            if (stop_.load() && q_.empty())
-                return;
-            task = std::move(q_.front());
-            q_.pop_front();
-        }
-        task();
-    }
-}
-
 // ================= EngineExecutor =================
 
-EngineExecutor::EngineExecutor(size_t worker_threads)
-    : pool_(worker_threads) {}
+EngineExecutor::EngineExecutor(ThreadPool &pool)
+    : pool_(pool) 
+{
+}
 
 EngineExecutor::~EngineExecutor() = default;
 
@@ -66,11 +18,11 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 {
     // 1) 基础校验
     if (!ctx)
-        return;
+        return false;
 
     // 如果已经 finished，就不再执行
     if (ctx->finished.load())
-        return;
+        return false;
 
     // 2) per-model 串行投递
     const std::string model = ctx->model;

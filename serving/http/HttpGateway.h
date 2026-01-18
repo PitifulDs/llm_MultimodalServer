@@ -4,6 +4,9 @@
 #include "protocol/Protocol.h"
 #include "serving/core/SessionManager.h"
 #include "serving/core/EngineExecutor.h"
+#include "serving/core/SessionExecutor.h"
+#include "serving/core/ThreadPool.h"
+
 // 前向声明
 struct HttpRequest;
 struct HttpResponse;
@@ -36,7 +39,9 @@ public:
     void HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr);
 
 private:
+    ThreadPool pool_;                        // 线程池
     StackFlowsClient *sf_client_{nullptr};   // 不持有所有权
     std::unique_ptr<SessionManager> session_mgr_;
     EngineExecutor executor_; // 共享一个 executor，所有请求都走这里
+    SessionExecutor session_executor_;
 };
