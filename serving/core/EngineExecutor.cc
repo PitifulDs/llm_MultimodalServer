@@ -62,7 +62,7 @@ EngineExecutor::EngineExecutor(size_t worker_threads)
 
 EngineExecutor::~EngineExecutor() = default;
 
-void EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
+bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 {
     // 1) 基础校验
     if (!ctx)
@@ -75,7 +75,8 @@ void EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     // 2) per-model 串行投递
     const std::string model = ctx->model;
 
-    SubmitPerModel(model, [ctx]{
+    bool ok = SubmitPerModel(model, [ctx]
+    {
         // 任务开始时再检查一次取消/结束
         if (ctx->finished.load()) return;
         if (ctx->cancelled.load()) {
@@ -99,6 +100,17 @@ void EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
             ctx->EmitFinish(FinishReason::stop);
         } 
     });
+
+    if (!ok)
+    {
+        // 立即失败：避免客户端挂死超时
+        ctx->error_message = "EngineExecutor: model queue full, model=" + model;
+        ctx->params["error_code"] = "overloaded";
+        ctx->EmitFinish(FinishReason::error);
+        return false;
+    }
+
+    return true;
 }
 
 void EngineExecutor::ExecuteAndWait(std::shared_ptr<ServingContext> ctx)
@@ -140,8 +152,10 @@ void EngineExecutor::ExecuteAndWait(std::shared_ptr<ServingContext> ctx)
     ctx->on_finish = user_on_finish;
 }
 
-void EngineExecutor::SubmitPerModel(const std::string &model,  std::function<void()> task)
+bool EngineExecutor::SubmitPerModel(const std::string &model,  std::function<void()> task)
 {
+    constexpr size_t MAX_QUEUE = 64; // 你可以先用 64/128，后续压测调参
+
     std::shared_ptr<ModelQueue> mq;
     {
         std::lock_guard<std::mutex> lk(map_mu_);
@@ -154,6 +168,13 @@ void EngineExecutor::SubmitPerModel(const std::string &model,  std::function<voi
     bool need_schedule = false;
     {
         std::lock_guard<std::mutex> lk(mq->mu);
+
+        // backpressure：队列满直接拒绝
+        if (mq->tasks.size() >= MAX_QUEUE)
+        {
+            return false;
+        }
+
         mq->tasks.push_back(std::move(task));
         if (!mq->running)
         {
@@ -167,6 +188,8 @@ void EngineExecutor::SubmitPerModel(const std::string &model,  std::function<voi
         pool_.Submit([this, model, mq]
                      { RunModelQueue(model, mq); });
     }
+
+    return true;
 }
 
 void EngineExecutor::RunModelQueue(std::string model,

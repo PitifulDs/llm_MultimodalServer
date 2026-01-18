@@ -240,11 +240,24 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
                      { return done; });
     }
 
-    // 如果引擎设置了 error_message，你也可以按你现有字段返回错误
+    // 如果引擎设置了 error_message，也可以按现有字段返回错误
     if (!ctx->error_message.empty() || final_reason == FinishReason::error)
     {
+        // overloaded -> 429 or 503
+        const bool overloaded = (ctx->params.count("error_code") && ctx->params["error_code"] == "overloaded") || (ctx->error_message.find("queue full") != std::string::npos);
+
+        if (overloaded)
+        {
+            res.SetStatus(429, "Too Many Requests"); // 或 503
+        }
+        else
+        {
+            res.SetStatus(500, "Internal Server Error");
+        }
+
         json err = {
-            {"error", {{"message", ctx->error_message.empty() ? "engine error" : ctx->error_message}, {"type", "internal_error"}}}};
+            {"error", {{"message", ctx->error_message.empty() ? "engine error" : ctx->error_message}, {"type", overloaded ? "rate_limit_error" : "internal_error"}}}};
+
         res.SetHeader("Content-Type", "application/json");
         res.SetHeader("Connection", "close");
         res.Write(err.dump());
@@ -274,6 +287,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     }
     catch (...)
     {
+        res_ptr->SetStatus(400, "Bad Request");
         res_ptr->SetHeader("Content-Type", "application/json");
         res_ptr->SetHeader("Connection", "close");
         res_ptr->Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
@@ -282,6 +296,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
 
     if (!body.contains("messages") || !body["messages"].is_array())
     {
+        res_ptr->SetStatus(400, "Bad Request");
         res_ptr->SetHeader("Content-Type", "application/json");
         res_ptr->SetHeader("Connection", "close");
         res_ptr->Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
@@ -304,53 +319,18 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     ctx->session_id = session_id;
     ctx->session = session_mgr_->getOrCreate(session_id, model);
 
+    // parse messages
     ctx->messages.clear();
     for (const auto &m : body["messages"])
     {
         ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
     }
 
+    // 备份客户端全量 messages（用于更新 history）
     const std::vector<Message> client_messages = ctx->messages;
 
-    // 绑定 HttpStreamSession 生命周期
-    auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);
-    http_session->Start();
-
-    auto writer = std::make_shared<OpenAIStreamWriter>(ctx->request_id, ctx->model, [http_session, ctx](const std::string &s)
-        {
-            if (http_session->IsAlive())
-            {
-                http_session->Write(s);
-            }    
-            if (!http_session->IsAlive())
-            {
-                ctx->cancelled = true;
-            }
-        });
-
-    ctx->on_chunk = [writer, ctx](const StreamChunk &chunk)
-    {
-        if (!chunk.is_finished)
-        {
-            ctx->final_text += chunk.delta;
-        } 
-        writer->OnChunk(chunk);
-    };
-
-    // finish 回调：更新 session 历史 + 关闭 SSE
+    // auto-diff（锁内只处理 session 状态，锁外执行 engine）
     auto session = ctx->session;
-    ctx->on_finish = [session, ctx, client_messages, http_session](FinishReason)
-    {
-        {
-            std::lock_guard<std::mutex> lk(session->mu);
-            session->history = client_messages;
-            session->history.push_back({"assistant", ctx->final_text});
-            session->touch();
-        }
-        http_session->Close();
-    };
-
-    // auto-diff（锁内只处理 session 状态，锁外 Execute）
     {
         std::lock_guard<std::mutex> lk(session->mu);
 
@@ -379,6 +359,71 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
                   << " hist=" << session->history.size();
     }
 
-    executor_.Execute(ctx);
+    // 绑定 HttpStreamSession 生命周期（先不 Start）
+    auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);
 
+    // writer：将 OpenAI chunk -> SSE string -> session->Write
+    auto writer = std::make_shared<OpenAIStreamWriter>(
+        ctx->request_id, ctx->model,
+        [http_session, ctx](const std::string &s)
+        {
+            if (!http_session->IsAlive())
+            {
+                ctx->cancelled.store(true);
+                return;
+            }
+
+            http_session->Write(s);
+
+            if (!http_session->IsAlive())
+            {
+                ctx->cancelled.store(true);
+            }
+        });
+
+    // on_chunk：拼接 final_text + 喂给 writer
+    ctx->on_chunk = [writer, ctx](const StreamChunk &chunk)
+    {
+        if (!chunk.is_finished)
+        {
+            ctx->final_text += chunk.delta;
+        }
+        writer->OnChunk(chunk);
+    };
+
+    // on_finish：仅 stop/length 更新 history；然后关闭 SSE
+    ctx->on_finish = [session, ctx, client_messages, http_session](FinishReason r)
+    {
+        if (r == FinishReason::stop || r == FinishReason::length)
+        {
+            std::lock_guard<std::mutex> lk(session->mu);
+            session->history = client_messages;
+            session->history.push_back({"assistant", ctx->final_text});
+            session->touch();
+        }
+        http_session->Close();
+    };
+
+    // 只 Execute 一次：先入队判断是否被接收
+    bool accepted = executor_.Execute(ctx);
+    if (!accepted)
+    {
+        const bool overloaded =
+            (ctx->params.count("error_code") && ctx->params["error_code"] == "overloaded") ||
+            (ctx->error_message.find("queue full") != std::string::npos);
+
+        res_ptr->SetStatus(overloaded ? 429 : 500,
+                           overloaded ? "Too Many Requests" : "Internal Server Error");
+        res_ptr->SetHeader("Content-Type", "application/json");
+        res_ptr->SetHeader("Connection", "close");
+
+        json err = {{"error",
+                     {{"message", ctx->error_message.empty() ? "engine error" : ctx->error_message},
+                      {"type", overloaded ? "rate_limit_error" : "internal_error"}}}};
+        res_ptr->Write(err.dump());
+        return;
+    }
+
+    // accepted 后再发 SSE 头（避免队列满却先发 200 event-stream）
+    http_session->Start();
 }

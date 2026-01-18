@@ -18,7 +18,7 @@ public:
     ~EngineExecutor();
 
     // 异步：提交后立即返回（stream / non-stream 都走这条）
-    void Execute(std::shared_ptr<ServingContext> ctx);
+    bool Execute(std::shared_ptr<ServingContext> ctx);
 
     // 同步：用于 non-stream（内部 Execute + wait）
     void ExecuteAndWait(std::shared_ptr<ServingContext> ctx);
@@ -49,7 +49,7 @@ private:
         bool running = false;
     };
 
-    void SubmitPerModel(const std::string &model, std::function<void()> task);
+    bool SubmitPerModel(const std::string &model, std::function<void()> task);
     void RunModelQueue(const std::string model, std::shared_ptr<ModelQueue> mq);
 
 private:
