@@ -9,29 +9,7 @@
 
 #include "serving/core/ServingContext.h"
 
-// llama forward declarations（避免在头文件 include llama.h）
-struct llama_context;
-struct llama_sampler;
-
-// ModelContext
-// Session 级模型运行状态（KV Cache 所在）
-struct ModelContext
-{
-    // Session 独享
-    llama_context *ctx = nullptr;
-    llama_sampler *sampler = nullptr;
-
-    // 语义位：是否已完成首轮 prefill
-    bool initialized = false;
-
-    // 禁止 copy
-    ModelContext() = default;
-    ModelContext(const ModelContext &) = delete;
-    ModelContext &operator=(const ModelContext &) = delete;
-
-    ~ModelContext(); // 在 .cc 里 free llama_context / sampler
-};
-
+struct ModelContext;
 
 struct  Session
 {

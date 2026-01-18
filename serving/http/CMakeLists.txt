@@ -8,8 +8,9 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/../engine/RpcEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/EngineFactory.cc
     ${CMAKE_SOURCE_DIR}/../engine/LlamaEngine.cc
+    ${CMAKE_SOURCE_DIR}/../engine/ModelContext.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/SessionManager.cc
-    ${CMAKE_SOURCE_DIR}/../serving/core/Session.cc
+    # ${CMAKE_SOURCE_DIR}/../serving/core/Session.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/EngineExecutor.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/ThreadPool.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/SessionExecutor.cc
