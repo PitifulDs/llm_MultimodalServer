@@ -31,12 +31,12 @@ struct  Session
     Clock::time_point last_active{Clock::now()};
     bool closed{false};
 
+    static constexpr size_t kMaxPending = 64; // 64/128
     std::deque<std::function<void()>> pending;
     bool running{false};
 
     // 如果希望“同一 session 同时只能跑一个请求”，就用这个锁在 Engine 入口处串行化
     mutable std::mutex mu;
-
     void touch(){
         last_active = Clock::now();
     }

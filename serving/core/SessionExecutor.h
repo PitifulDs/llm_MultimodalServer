@@ -11,7 +11,7 @@ public:
     explicit SessionExecutor(ThreadPool &pool) : pool_(pool) {}
 
     // 提交一个 session 任务（同 session 串行）
-    void Submit(const std::shared_ptr<Session> &session, std::function<void()> task);
+    bool Submit(const std::shared_ptr<Session> &session, std::function<void()> task);
 
 private:
     void Drain(const std::shared_ptr<Session> &session);

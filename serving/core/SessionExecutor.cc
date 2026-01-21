@@ -1,14 +1,18 @@
 #include "serving/core/SessionExecutor.h"
 #include "glog/logging.h"
 
-void SessionExecutor::Submit(const std::shared_ptr<Session> &session, std::function<void()> task)
+bool SessionExecutor::Submit(const std::shared_ptr<Session> &session, std::function<void()> task)
 {
     if (!session)
-        return;
+        return false;
 
     bool need_schedule = false;
     {
         std::lock_guard<std::mutex> lk(session->mu);
+        if (session->pending.size() >= Session::kMaxPending)
+        {
+            return false;
+        }
         session->pending.push_back(std::move(task));
         if (!session->running)
         {
@@ -24,6 +28,7 @@ void SessionExecutor::Submit(const std::shared_ptr<Session> &session, std::funct
             Drain(session); 
         });
     }
+    return true;
 }
 
 void SessionExecutor::Drain(const std::shared_ptr<Session> &session)

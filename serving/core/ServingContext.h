@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <mutex>
+#include <condition_variable>
 
 #include "glog/logging.h"
 struct Session;
@@ -81,6 +83,10 @@ struct ServingContext
 
     std::shared_ptr<ModelEngine> engine;
 
+    // ===== Finish Wait (non-stream) =====
+    mutable std::mutex finish_mu;
+    std::condition_variable finish_cv;
+
     void EmitDelta(const std::string& text)
     {
         if(finished.load()){
@@ -100,9 +106,21 @@ struct ServingContext
 
     void EmitFinish(FinishReason reason)
     {
-        if (finished.exchange(true))
+        // 只触发一次
+        if (finished.exchange(true, std::memory_order_acq_rel))
             return;
 
+        // 先写结果（确保 WaitFinish 醒来后读到）
+        finish_reason = reason;
+
+        // 唤醒所有等待者（non-stream）
+        {
+            std::lock_guard<std::mutex> lk(finish_mu);
+            // 只用于和 cv 配合建立 happens-before，不需要写别的
+        }
+        finish_cv.notify_all();
+
+        // stream：发最后一个 chunk
         if (stream && on_chunk)
         {
             StreamChunk c;
@@ -111,10 +129,20 @@ struct ServingContext
             on_chunk(c);
         }
 
-        finish_reason = reason;
-
+        // 最后：回调（可能做 history 更新等）
         if (on_finish)
             on_finish(reason);
+    }
+
+    // 等待完成（non-stream 用）
+    void WaitFinish()
+    {
+        if (finished.load(std::memory_order_acquire))
+            return;
+
+        std::unique_lock<std::mutex> lk(finish_mu);
+        finish_cv.wait(lk, [&]
+                       { return finished.load(std::memory_order_acquire); });
     }
 };
 

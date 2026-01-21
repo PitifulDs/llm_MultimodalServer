@@ -236,9 +236,16 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         done_cv.notify_one();
     };
 
-    session_executor_.Submit(ctx->session, [this, ctx]{
+    bool accepted = session_executor_.Submit(ctx->session, [this, ctx]{
         executor_.Execute(ctx); // accepted 返回值非 stream 不用管
-    });     
+    });
+
+    if (!accepted)
+    {
+        ctx->error_message = "SessionExecutor: session queue full, session=" + ctx->session_id;
+        ctx->params["error_code"] = "overloaded";
+        ctx->EmitFinish(FinishReason::error);
+    }
 
     // 等完成（如果 executor 同步，这里会立刻 done；如果异步，这里阻塞到完成）
     {
@@ -419,8 +426,16 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     http_session->Start();
 
     // 同 session 串行执行（只 Execute 一次）
-    session_executor_.Submit(session, [this, ctx] {
+    bool accepted  = session_executor_.Submit(session, [this, ctx]
+    {
         executor_.Execute(ctx);
         // executor 内部会在 queue full 时 EmitFinish(error)，writer 会输出对应 SSE 并结束
     });
+
+    if (!accepted)
+    {
+        ctx->error_message = "SessionExecutor: session queue full, session=" + ctx->session_id;
+        ctx->params["error_code"] = "overloaded";
+        ctx->EmitFinish(FinishReason::error);
+    }
 }
