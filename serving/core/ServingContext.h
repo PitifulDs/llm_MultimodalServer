@@ -144,6 +144,26 @@ struct ServingContext
         finish_cv.wait(lk, [&]
                        { return finished.load(std::memory_order_acquire); });
     }
+
+    template <class PredAlive>
+    void WaitFinishOrCancel(PredAlive is_alive,  std::chrono::milliseconds poll = std::chrono::milliseconds(100))
+    {
+        while (!finished.load(std::memory_order_acquire))
+        {
+            // 连接断开：触发取消并结束
+            if (!is_alive())
+            {
+                cancelled.store(true, std::memory_order_release);
+                EmitFinish(FinishReason::cancelled); // 一次性，安全
+                return;
+            }
+
+            // 等一小段时间或被 finish 唤醒
+            std::unique_lock<std::mutex> lk(finish_mu);
+            finish_cv.wait_for(lk, poll, [&]
+                               { return finished.load(std::memory_order_acquire); });
+        }
+    }
 };
 
 

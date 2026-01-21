@@ -7,12 +7,16 @@
 
 void DummyEngine::Run(std::shared_ptr<ServingContext> ctx)
 {
+    if(!ctx){
+        return;
+    }
+
     LOG(INFO) << "[dummy] start req=" << ctx->request_id;
 
     for (int i = 0; i < 20; ++i)
     {
-        // ⭐ B-3 核心：支持取消
-        if (ctx->cancelled.load())
+        // 核心：支持取消
+        if (ctx->cancelled.load(std::memory_order_acquire))
         {
             LOG(INFO) << "[dummy] cancelled req=" << ctx->request_id;
             ctx->EmitFinish(FinishReason::cancelled);

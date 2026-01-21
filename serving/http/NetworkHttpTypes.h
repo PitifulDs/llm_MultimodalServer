@@ -6,6 +6,7 @@
 #include "network/EventLoop.h"
 #include "network/Buffer.h"
 
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -35,6 +36,7 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
     bool header_sent{false};
     bool sse{false};
     std::mutex mu;
+    std::function<void()> on_close_;
 
     int status_code{200};
     std::string reason{"OK"};
@@ -140,6 +142,15 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
         if (!sse)
         {
             conn->shutdown();
+        }
+    }
+
+    void SetOnClose(std::function<void()> cb) override
+    {
+        on_close_ = std::move(cb);
+        if (conn)
+        {
+            conn->setContext(on_close_);
         }
     }
 

@@ -1,5 +1,6 @@
 // http_types.h
 #pragma once
+#include <functional>
 #include <string>
 
 struct HttpRequest
@@ -17,5 +18,6 @@ struct HttpResponse
     virtual bool IsAlive() const = 0;
     virtual void SetStatus(int code, const std::string &reason = "") = 0;
     virtual void End() = 0; // 非流式写完后统一关闭/flush
+    virtual void SetOnClose(std::function<void()> cb) = 0;
     virtual ~HttpResponse() = default;
 };

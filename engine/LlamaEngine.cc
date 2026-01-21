@@ -173,7 +173,7 @@ std::shared_ptr<ModelContext> LlamaEngine::EnsureContext(const std::shared_ptr<S
 // ============================================================
 // Session 级 KV Cache 的 Run（C-4）
 // - 多轮：只 prefill 本轮增量 messages + "assistant:"
-// - KV 通过 mc->n_past 续写
+// - KV 通过 mc->n_past 续写void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 {
     if (!ctx || !ctx->session)
@@ -183,6 +183,13 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
             ctx->error_message = "LlamaEngine: ctx/session null";
             ctx->EmitFinish(FinishReason::error);
         }
+        return;
+    }
+
+    // 取消点：尽早退出
+    if (ctx->cancelled.load(std::memory_order_acquire))
+    {
+        ctx->EmitFinish(FinishReason::cancelled);
         return;
     }
 
@@ -202,12 +209,19 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         return;
     }
 
-    // 1) build delta prompt（你已有 auto-diff，ctx->messages 是 delta）
+    // 1) build delta prompt
     std::string prompt;
     if (ctx->is_chat)
         prompt = build_turn_prompt_with_assistant(ctx->messages);
     else
         prompt = ctx->prompt;
+
+    // 取消点：tokenize 之前
+    if (ctx->cancelled.load(std::memory_order_acquire))
+    {
+        ctx->EmitFinish(FinishReason::cancelled);
+        return;
+    }
 
     // 2) tokenize
     std::vector<llama_token> toks;
@@ -218,7 +232,14 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         return;
     }
 
-    // 3) prefill/append -> KV（pos 从 mc->n_past 开始）
+    // 取消点：prefill 之前
+    if (ctx->cancelled.load(std::memory_order_acquire))
+    {
+        ctx->EmitFinish(FinishReason::cancelled);
+        return;
+    }
+
+    // 3) prefill/append -> KV
     if (!decode_tokens(mc->ctx, toks, mc->n_past))
     {
         ctx->error_message = "LlamaEngine: llama_decode failed (prefill)";
@@ -227,30 +248,39 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     }
     mc->n_past += (int)toks.size();
 
+    // 取消点：prefill 之后（decode 很重，回来立刻判断一次）
+    if (ctx->cancelled.load(std::memory_order_acquire))
+    {
+        ctx->EmitFinish(FinishReason::cancelled);
+        return;
+    }
+
     // 4) generate
     const int max_new_tokens = 512;
     for (int step = 0; step < max_new_tokens; ++step)
     {
-        if (ctx->cancelled.load())
+        if (ctx->cancelled.load(std::memory_order_acquire))
         {
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
 
-        // sample next token
         llama_token next = llama_sampler_sample(mc->sampler, mc->ctx, -1);
-
-        // ✅ 你的 llama.h：accept 只有 (sampler, token)
         llama_sampler_accept(mc->sampler, next);
 
-        // ✅ 新 API：llama_vocab_is_eog
         if (llama_vocab_is_eog(vocab, next))
         {
             ctx->EmitFinish(FinishReason::stop);
             return;
         }
 
-        // append to KV
+        // 取消点：decode 之前
+        if (ctx->cancelled.load(std::memory_order_acquire))
+        {
+            ctx->EmitFinish(FinishReason::cancelled);
+            return;
+        }
+
         std::vector<llama_token> one{next};
         if (!decode_tokens(mc->ctx, one, mc->n_past))
         {
@@ -260,9 +290,15 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         }
         mc->n_past += 1;
 
-        // output
+        // 取消点：decode 之后
+        if (ctx->cancelled.load(std::memory_order_acquire))
+        {
+            ctx->EmitFinish(FinishReason::cancelled);
+            return;
+        }
+
         std::string piece = token_to_piece(vocab, next);
-        if (!piece.empty())
+        if (!piece.empty() && !ctx->cancelled.load(std::memory_order_acquire))
             ctx->EmitDelta(piece);
     }
 

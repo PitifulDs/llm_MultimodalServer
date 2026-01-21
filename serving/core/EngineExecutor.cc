@@ -29,12 +29,17 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 
     bool ok = SubmitPerModel(model, [this, ctx]
     {
-        if (ctx->finished.load()) return;
-        if (ctx->cancelled.load()) {
+        // 任务开始时再检查一次
+        if (ctx->finished.load(std::memory_order_acquire))
+            return;
+
+        if (ctx->cancelled.load(std::memory_order_acquire))
+        {
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
 
+        // 获取/复用 engine（你已有缓存逻辑就保留；这里示例直接 Create）
         std::shared_ptr<ModelEngine> engine;
         {
             std::lock_guard<std::mutex> lk(map_mu_);
@@ -44,19 +49,25 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
             engine = slot;
         }
 
-        if (!engine) {
+        if (!engine)
+        {
             ctx->error_message = "EngineExecutor: EngineFactory::Create failed, model=" + ctx->model;
             ctx->EmitFinish(FinishReason::error);
             return;
         }
 
+        // 引擎执行（内部会轮询 ctx->cancelled 并 EmitDelta/EmitFinish）
         engine->Run(ctx);
 
-        if (!ctx->finished.load()) {
-            ctx->EmitFinish(FinishReason::stop);
+        // 兜底：如果引擎忘了 finish，按 cancelled 优先，否则 stop
+        if (!ctx->finished.load(std::memory_order_acquire))
+        {
+            if (ctx->cancelled.load(std::memory_order_acquire))
+                ctx->EmitFinish(FinishReason::cancelled);
+            else
+                ctx->EmitFinish(FinishReason::stop);
         } 
     });
-
 
     if (!ok)
     {

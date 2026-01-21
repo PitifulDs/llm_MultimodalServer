@@ -11,6 +11,8 @@
 #include <string_view>
 #include <algorithm>
 #include <cctype>
+#include <functional>
+#include <boost/any.hpp>
 #include <glog/logging.h>
 
 using namespace network;
@@ -94,7 +96,15 @@ void NetworkHttpServer::onConnection(const TcpConnectionPtr &conn)
 {
     if (!conn->connected())
     {
-        // 断开连接
+        const auto &ctx = conn->getContext();
+        if (!ctx.empty())
+        {
+            auto cb = boost::any_cast<std::function<void()>>(&ctx);
+            if (cb && *cb)
+            {
+                (*cb)();
+            }
+        }
     }
 }
 
