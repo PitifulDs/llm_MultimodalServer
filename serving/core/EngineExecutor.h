@@ -12,6 +12,7 @@
 #include "ThreadPool.h"
 
 struct ServingContext;
+class ModelEngine;
 
 class EngineExecutor
 {
@@ -35,11 +36,14 @@ private:
     };
 
     bool SubmitPerModel(const std::string &model, std::function<void()> task);
-    void RunModelQueue(const std::string model, std::shared_ptr<ModelQueue> mq);
+    void RunModelQueue(std::string model, std::shared_ptr<ModelQueue> mq);
 
 private:
-    ThreadPool& pool_;
+    std::shared_ptr<ModelEngine> GetOrCreateEngineLocked(const std::string &model);
 
+    std::unordered_map<std::string, std::shared_ptr<ModelEngine>> engines_;
+
+    ThreadPool& pool_;
     std::mutex map_mu_;
     std::unordered_map<std::string, std::shared_ptr<ModelQueue>> queues_;
 };

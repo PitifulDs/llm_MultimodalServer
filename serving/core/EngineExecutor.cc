@@ -27,31 +27,36 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     // 2) per-model 串行投递
     const std::string model = ctx->model;
 
-    bool ok = SubmitPerModel(model, [ctx]
+    bool ok = SubmitPerModel(model, [this, ctx]
     {
-        // 任务开始时再检查一次取消/结束
         if (ctx->finished.load()) return;
         if (ctx->cancelled.load()) {
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
 
-        // 统一在 executor 内获取（强缓存：不会每次创建）
-        auto engine = EngineFactory::Create(ctx->model);
+        std::shared_ptr<ModelEngine> engine;
+        {
+            std::lock_guard<std::mutex> lk(map_mu_);
+            auto &slot = engines_[ctx->model];
+            if (!slot)
+                slot = EngineFactory::Create(ctx->model);
+            engine = slot;
+        }
+
         if (!engine) {
             ctx->error_message = "EngineExecutor: EngineFactory::Create failed, model=" + ctx->model;
             ctx->EmitFinish(FinishReason::error);
             return;
         }
 
-        // 统一入口（engine 内部自己用 ctx->stream / EmitDelta / EmitFinish）
         engine->Run(ctx);
 
-        // 兜底：如果 engine 忘了 finish，这里补一个 stop（防止 ExecuteAndWait 永久等）
         if (!ctx->finished.load()) {
             ctx->EmitFinish(FinishReason::stop);
         } 
     });
+
 
     if (!ok)
     {
@@ -144,8 +149,7 @@ bool EngineExecutor::SubmitPerModel(const std::string &model,  std::function<voi
     return true;
 }
 
-void EngineExecutor::RunModelQueue(std::string model,
-                                   std::shared_ptr<ModelQueue> mq)
+void EngineExecutor::RunModelQueue(std::string model, std::shared_ptr<ModelQueue> mq)
 {
     while (true)
     {

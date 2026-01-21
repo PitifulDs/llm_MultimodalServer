@@ -117,6 +117,8 @@ void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
             "code": "endpoint_deprecated"
         }
     })");
+
+    res.End();
 }
 
 void HttpGateway::HandleCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
@@ -139,6 +141,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         res.SetHeader("Content-Type", "application/json");
         res.SetHeader("Connection", "close");
         res.Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
+        res.End();
         return;
     }
 
@@ -148,6 +151,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         res.SetHeader("Content-Type", "application/json");
         res.SetHeader("Connection", "close");
         res.Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
+        res.End();
         return;
     }
 
@@ -277,6 +281,8 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
     res.Write(out.dump());
+
+    res.End();
 }
 
 void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
@@ -294,6 +300,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         res_ptr->SetHeader("Content-Type", "application/json");
         res_ptr->SetHeader("Connection", "close");
         res_ptr->Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
+        res_ptr->End();
         return;
     }
 
@@ -303,6 +310,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         res_ptr->SetHeader("Content-Type", "application/json");
         res_ptr->SetHeader("Connection", "close");
         res_ptr->Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
+        res_ptr->End();
         return;
     }
 
