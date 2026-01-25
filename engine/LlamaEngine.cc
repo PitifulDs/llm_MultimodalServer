@@ -24,7 +24,7 @@ static bool decode_tokens(llama_context *lctx,
 }
 
 // 将字符串 tokenize 成 llama_token
-static bool tokenize_text(const llama_vocab *vocab, const std::string &text, std::vector<llama_token> &out)
+static bool tokenize_text(const llama_vocab *vocab, const std::string &text, std::vector<llama_token> &out, bool add_special)
 {
     if (!vocab)
         return false;
@@ -37,7 +37,7 @@ static bool tokenize_text(const llama_vocab *vocab, const std::string &text, std
         (int)text.size(),
         out.data(),
         (int)out.size(),
-        true,
+        add_special,
         true);
 
     if (n < 0)
@@ -46,20 +46,70 @@ static bool tokenize_text(const llama_vocab *vocab, const std::string &text, std
     return true;
 }
 
-// 把“本轮增量 messages”转成 prompt，并以 assistant: 结尾
-static std::string build_turn_prompt_with_assistant(
-    const std::vector<Message> &msgs)
+// 使用 llama_chat_apply_template 生成“本轮增量 prompt”
+// 逻辑参考 llama.cpp/examples/simple-chat：用历史长度裁剪出 delta
+static bool build_chat_delta_prompt(
+    const llama_model *model,
+    const std::vector<Message> &history,
+    const std::vector<Message> &incoming,
+    std::string &out_prompt,
+    std::string &err)
 {
-    std::string prompt;
-    for (const auto &m : msgs)
+    const char *tmpl = llama_model_chat_template(model, nullptr);
+    if (!tmpl)
+        tmpl = "chatml";
+
+    std::vector<llama_chat_message> full_msgs;
+    full_msgs.reserve(history.size() + incoming.size());
+    for (const auto &m : history)
     {
-        prompt += m.role;
-        prompt += ": ";
-        prompt += m.content;
-        prompt += "\n";
+        full_msgs.push_back({m.role.c_str(), m.content.c_str()});
     }
-    prompt += "assistant:";
-    return prompt;
+    for (const auto &m : incoming)
+    {
+        full_msgs.push_back({m.role.c_str(), m.content.c_str()});
+    }
+
+    int32_t prev_len = 0;
+    if (!history.empty())
+    {
+        std::vector<llama_chat_message> prev_msgs;
+        prev_msgs.reserve(history.size());
+        for (const auto &m : history)
+        {
+            prev_msgs.push_back({m.role.c_str(), m.content.c_str()});
+        }
+        prev_len = llama_chat_apply_template(tmpl, prev_msgs.data(), prev_msgs.size(), false, nullptr, 0);
+        if (prev_len < 0)
+        {
+            err = "chat template apply failed (prev)";
+            return false;
+        }
+    }
+
+    int32_t new_len = llama_chat_apply_template(tmpl, full_msgs.data(), full_msgs.size(), true, nullptr, 0);
+    if (new_len < 0)
+    {
+        err = "chat template apply failed (full)";
+        return false;
+    }
+
+    std::string formatted;
+    formatted.resize(new_len);
+    int32_t res = llama_chat_apply_template(tmpl, full_msgs.data(), full_msgs.size(), true, formatted.data(), formatted.size());
+    if (res < 0)
+    {
+        err = "chat template apply failed (format)";
+        return false;
+    }
+
+    if (prev_len < 0)
+        prev_len = 0;
+    if (prev_len > res)
+        prev_len = 0;
+
+    out_prompt.assign(formatted.data() + prev_len, formatted.data() + res);
+    return true;
 }
 
 // token -> piece（detokenize）
@@ -221,9 +271,26 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     // 1) build delta prompt
     std::string prompt;
     if (ctx->is_chat)
-        prompt = build_turn_prompt_with_assistant(ctx->messages);
+    {
+        std::vector<Message> history_copy;
+        {
+            std::lock_guard<std::mutex> lk(ctx->session->mu);
+            history_copy = ctx->session->history;
+        }
+
+        std::string err;
+        if (!build_chat_delta_prompt(model_, history_copy, ctx->messages, prompt, err))
+        {
+            ctx->error_message = "LlamaEngine: " + err;
+            finalize_usage();
+            ctx->EmitFinish(FinishReason::error);
+            return;
+        }
+    }
     else
+    {
         prompt = ctx->prompt;
+    }
 
     // 取消点：tokenize 之前
     if (ctx->cancelled.load(std::memory_order_acquire))
@@ -235,7 +302,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 
     // 2) tokenize
     std::vector<llama_token> toks;
-    if (!tokenize_text(vocab, prompt, toks))
+    const bool add_special = (mc->n_past == 0);
+    if (!tokenize_text(vocab, prompt, toks, add_special))
     {
         ctx->error_message = "LlamaEngine: tokenize failed";
         finalize_usage();
@@ -273,7 +341,21 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     }
 
     // 4) generate
-    const int max_new_tokens = 512;
+    int max_new_tokens = 512;
+    auto it = ctx->params.find("max_tokens");
+    if (it != ctx->params.end())
+    {
+        try
+        {
+            max_new_tokens = std::stoi(it->second);
+        }
+        catch (...)
+        {
+            max_new_tokens = 512;
+        }
+    }
+    if (max_new_tokens <= 0)
+        max_new_tokens = 1;
     for (int step = 0; step < max_new_tokens; ++step)
     {
         if (ctx->cancelled.load(std::memory_order_acquire))

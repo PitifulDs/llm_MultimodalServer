@@ -161,6 +161,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     ctx->request_id = gen_request_id();
     ctx->model = model;
     ctx->stream = false;
+    ctx->is_chat = true;
 
     // session_id
     std::string session_id;
@@ -171,6 +172,14 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
 
     ctx->session_id = session_id;
     ctx->session = session_mgr_->getOrCreate(session_id, model);
+
+    // generation params
+    if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
+    {
+        const int max_tokens = body["max_tokens"].get<int>();
+        if (max_tokens > 0)
+            ctx->params["max_tokens"] = std::to_string(max_tokens);
+    }
 
     // parse messages
     ctx->messages.clear();
@@ -337,6 +346,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     ctx->request_id = gen_request_id();
     ctx->model = model;
     ctx->stream = true;
+    ctx->is_chat = true;
 
     std::string session_id;
     if (body.contains("session_id") && body["session_id"].is_string())
@@ -346,6 +356,14 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
 
     ctx->session_id = session_id;
     ctx->session = session_mgr_->getOrCreate(session_id, model);
+
+    // generation params
+    if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
+    {
+        const int max_tokens = body["max_tokens"].get<int>();
+        if (max_tokens > 0)
+            ctx->params["max_tokens"] = std::to_string(max_tokens);
+    }
 
     // parse messages
     ctx->messages.clear();
