@@ -181,14 +181,21 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         if (ctx)
         {
             ctx->error_message = "LlamaEngine: ctx/session null";
+            ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
             ctx->EmitFinish(FinishReason::error);
         }
         return;
     }
 
+    auto finalize_usage = [&]
+    {
+        ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
+    };
+
     // 取消点：尽早退出
     if (ctx->cancelled.load(std::memory_order_acquire))
     {
+        finalize_usage();
         ctx->EmitFinish(FinishReason::cancelled);
         return;
     }
@@ -197,6 +204,7 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     if (!mc || !mc->ctx || !mc->sampler)
     {
         ctx->error_message = "LlamaEngine: failed to create session ModelContext";
+        finalize_usage();
         ctx->EmitFinish(FinishReason::error);
         return;
     }
@@ -205,6 +213,7 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     if (!vocab)
     {
         ctx->error_message = "LlamaEngine: vocab null";
+        finalize_usage();
         ctx->EmitFinish(FinishReason::error);
         return;
     }
@@ -219,6 +228,7 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     // 取消点：tokenize 之前
     if (ctx->cancelled.load(std::memory_order_acquire))
     {
+        finalize_usage();
         ctx->EmitFinish(FinishReason::cancelled);
         return;
     }
@@ -228,13 +238,18 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     if (!tokenize_text(vocab, prompt, toks))
     {
         ctx->error_message = "LlamaEngine: tokenize failed";
+        finalize_usage();
         ctx->EmitFinish(FinishReason::error);
         return;
     }
 
+    // prompt tokens（本次 delta prompt）
+    ctx->usage.prompt_tokens += static_cast<int>(toks.size());
+
     // 取消点：prefill 之前
     if (ctx->cancelled.load(std::memory_order_acquire))
     {
+        finalize_usage();
         ctx->EmitFinish(FinishReason::cancelled);
         return;
     }
@@ -243,14 +258,16 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     if (!decode_tokens(mc->ctx, toks, mc->n_past))
     {
         ctx->error_message = "LlamaEngine: llama_decode failed (prefill)";
+        finalize_usage();
         ctx->EmitFinish(FinishReason::error);
         return;
     }
     mc->n_past += (int)toks.size();
 
-    // 取消点：prefill 之后（decode 很重，回来立刻判断一次）
+    // 取消点：prefill 之后
     if (ctx->cancelled.load(std::memory_order_acquire))
     {
+        finalize_usage();
         ctx->EmitFinish(FinishReason::cancelled);
         return;
     }
@@ -261,6 +278,7 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     {
         if (ctx->cancelled.load(std::memory_order_acquire))
         {
+            finalize_usage();
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
@@ -270,13 +288,14 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 
         if (llama_vocab_is_eog(vocab, next))
         {
+            finalize_usage();
             ctx->EmitFinish(FinishReason::stop);
             return;
         }
 
-        // 取消点：decode 之前
         if (ctx->cancelled.load(std::memory_order_acquire))
         {
+            finalize_usage();
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
@@ -285,14 +304,18 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         if (!decode_tokens(mc->ctx, one, mc->n_past))
         {
             ctx->error_message = "LlamaEngine: llama_decode failed (decode)";
+            finalize_usage();
             ctx->EmitFinish(FinishReason::error);
             return;
         }
         mc->n_past += 1;
 
-        // 取消点：decode 之后
+        // completion tokens（成功 decode 的 token）
+        ctx->usage.completion_tokens += 1;
+
         if (ctx->cancelled.load(std::memory_order_acquire))
         {
+            finalize_usage();
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
@@ -302,5 +325,6 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
             ctx->EmitDelta(piece);
     }
 
+    finalize_usage();
     ctx->EmitFinish(FinishReason::length);
 }

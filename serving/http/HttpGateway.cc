@@ -286,7 +286,15 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         {"choices",
          {{{"index", 0},
            {"message", {{"role", "assistant"}, {"content", ctx->final_text}}},
-           {"finish_reason", finish_reason_to_str(final_reason)}}}}};
+           {"logprobs", nullptr},
+           {"finish_reason", finish_reason_to_str(final_reason)}}}},
+        {"usage",
+         {{"prompt_tokens", ctx->usage.prompt_tokens},
+          {"completion_tokens", ctx->usage.completion_tokens},
+          {"total_tokens", ctx->usage.total_tokens}
+         }
+        }
+    };
 
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");

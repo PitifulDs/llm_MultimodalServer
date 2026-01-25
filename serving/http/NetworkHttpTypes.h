@@ -114,14 +114,34 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
 
         if (!header_sent)
         {
+            buf.append("HTTP/1.1 " + std::to_string(status_code) + " " + reason + "\r\n");
+
             if (sse)
             {
-                buf.append("HTTP/1.1 " + std::to_string(status_code) + " " + reason + "\r\n");
+                if (headers.find("Content-Type") == headers.end())
+                    headers["Content-Type"] = "text/event-stream";
+                if (headers.find("Cache-Control") == headers.end())
+                    headers["Cache-Control"] = "no-cache";
+                if (headers.find("Connection") == headers.end())
+                    headers["Connection"] = "keep-alive";
             }
             else
             {
-                buf.append("HTTP/1.1 " + std::to_string(status_code) + " " + reason + "\r\n");
+                if (headers.find("Content-Type") == headers.end())
+                    headers["Content-Type"] = "application/json";
+                if (headers.find("Connection") == headers.end())
+                    headers["Connection"] = "close";
             }
+
+            for (const auto &kv : headers)
+            {
+                buf.append(kv.first);
+                buf.append(": ");
+                buf.append(kv.second);
+                buf.append("\r\n");
+            }
+
+            buf.append("\r\n");
             header_sent = true;
         }
 
@@ -138,6 +158,29 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
     {
         if (!conn)
             return;
+
+        auto loop = conn->getLoop();
+        if (loop && !loop->isInLoopThread())
+        {
+            auto self = shared_from_this();
+            loop->queueInLoop([self]
+                              { self->EndInLoop(); });
+            return;
+        }
+
+        EndInLoop();
+    }
+
+    void EndInLoop()
+    {
+        if (auto loop = conn->getLoop())
+        {
+            loop->assertInLoopThread();
+        }
+
+        if (!conn)
+            return;
+
         // 非流式才关；SSE 连接不应 End 时强关（由上层 Close/客户端断开）
         if (!sse)
         {

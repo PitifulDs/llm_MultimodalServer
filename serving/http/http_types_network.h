@@ -19,6 +19,27 @@ struct NetworkHttpResponse : public HttpResponse
 
     void End() override
     {
+        if (!conn)
+            return;
+
+        auto loop = conn->getLoop();
+        if (loop && !loop->isInLoopThread())
+        {
+            auto self = this;
+            loop->queueInLoop([self]
+                              { self->EndInLoop(); });
+            return;
+        }
+
+        EndInLoop();
+    }
+
+    void EndInLoop()
+    {
+        if (auto loop = conn->getLoop())
+        {
+            loop->assertInLoopThread();
+        }
         if (conn)
             conn->shutdown();
     }

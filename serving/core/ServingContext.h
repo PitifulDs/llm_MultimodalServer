@@ -81,12 +81,21 @@ struct ServingContext
     FinishReason finish_reason = FinishReason::stop;
     std::string error_message;
 
+    // ===== Usage (OpenAI-compatible) =====
+    struct Usage
+    {
+        int prompt_tokens = 0;
+        int completion_tokens = 0;
+        int total_tokens = 0;
+    };
+
+    Usage usage;
+
     std::shared_ptr<ModelEngine> engine;
 
     // ===== Finish Wait (non-stream) =====
     mutable std::mutex finish_mu;
     std::condition_variable finish_cv;
-
     void EmitDelta(const std::string& text)
     {
         if(finished.load()){
