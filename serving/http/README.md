@@ -259,6 +259,29 @@ bash demo/web/serve_demo.sh 8000
 **注意**：
 - 页面里 API 地址不能用 `127.0.0.1` 或 `localhost`，那会指向 Windows 本机。
 - 8080 若无法访问，请检查 VM 防火墙或虚拟网络设置。
+
+## 8. Docker 使用
+### 8.1 构建镜像
+```bash
+docker build -t llm-serving .
+```
+
+### 8.2 运行容器（挂载模型）
+```bash
+docker run --rm -p 8080:8080 \
+  -e LLAMA_MODEL_PATH=/models/model.gguf \
+  -v /path/to/model.gguf:/models/model.gguf \
+  llm-serving
+```
+
+### 8.3 使用 config.json
+```bash
+docker run --rm -p 8080:8080 \
+  -v $(pwd)/config.json:/app/config.json \
+  -v /path/to/model.gguf:/models/model.gguf \
+  -e LLAMA_MODEL_PATH=/models/model.gguf \
+  llm-serving
+```
 - `MAX_QUEUE_WAIT_MS`：队列等待超时（默认 2000ms）
 ```
 示例：

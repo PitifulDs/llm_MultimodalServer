@@ -187,8 +187,8 @@
         </div>
         <h1 class="title">LLM Multimodal Server — Chat Demo</h1>
         <p class="subtitle">
-          Stream responses from your local server. This page sends a POST request to
-          <code>/v1/chat/completions?stream=true</code> and renders SSE chunks in real time.
+          Stream or fetch responses from your local server. This page can switch between
+          <code>/v1/chat/completions?stream=true</code> and the non-streaming endpoint.
         </p>
       </div>
       <div class="card">
@@ -219,6 +219,12 @@
           </div>
         </div>
 
+        <label>Mode</label>
+        <select id="streamMode">
+          <option value="stream" selected>Stream (SSE)</option>
+          <option value="non-stream">Non-stream</option>
+        </select>
+
         <label>System (optional)</label>
         <input id="system" placeholder="You are a helpful assistant." />
 
@@ -226,7 +232,7 @@
         <textarea id="prompt">Introduce yourself in one sentence.</textarea>
 
         <div class="actions">
-          <button id="sendBtn" class="btn-primary">Send (stream)</button>
+          <button id="sendBtn" class="btn-primary">Send</button>
           <button id="stopBtn" class="btn-ghost" disabled>Stop</button>
         </div>
       </div>
@@ -258,6 +264,7 @@
     const durEl = document.getElementById('dur');
     const sendBtn = document.getElementById('sendBtn');
     const stopBtn = document.getElementById('stopBtn');
+    const modeEl = document.getElementById('streamMode');
 
     let aborter = null;
 
@@ -267,6 +274,10 @@
 
     function approxTokens(text) {
       return Math.max(0, Math.round(text.length / 4));
+    }
+
+    function setButtonLabel() {
+      sendBtn.textContent = modeEl.value === 'stream' ? 'Send (stream)' : 'Send (non-stream)';
     }
 
     async function streamChat() {
@@ -364,10 +375,77 @@
       }
     }
 
-    sendBtn.addEventListener('click', streamChat);
+    async function nonStreamChat() {
+      const baseUrl = document.getElementById('baseUrl').value.trim();
+      const model = document.getElementById('model').value.trim();
+      const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
+      const system = document.getElementById('system').value.trim();
+      const prompt = document.getElementById('prompt').value.trim();
+
+      if (!baseUrl || !prompt) return;
+
+      output.textContent = '';
+      ttfbEl.textContent = '-';
+      tokEl.textContent = '0';
+      durEl.textContent = '-';
+      setStatus('SENDING');
+
+      sendBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: prompt });
+
+      const payload = { model, max_tokens: maxTokens, messages };
+      aborter = new AbortController();
+      const start = performance.now();
+
+      try {
+        const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: aborter.signal,
+        });
+
+        const end = performance.now();
+        ttfbEl.textContent = `${Math.round(end - start)} ms`;
+        durEl.textContent = `${Math.round(end - start)} ms`;
+
+        if (!resp.ok) {
+          setStatus('ERROR');
+          output.textContent = `HTTP ${resp.status}`;
+          return;
+        }
+
+        const json = await resp.json();
+        const content = json.choices?.[0]?.message?.content || '';
+        output.textContent = content;
+        tokEl.textContent = String(approxTokens(output.textContent));
+        setStatus('DONE');
+      } catch (err) {
+        setStatus('STOPPED');
+        output.textContent += `\n[stopped] ${err}`;
+      } finally {
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    }
+
+    sendBtn.addEventListener('click', () => {
+      if (modeEl.value === 'stream') {
+        streamChat();
+      } else {
+        nonStreamChat();
+      }
+    });
     stopBtn.addEventListener('click', () => {
       if (aborter) aborter.abort();
     });
+
+    modeEl.addEventListener('change', setButtonLabel);
+    setButtonLabel();
   </script>
 </body>
 </html>
