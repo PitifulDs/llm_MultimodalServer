@@ -3,6 +3,10 @@
 #include "serving/core/ModelEngine.h"
 #include "engine/EngineFactory.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <glog/logging.h>
 #include <utility>
 
 // ================= EngineExecutor =================
@@ -27,7 +31,27 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     // 2) per-model 串行投递
     const std::string model = ctx->model;
 
-    bool ok = SubmitPerModel(model, [this, ctx]
+    auto get_env_int = [](const char *name, int def) -> int {
+        const char *v = std::getenv(name);
+        if (!v || !*v)
+            return def;
+        try
+        {
+            int n = std::stoi(v);
+            return n > 0 ? n : def;
+        }
+        catch (...)
+        {
+            return def;
+        }
+    };
+
+    const int max_queue_wait_ms = get_env_int("MAX_QUEUE_WAIT_MS", 2000);
+    const int max_model_queue = get_env_int("MAX_MODEL_QUEUE", 64);
+
+    const auto enqueued_at = std::chrono::steady_clock::now();
+
+    bool ok = SubmitPerModel(model, [this, ctx, enqueued_at, max_queue_wait_ms]
     {
         // 任务开始时再检查一次
         if (ctx->finished.load(std::memory_order_acquire))
@@ -38,6 +62,20 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
             ctx->EmitFinish(FinishReason::cancelled);
             return;
         }
+
+        const auto start_at = std::chrono::steady_clock::now();
+        const auto wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(start_at - enqueued_at).count();
+        if (max_queue_wait_ms > 0 && wait_ms > max_queue_wait_ms)
+        {
+            ctx->error_message = "EngineExecutor: queue wait timeout";
+            ctx->params["error_code"] = "overloaded";
+            ctx->EmitFinish(FinishReason::error);
+            return;
+        }
+
+        LOG(INFO) << "[execQ] start model=" << ctx->model
+                  << " req=" << ctx->request_id
+                  << " wait_ms=" << wait_ms;
 
         // 获取/复用 engine（你已有缓存逻辑就保留；这里示例直接 Create）
         std::shared_ptr<ModelEngine> engine;
@@ -67,7 +105,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
             else
                 ctx->EmitFinish(FinishReason::stop);
         } 
-    });
+    }, static_cast<size_t>(max_model_queue));
 
     if (!ok)
     {
@@ -120,9 +158,9 @@ void EngineExecutor::ExecuteAndWait(std::shared_ptr<ServingContext> ctx)
     ctx->on_finish = user_on_finish;
 }
 
-bool EngineExecutor::SubmitPerModel(const std::string &model,  std::function<void()> task)
+bool EngineExecutor::SubmitPerModel(const std::string &model,  std::function<void()> task, size_t max_queue)
 {
-    constexpr size_t MAX_QUEUE = 64; // 你可以先用 64/128，后续压测调参
+    constexpr size_t MAX_QUEUE_FLOOR = 1;
 
     std::shared_ptr<ModelQueue> mq;
     {
@@ -138,7 +176,8 @@ bool EngineExecutor::SubmitPerModel(const std::string &model,  std::function<voi
         std::lock_guard<std::mutex> lk(mq->mu);
 
         // backpressure：队列满直接拒绝
-        if (mq->tasks.size() >= MAX_QUEUE)
+        const size_t cap = std::max(MAX_QUEUE_FLOOR, max_queue);
+        if (mq->tasks.size() >= cap)
         {
             return false;
         }

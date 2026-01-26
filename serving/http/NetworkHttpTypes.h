@@ -181,11 +181,7 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
         if (!conn)
             return;
 
-        // 非流式才关；SSE 连接不应 End 时强关（由上层 Close/客户端断开）
-        if (!sse)
-        {
-            conn->shutdown();
-        }
+        conn->shutdown();
     }
 
     void SetOnClose(std::function<void()> cb) override

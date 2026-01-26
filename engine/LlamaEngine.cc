@@ -8,6 +8,26 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstdlib>
+
+namespace
+{
+int get_env_int(const char *name, int def)
+{
+    const char *v = std::getenv(name);
+    if (!v || !*v)
+        return def;
+    try
+    {
+        int n = std::stoi(v);
+        return n > 0 ? n : def;
+    }
+    catch (...)
+    {
+        return def;
+    }
+}
+} // namespace
 
 // 把 token decode 到 llama_context（prefill/append 都走它）
 static bool decode_tokens(llama_context *lctx,
@@ -183,9 +203,9 @@ std::shared_ptr<ModelContext> LlamaEngine::CreateNewContext()
     auto mc = std::make_shared<ModelContext>();
 
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = 4096;
-    cparams.n_threads = 4;
-    cparams.n_threads_batch = 4;
+    cparams.n_ctx = get_env_int("LLAMA_N_CTX", 4096);
+    cparams.n_threads = get_env_int("LLAMA_N_THREADS", 4);
+    cparams.n_threads_batch = get_env_int("LLAMA_N_THREADS_BATCH", 4);
 
     // llama_init_from_model
     mc->ctx = llama_init_from_model(model_, cparams);
@@ -211,7 +231,8 @@ std::shared_ptr<ModelContext> LlamaEngine::EnsureContext(const std::shared_ptr<S
 
     // 溢出保护：太接近 n_ctx 就重建
     const int n_ctx = llama_n_ctx(s->model_ctx->ctx);
-    if (s->model_ctx->n_past > n_ctx - 256)
+    const int margin = get_env_int("KV_RESET_MARGIN", 256);
+    if (s->model_ctx->n_past > n_ctx - margin)
     {
         s->model_ctx.reset();
         s->model_ctx = CreateNewContext();
@@ -354,8 +375,22 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
             max_new_tokens = 512;
         }
     }
+    else if (const char *env = std::getenv("DEFAULT_MAX_TOKENS"))
+    {
+        try
+        {
+            max_new_tokens = std::stoi(env);
+        }
+        catch (...)
+        {
+            max_new_tokens = 512;
+        }
+    }
     if (max_new_tokens <= 0)
         max_new_tokens = 1;
+
+    LOG(INFO) << "[llama] req=" << ctx->request_id
+              << " max_new_tokens=" << max_new_tokens;
     for (int step = 0; step < max_new_tokens; ++step)
     {
         if (ctx->cancelled.load(std::memory_order_acquire))

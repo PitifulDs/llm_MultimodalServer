@@ -97,6 +97,7 @@ def worker(idx, args, results, lock):
 
     payload = {
         "model": args.model,
+        "max_tokens": args.max_tokens,
         "messages": [{"role": "user", "content": "Output many short tokens/words continuously. Keep going."}],
     }
     out_path = None
@@ -123,6 +124,7 @@ def main():
     ap.add_argument("--abort-min", type=float, default=0.2)
     ap.add_argument("--abort-max", type=float, default=3.0)
     ap.add_argument("--timeout", type=float, default=10.0)
+    ap.add_argument("--max-tokens", type=int, default=64)
     ap.add_argument("--save-logs", action="store_true")
     ap.add_argument("--out-dir", default="/tmp/sse_stress_py")
     args = ap.parse_args()

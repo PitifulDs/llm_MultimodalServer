@@ -35,7 +35,7 @@ private:
         bool running = false;
     };
 
-    bool SubmitPerModel(const std::string &model, std::function<void()> task);
+    bool SubmitPerModel(const std::string &model, std::function<void()> task, size_t max_queue);
     void RunModelQueue(std::string model, std::shared_ptr<ModelQueue> mq);
 
 private:

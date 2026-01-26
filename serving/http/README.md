@@ -183,11 +183,30 @@ Serving v2 将职责清晰拆分：
 - stream=true 的 SSE 流式推理 
 - 对接 hybrid-comm / ZMQ LLM Worker
 - curl / Web 客户端稳定访问
+
+## 5.1 配置项（环境变量）
+- `HTTP_PORT`：服务端口（默认 8080，可被命令行 argv[1] 覆盖）
+- `WORKER_THREADS`：推理工作线程数（默认 4）
+- `DEFAULT_MODEL`：缺省模型名（默认 `llama`）
+- `LLAMA_MODEL_PATH`：llama 模型路径（默认内置路径）
+- `LLAMA_N_CTX`：上下文长度（默认 4096）
+- `LLAMA_N_THREADS`：推理线程数（默认 4）
+- `LLAMA_N_THREADS_BATCH`：batch 线程数（默认 4）
+- `KV_RESET_MARGIN`：KV cache 逼近 n_ctx 的重建阈值（默认 256）
+- `DEFAULT_MAX_TOKENS`：默认生成上限（默认 512，可被请求 `max_tokens` 覆盖）
+- `MAX_MODEL_QUEUE`：单模型队列上限（默认 64）
+- `MAX_SESSION_PENDING`：单 session 队列上限（默认 64）
+- `MAX_QUEUE_WAIT_MS`：队列等待超时（默认 2000ms）
 ```
 示例：
 curl -N -X POST "http://127.0.0.1:8080/v1/completions?stream=true" \
   -H "Content-Type: application/json" \
   -d '{"model":"dummy","prompt":"Tell me a joke"}'
+
+## 5.2 压测脚本（SSE）
+```
+python3 sample/stress_sse.py --concurrency 30 --rounds 500 --abort-ratio 0.7 --abort-min 0.2 --abort-max 2.5
+```
 ```
 
 ## 6. Client ↔ Server 请求 / Streaming 时序图
@@ -279,7 +298,4 @@ Client                         Server (Serving v2)
   |                                    |
 
 ```
-
-
-
 

@@ -10,6 +10,7 @@
 #include <glog/logging.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
@@ -24,6 +25,30 @@ using json = nlohmann::json;
 
 namespace
 {
+    size_t get_worker_threads()
+    {
+        const char *env = std::getenv("WORKER_THREADS");
+        if (!env || !*env)
+            return 4;
+        try
+        {
+            int v = std::stoi(env);
+            return v > 0 ? static_cast<size_t>(v) : 4;
+        }
+        catch (...)
+        {
+            return 4;
+        }
+    }
+
+    std::string get_default_model()
+    {
+        const char *env = std::getenv("DEFAULT_MODEL");
+        if (env && *env)
+            return std::string(env);
+        return "llama";
+    }
+
     std::string gen_request_id()
     {
         static std::atomic<uint64_t> seq{0};
@@ -77,7 +102,7 @@ namespace
 
 } // namespace
 
-HttpGateway::HttpGateway() : pool_(4), executor_(pool_), session_executor_(pool_)
+HttpGateway::HttpGateway() : pool_(get_worker_threads()), executor_(pool_), session_executor_(pool_)
 {
     SessionManager::Options opt;
     opt.idle_ttl = std::chrono::minutes(30);
@@ -131,6 +156,7 @@ void HttpGateway::HandleCompletionStream(const HttpRequest &req, std::shared_ptr
 
 void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res)
 {
+    const auto start_time = std::chrono::steady_clock::now();
     json body;
     try
     {
@@ -146,7 +172,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         return;
     }
 
-    const std::string model = body.value("model", "unknown");
+    const std::string model = body.value("model", get_default_model());
     if (!body.contains("messages") || !body["messages"].is_array())
     {
         res.SetStatus(400, "Bad Request");
@@ -222,7 +248,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     }
 
     // on_finish：仅 stop/length 更新 history，避免 cancelled/error 污染 session
-    ctx->on_finish = [session, ctx, client_messages](FinishReason r)
+    ctx->on_finish = [session, ctx, client_messages, start_time](FinishReason r)
     {
         if (r == FinishReason::stop || r == FinishReason::length)
         {
@@ -231,6 +257,16 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
             session->history.push_back({"assistant", ctx->final_text});
             session->touch();
         }
+
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        LOG(INFO) << "[chat] done req=" << ctx->request_id
+                  << " model=" << ctx->model
+                  << " dur_ms=" << dur_ms
+                  << " prompt_tokens=" << ctx->usage.prompt_tokens
+                  << " completion_tokens=" << ctx->usage.completion_tokens
+                  << " reason=" << finish_reason_to_str(r);
     };
 
     // non-stream：连接断开立即取消，唤醒等待
@@ -313,6 +349,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
 
 void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
 {
+    const auto start_time = std::chrono::steady_clock::now();
     LOG(INFO) << "[chat-stream] enter HandleChatCompletionStream";
 
     json body;
@@ -340,7 +377,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         return;
     }
 
-    const std::string model = body.value("model", "unknown");
+    const std::string model = body.value("model", get_default_model());
 
     auto ctx = std::make_shared<ServingContext>();
     ctx->request_id = gen_request_id();
@@ -443,7 +480,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     };
 
     // on_finish：仅 stop/length 更新 history；然后关闭 SSE
-    ctx->on_finish = [session, ctx, client_messages, http_session](FinishReason r)
+    ctx->on_finish = [session, ctx, client_messages, http_session, start_time](FinishReason r)
     {
         if (r == FinishReason::stop || r == FinishReason::length)
         {
@@ -453,6 +490,16 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
             session->touch();
         }
         http_session->Close();
+
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        LOG(INFO) << "[chat-stream] done req=" << ctx->request_id
+                  << " model=" << ctx->model
+                  << " dur_ms=" << dur_ms
+                  << " prompt_tokens=" << ctx->usage.prompt_tokens
+                  << " completion_tokens=" << ctx->usage.completion_tokens
+                  << " reason=" << finish_reason_to_str(r);
     };
 
     // accepted 后再发 SSE 头（避免队列满却先发 200 event-stream）

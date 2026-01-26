@@ -58,5 +58,9 @@ void HttpStreamSession::Close()
         return;
 
     LOG(INFO) << "[session] Close() request_id=" << request_id_;
+    if (response_)
+    {
+        response_->End();
+    }
     self_.reset();
 }

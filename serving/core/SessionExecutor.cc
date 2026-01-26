@@ -1,16 +1,36 @@
 #include "serving/core/SessionExecutor.h"
 #include "glog/logging.h"
 
+#include <cstdlib>
+
 bool SessionExecutor::Submit(const std::shared_ptr<Session> &session, std::function<void()> task)
 {
     if (!session)
         return false;
 
+    auto get_max_pending = []() -> size_t {
+        const char *v = std::getenv("MAX_SESSION_PENDING");
+        if (!v || !*v)
+            return Session::kMaxPending;
+        try
+        {
+            int n = std::stoi(v);
+            return n > 0 ? static_cast<size_t>(n) : Session::kMaxPending;
+        }
+        catch (...)
+        {
+            return Session::kMaxPending;
+        }
+    };
+
+    const size_t max_pending = get_max_pending();
     bool need_schedule = false;
     {
         std::lock_guard<std::mutex> lk(session->mu);
-        if (session->pending.size() >= Session::kMaxPending)
+        if (session->pending.size() >= max_pending)
         {
+            LOG(WARNING) << "[SessionExecutor] queue full session=" << session->session_id
+                         << " size=" << session->pending.size();
             return false;
         }
         session->pending.push_back(std::move(task));

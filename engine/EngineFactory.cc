@@ -2,6 +2,7 @@
 #include "engine/DummyEngine.h"
 #include "engine/LlamaEngine.h"
 #include "serving/core/ModelEngine.h" // 返回 ModelEngine
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -11,12 +12,21 @@ namespace
     std::mutex g_mu;
     std::unordered_map<std::string, std::shared_ptr<ModelEngine>> g_cache; 
 
+    const char *GetEnvOrDefault(const char *name, const char *fallback)
+    {
+        const char *val = std::getenv(name);
+        return (val && *val) ? val : fallback;
+    }
+
     // 真正的构造逻辑（不带缓存）
     std::shared_ptr<ModelEngine> CreateNewEngine(const std::string &model)
     {
         if (model == "llama")
         {
-            return std::make_shared<LlamaEngine>("/home/dongsong/workspace/llm_MultimodalServer/llm_MultimodalServer/models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf");
+            const char *path = GetEnvOrDefault(
+                "LLAMA_MODEL_PATH",
+                "/home/dongsong/workspace/llm_MultimodalServer/llm_MultimodalServer/models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf");
+            return std::make_shared<LlamaEngine>(path);
         }
         if (model == "dummy")
         {

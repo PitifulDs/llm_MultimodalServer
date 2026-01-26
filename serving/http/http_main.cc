@@ -9,6 +9,7 @@
 #include "engine/RpcEngine.h"
 #include "engine/EngineFactory.h"
 
+#include <cstdlib>
 #include <memory>
 #include <iostream>
 /*
@@ -23,6 +24,10 @@ int main(int argc, char **argv)
     // StackFlowsClient 初始化
     // 路由注册
     uint16_t port = 8080;
+    if (const char *env_port = std::getenv("HTTP_PORT"))
+    {
+        port = static_cast<uint16_t>(std::stoi(env_port));
+    }
     if (argc > 1)
     {
         port = static_cast<uint16_t>(std::stoi(argv[1]));
