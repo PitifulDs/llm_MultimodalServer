@@ -193,6 +193,28 @@ Serving v2 将职责清晰拆分：
 - `LLAMA_N_THREADS`：推理线程数（默认 4）
 - `LLAMA_N_THREADS_BATCH`：batch 线程数（默认 4）
 - `KV_RESET_MARGIN`：KV cache 逼近 n_ctx 的重建阈值（默认 256）
+
+## 5.1.1 config.json（启动时读取）
+默认读取根目录 `config.json`，也可通过环境变量 `CONFIG_PATH` 指定路径。
+解析后会写入对应的环境变量（再由现有逻辑使用）。
+
+示例（与当前默认值一致）：
+```json
+{
+  "http_port": 8080,
+  "default_model": "llama",
+  "worker_threads": 4,
+  "max_model_queue": 64,
+  "max_session_pending": 64,
+  "max_queue_wait_ms": 2000,
+  "llama_model_path": "/path/to/model.gguf",
+  "llama_n_ctx": 4096,
+  "llama_n_threads": 4,
+  "llama_n_threads_batch": 4,
+  "kv_reset_margin": 256,
+  "default_max_tokens": 512
+}
+```
 - `DEFAULT_MAX_TOKENS`：默认生成上限（默认 512，可被请求 `max_tokens` 覆盖）
 - `MAX_MODEL_QUEUE`：单模型队列上限（默认 64）
 - `MAX_SESSION_PENDING`：单 session 队列上限（默认 64）
@@ -298,4 +320,3 @@ Client                         Server (Serving v2)
   |                                    |
 
 ```
-
