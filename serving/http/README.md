@@ -229,6 +229,13 @@ curl -N -X POST "http://127.0.0.1:8080/v1/completions?stream=true" \
 ```
 python3 sample/stress_sse.py --concurrency 30 --rounds 500 --abort-ratio 0.7 --abort-min 0.2 --abort-max 2.5
 ```
+
+## 5.3 Web Demo
+静态页面位于 `demo/web/index.html`，可直接用浏览器打开，或使用本地静态服务器：
+```
+python3 -m http.server 8000 -d demo/web
+```
+默认请求 `http://127.0.0.1:8080/v1/chat/completions?stream=true`。
 ```
 
 ## 6. Client ↔ Server 请求 / Streaming 时序图

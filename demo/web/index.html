@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Multimodal Server Demo</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+    :root {
+      --bg-1: #0b0f1a;
+      --bg-2: #141a2e;
+      --accent: #f5b700;
+      --accent-2: #00d1ff;
+      --text: #e8edf5;
+      --muted: #9aa6bd;
+      --card: rgba(255, 255, 255, 0.06);
+      --border: rgba(255, 255, 255, 0.12);
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 20% -10%, #1c2b57 0%, transparent 60%),
+                  radial-gradient(1000px 700px at 90% 10%, #2a1f46 0%, transparent 55%),
+                  linear-gradient(180deg, var(--bg-1), var(--bg-2));
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 40px auto 80px;
+      padding: 0 20px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .title {
+      font-size: clamp(28px, 4vw, 48px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 8px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 24px;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-top: 28px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 6px;
+    }
+
+    input, textarea, select {
+      width: 100%;
+      background: rgba(10, 16, 31, 0.8);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    textarea { min-height: 120px; resize: vertical; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    button {
+      border: none;
+      cursor: pointer;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #ffdd6b);
+      color: #1b1b1b;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .output {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      min-height: 240px;
+    }
+
+    .meta {
+      display: flex;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 10px;
+    }
+
+    .badge {
+      color: #0b0f1a;
+      background: var(--accent-2);
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .footer {
+      margin-top: 32px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <div class="pill">
+          <span class="badge">LIVE</span>
+          Local OpenAI-compatible SSE demo
+        </div>
+        <h1 class="title">LLM Multimodal Server — Chat Demo</h1>
+        <p class="subtitle">
+          Stream responses from your local server. This page sends a POST request to
+          <code>/v1/chat/completions?stream=true</code> and renders SSE chunks in real time.
+        </p>
+      </div>
+      <div class="card">
+        <div><strong>Endpoint</strong></div>
+        <div style="margin-top:8px; color: var(--muted); font-size: 13px;">
+          Default: <code>http://127.0.0.1:8080</code>
+        </div>
+        <div style="margin-top:12px; color: var(--muted); font-size: 12px;">
+          Tip: Keep the server running in another terminal.
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div><strong>Request</strong></div>
+        <label>Base URL</label>
+        <input id="baseUrl" value="http://127.0.0.1:8080" />
+
+        <div class="row">
+          <div>
+            <label>Model</label>
+            <input id="model" value="llama" />
+          </div>
+          <div>
+            <label>Max Tokens</label>
+            <input id="maxTokens" type="number" min="1" max="4096" value="128" />
+          </div>
+        </div>
+
+        <label>System (optional)</label>
+        <input id="system" placeholder="You are a helpful assistant." />
+
+        <label>User Prompt</label>
+        <textarea id="prompt">Introduce yourself in one sentence.</textarea>
+
+        <div class="actions">
+          <button id="sendBtn" class="btn-primary">Send (stream)</button>
+          <button id="stopBtn" class="btn-ghost" disabled>Stop</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong>Response</strong>
+          <span id="status" class="badge">IDLE</span>
+        </div>
+        <div id="output" class="output"></div>
+        <div class="meta">
+          <div>TTFB: <span id="ttfb">-</span></div>
+          <div>Tokens (approx): <span id="tokCount">0</span></div>
+          <div>Duration: <span id="dur">-</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      This is a lightweight demo UI. It assumes your server implements OpenAI-like SSE streaming.
+    </div>
+  </div>
+
+  <script>
+    const output = document.getElementById('output');
+    const statusEl = document.getElementById('status');
+    const ttfbEl = document.getElementById('ttfb');
+    const tokEl = document.getElementById('tokCount');
+    const durEl = document.getElementById('dur');
+    const sendBtn = document.getElementById('sendBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    let aborter = null;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function approxTokens(text) {
+      return Math.max(0, Math.round(text.length / 4));
+    }
+
+    async function streamChat() {
+      const baseUrl = document.getElementById('baseUrl').value.trim();
+      const model = document.getElementById('model').value.trim();
+      const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
+      const system = document.getElementById('system').value.trim();
+      const prompt = document.getElementById('prompt').value.trim();
+
+      if (!baseUrl || !prompt) return;
+
+      output.textContent = '';
+      ttfbEl.textContent = '-';
+      tokEl.textContent = '0';
+      durEl.textContent = '-';
+      setStatus('STREAMING');
+
+      sendBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: prompt });
+
+      const payload = { model, max_tokens: maxTokens, messages };
+
+      aborter = new AbortController();
+      const start = performance.now();
+      let firstByteAt = null;
+
+      try {
+        const resp = await fetch(`${baseUrl}/v1/chat/completions?stream=true`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: aborter.signal,
+        });
+
+        if (!resp.ok || !resp.body) {
+          setStatus('ERROR');
+          output.textContent = `HTTP ${resp.status}`;
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!firstByteAt) {
+            firstByteAt = performance.now();
+            ttfbEl.textContent = `${Math.round(firstByteAt - start)} ms`;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+
+          for (const part of parts) {
+            const lines = part.split('\n');
+            for (const line of lines) {
+              if (!line.startsWith('data:')) continue;
+              const data = line.slice(5).trim();
+              if (data === '[DONE]') {
+                setStatus('DONE');
+                stopBtn.disabled = true;
+                sendBtn.disabled = false;
+                durEl.textContent = `${Math.round(performance.now() - start)} ms`;
+                return;
+              }
+              try {
+                const json = JSON.parse(data);
+                const delta = json.choices?.[0]?.delta?.content || '';
+                if (delta) {
+                  output.textContent += delta;
+                  tokEl.textContent = String(approxTokens(output.textContent));
+                }
+              } catch (e) {
+                // ignore partial JSON
+              }
+            }
+          }
+        }
+
+        setStatus('DONE');
+        durEl.textContent = `${Math.round(performance.now() - start)} ms`;
+      } catch (err) {
+        setStatus('STOPPED');
+        output.textContent += `\n[stopped] ${err}`;
+      } finally {
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    }
+
+    sendBtn.addEventListener('click', streamChat);
+    stopBtn.addEventListener('click', () => {
+      if (aborter) aborter.abort();
+    });
+  </script>
+</body>
+</html>
