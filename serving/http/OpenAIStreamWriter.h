@@ -16,5 +16,6 @@ private:
     std::string request_id_;
     std::string model_;
     WriteFn write_;
+    std::string pending_bytes_;
 
 };

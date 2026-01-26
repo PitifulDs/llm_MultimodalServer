@@ -179,7 +179,20 @@ void NetworkHttpServer::handleHttpRequest(
     // NetworkHttpResponse res(conn, is_stream);
     auto res_ptr = std::make_shared<NetworkHttpResponse>(conn, is_stream);
 
-    // 6. 路由
+    // 6. 路由（先处理 CORS 预检）
+    if (method == "OPTIONS")
+    {
+        res_ptr->SetStatus(204, "No Content");
+        res_ptr->SetHeader("Access-Control-Allow-Origin", "*");
+        res_ptr->SetHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        res_ptr->SetHeader("Access-Control-Allow-Headers", "content-type");
+        res_ptr->SetHeader("Access-Control-Max-Age", "86400");
+        res_ptr->SetHeader("Connection", "close");
+        res_ptr->Write("");
+        res_ptr->End();
+        return;
+    }
+
     if (method != "POST")
     {
         // 405

@@ -133,6 +133,13 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
                     headers["Connection"] = "close";
             }
 
+            if (headers.find("Access-Control-Allow-Origin") == headers.end())
+                headers["Access-Control-Allow-Origin"] = "*";
+            if (headers.find("Access-Control-Allow-Methods") == headers.end())
+                headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+            if (headers.find("Access-Control-Allow-Headers") == headers.end())
+                headers["Access-Control-Allow-Headers"] = "content-type";
+
             for (const auto &kv : headers)
             {
                 buf.append(kv.first);

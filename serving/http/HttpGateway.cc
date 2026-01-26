@@ -317,7 +317,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
 
         res.SetHeader("Content-Type", "application/json");
         res.SetHeader("Connection", "close");
-        res.Write(err.dump());
+        res.Write(err.dump(-1, ' ', false, json::error_handler_t::replace));
         res.End();
         return;
     }
@@ -343,7 +343,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
 
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
-    res.Write(out.dump());
+    res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));
     res.End();
 }
 
