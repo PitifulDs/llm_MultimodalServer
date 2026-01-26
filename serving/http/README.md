@@ -220,22 +220,38 @@ Serving v2 将职责清晰拆分：
 - `MAX_SESSION_PENDING`：单 session 队列上限（默认 64）
 - `MAX_QUEUE_WAIT_MS`：队列等待超时（默认 2000ms）
 
-## 6. Web Demo 使用（Windows 访问 VM）
+## 6. 健康检查与指标
+- `GET /health`：返回服务状态与启动时长
+- `GET /metrics`：返回简单聚合指标（请求数/并发/平均耗时等）
+
+错误返回统一结构（示例）：
+```json
+{
+  "error": {
+    "message": "messages must be array",
+    "type": "invalid_request_error",
+    "code": "invalid_messages"
+  }
+}
+```
+并配合对应 HTTP 状态码（400/404/405/429/500/501）。
+
+## 7. Web Demo 使用（Windows 访问 VM）
 Demo 页面与 API 是两个服务，**端口不能相同**：
 - Demo 静态页：`8000`
 - API 服务：`8080`（或 config.json / 启动参数指定）
 
-### 6.1 启动 API
+### 7.1 启动 API
 ```bash
 ./serving/build/http/serving_http_server 8080
 ```
 
-### 6.2 启动 Demo 页面
+### 7.2 启动 Demo 页面
 ```bash
 bash demo/web/serve_demo.sh 8000
 ```
 
-### 6.3 Windows 浏览器访问
+### 7.3 Windows 浏览器访问
 假设 VM IP 为 `192.168.110.128`：
 - 页面地址：`http://192.168.110.128:8000/`
 - API 地址：`http://192.168.110.128:8080`

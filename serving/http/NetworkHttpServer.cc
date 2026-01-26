@@ -14,8 +14,10 @@
 #include <functional>
 #include <boost/any.hpp>
 #include <glog/logging.h>
+#include "utils/json.hpp"
 
 using namespace network;
+using json = nlohmann::json;
 
 // 只在本 .cc 文件使用的话，建议 static
 static size_t parse_content_length(const std::string &header)
@@ -71,6 +73,23 @@ static size_t parse_content_length(const std::string &header)
 
     // 没有 Content-Length：按 0 处理
     return 0;
+}
+
+static void write_json_error(const std::shared_ptr<NetworkHttpResponse> &res_ptr,
+                             int status,
+                             const std::string &message,
+                             const std::string &type,
+                             const std::string &code = "")
+{
+    res_ptr->SetStatus(status);
+    res_ptr->SetHeader("Content-Type", "application/json");
+    res_ptr->SetHeader("Connection", "close");
+
+    json err = {{"error", {{"message", message}, {"type", type}}}};
+    if (!code.empty())
+        err["error"]["code"] = code;
+    res_ptr->Write(err.dump(-1, ' ', false, json::error_handler_t::replace));
+    res_ptr->End();
 }
 NetworkHttpServer::NetworkHttpServer(EventLoop *loop,
                                      const InetAddress &listen_addr,
@@ -193,9 +212,21 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
+    if (method == "GET" && url == "/health")
+    {
+        gateway_->HandleHealth(req, *res_ptr);
+        return;
+    }
+
+    if (method == "GET" && url == "/metrics")
+    {
+        gateway_->HandleMetrics(req, *res_ptr);
+        return;
+    }
+
     if (method != "POST")
     {
-        // 405
+        write_json_error(res_ptr, 405, "Method Not Allowed", "invalid_request_error", "method_not_allowed");
         return;
     }
 
@@ -213,14 +244,9 @@ void NetworkHttpServer::handleHttpRequest(
             gateway_->HandleChatCompletion(req, *res_ptr);
         }
 
-    }else
+    }
+    else
     {
-        res_ptr->SetHeader("Content-Type", "application/json");
-        res_ptr->Write(R"({
-            "error": {
-                "message": "Not Found",
-                "type": "invalid_request_error"
-            }
-        })");
+        write_json_error(res_ptr, 404, "Not Found", "invalid_request_error", "not_found");
     }
 }

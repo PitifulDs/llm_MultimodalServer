@@ -102,7 +102,11 @@ namespace
 
 } // namespace
 
-HttpGateway::HttpGateway() : pool_(get_worker_threads()), executor_(pool_), session_executor_(pool_)
+HttpGateway::HttpGateway()
+    : pool_(get_worker_threads()),
+      executor_(pool_),
+      session_executor_(pool_),
+      start_time_(std::chrono::steady_clock::now())
 {
     SessionManager::Options opt;
     opt.idle_ttl = std::chrono::minutes(30);
@@ -127,36 +131,103 @@ HttpGateway::HttpGateway() : pool_(get_worker_threads()), executor_(pool_), sess
     }).detach();
 }
 
+void HttpGateway::WriteError(HttpResponse &res, int status, const std::string &message,
+                             const std::string &type, const std::string &code,
+                             const std::string &param)
+{
+    res.SetStatus(status);
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+
+    json err = {
+        {"error",
+         {{"message", message},
+          {"type", type}}}};
+
+    if (!code.empty())
+        err["error"]["code"] = code;
+    if (!param.empty())
+        err["error"]["param"] = param;
+
+    res.Write(err.dump(-1, ' ', false, json::error_handler_t::replace));
+    res.End();
+}
+
+void HttpGateway::RecordFinish(FinishReason reason, int64_t dur_ms)
+{
+    total_latency_ms_.fetch_add(dur_ms, std::memory_order_relaxed);
+    in_flight_.fetch_sub(1, std::memory_order_relaxed);
+
+    if (reason == FinishReason::error)
+        error_requests_.fetch_add(1, std::memory_order_relaxed);
+    else if (reason == FinishReason::cancelled)
+        cancelled_requests_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    const auto uptime_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time_)
+            .count();
+
+    json out = {
+        {"status", "ok"},
+        {"uptime_ms", uptime_ms}};
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
+void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    const int64_t total = total_requests_.load(std::memory_order_relaxed);
+    const int64_t latency = total_latency_ms_.load(std::memory_order_relaxed);
+    const double avg_latency_ms = total > 0 ? static_cast<double>(latency) / static_cast<double>(total) : 0.0;
+
+    json out = {
+        {"requests_total", total},
+        {"requests_in_flight", in_flight_.load(std::memory_order_relaxed)},
+        {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
+        {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
+        {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)},
+        {"avg_latency_ms", avg_latency_ms}};
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
 void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
 
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-
-    res.Write(R"({
-        "error": {
-            "message": "The /v1/completions endpoint is deprecated in Serving v2. Please use /v1/chat/completions instead.",
-            "type": "invalid_request_error",
-            "param": null,
-            "code": "endpoint_deprecated"
-        }
-    })");
-
-    res.End();
+    WriteError(res,
+               400,
+               "The /v1/completions endpoint is deprecated in Serving v2. Please use /v1/chat/completions instead.",
+               "invalid_request_error",
+               "endpoint_deprecated");
 }
 
 void HttpGateway::HandleCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
 {
     (void)req;
-    res_ptr->SetHeader("Content-Type", "application/json");
-    res_ptr->SetHeader("Connection", "close");
-    res_ptr->Write(R"({"error":{"message":"completion stream not supported","type":"not_implemented"}})");
+    WriteError(*res_ptr, 501, "completion stream not supported", "not_implemented");
 }
 
 void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res)
 {
     const auto start_time = std::chrono::steady_clock::now();
+    total_requests_.fetch_add(1, std::memory_order_relaxed);
+    in_flight_.fetch_add(1, std::memory_order_relaxed);
+
     json body;
     try
     {
@@ -164,22 +235,22 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     }
     catch (...)
     {
-        res.SetStatus(400, "Bad Request");
-        res.SetHeader("Content-Type", "application/json");
-        res.SetHeader("Connection", "close");
-        res.Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
-        res.End();
+        WriteError(res, 400, "invalid json", "invalid_request_error", "invalid_json");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
     const std::string model = body.value("model", get_default_model());
     if (!body.contains("messages") || !body["messages"].is_array())
     {
-        res.SetStatus(400, "Bad Request");
-        res.SetHeader("Content-Type", "application/json");
-        res.SetHeader("Connection", "close");
-        res.Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
-        res.End();
+        WriteError(res, 400, "messages must be array", "invalid_request_error", "invalid_messages");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
@@ -248,7 +319,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     }
 
     // on_finish：仅 stop/length 更新 history，避免 cancelled/error 污染 session
-    ctx->on_finish = [session, ctx, client_messages, start_time](FinishReason r)
+    ctx->on_finish = [this, session, ctx, client_messages, start_time](FinishReason r)
     {
         if (r == FinishReason::stop || r == FinishReason::length)
         {
@@ -261,6 +332,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordFinish(r, dur_ms);
         LOG(INFO) << "[chat] done req=" << ctx->request_id
                   << " model=" << ctx->model
                   << " dur_ms=" << dur_ms
@@ -305,20 +377,11 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
             (ctx->params.count("error_code") && ctx->params["error_code"] == "overloaded") ||
             (ctx->error_message.find("queue full") != std::string::npos);
 
-        if (overloaded)
-            res.SetStatus(429, "Too Many Requests");
-        else
-            res.SetStatus(500, "Internal Server Error");
-
-        json err = {
-            {"error",
-             {{"message", ctx->error_message.empty() ? "engine error" : ctx->error_message},
-              {"type", overloaded ? "rate_limit_error" : "internal_error"}}}};
-
-        res.SetHeader("Content-Type", "application/json");
-        res.SetHeader("Connection", "close");
-        res.Write(err.dump(-1, ' ', false, json::error_handler_t::replace));
-        res.End();
+        WriteError(res,
+                   overloaded ? 429 : 500,
+                   ctx->error_message.empty() ? "engine error" : ctx->error_message,
+                   overloaded ? "rate_limit_error" : "internal_error",
+                   overloaded ? "queue_full" : "internal_error");
         return;
     }
 
@@ -350,6 +413,10 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
 void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr)
 {
     const auto start_time = std::chrono::steady_clock::now();
+    total_requests_.fetch_add(1, std::memory_order_relaxed);
+    stream_requests_.fetch_add(1, std::memory_order_relaxed);
+    in_flight_.fetch_add(1, std::memory_order_relaxed);
+
     LOG(INFO) << "[chat-stream] enter HandleChatCompletionStream";
 
     json body;
@@ -359,21 +426,21 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     }
     catch (...)
     {
-        res_ptr->SetStatus(400, "Bad Request");
-        res_ptr->SetHeader("Content-Type", "application/json");
-        res_ptr->SetHeader("Connection", "close");
-        res_ptr->Write(R"({"error":{"message":"invalid json","type":"invalid_request_error"}})");
-        res_ptr->End();
+        WriteError(*res_ptr, 400, "invalid json", "invalid_request_error", "invalid_json");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
     if (!body.contains("messages") || !body["messages"].is_array())
     {
-        res_ptr->SetStatus(400, "Bad Request");
-        res_ptr->SetHeader("Content-Type", "application/json");
-        res_ptr->SetHeader("Connection", "close");
-        res_ptr->Write(R"({"error":{"message":"messages must be array","type":"invalid_request_error"}})");
-        res_ptr->End();
+        WriteError(*res_ptr, 400, "messages must be array", "invalid_request_error", "invalid_messages");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
@@ -480,7 +547,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     };
 
     // on_finish：仅 stop/length 更新 history；然后关闭 SSE
-    ctx->on_finish = [session, ctx, client_messages, http_session, start_time](FinishReason r)
+    ctx->on_finish = [this, session, ctx, client_messages, http_session, start_time](FinishReason r)
     {
         if (r == FinishReason::stop || r == FinishReason::length)
         {
@@ -494,6 +561,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordFinish(r, dur_ms);
         LOG(INFO) << "[chat-stream] done req=" << ctx->request_id
                   << " model=" << ctx->model
                   << " dur_ms=" << dur_ms

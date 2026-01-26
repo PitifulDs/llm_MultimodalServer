@@ -62,6 +62,12 @@ struct NetworkHttpResponse : public HttpResponse, public std::enable_shared_from
                 reason = "Service Unavailable";
             else if (code == 400)
                 reason = "Bad Request";
+            else if (code == 404)
+                reason = "Not Found";
+            else if (code == 405)
+                reason = "Method Not Allowed";
+            else if (code == 501)
+                reason = "Not Implemented";
             else if (code == 500)
                 reason = "Internal Server Error";
             else
