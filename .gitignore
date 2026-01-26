@@ -11,3 +11,7 @@ CMakeFiles/
 cmake-build-*/
 
 models/qwen2.5-1.5b/
+
+# local editor + logs
+.vscode/
+server.log
