@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD 17)
 # serving 是一个“聚合目录”，本身不生成 target
 # 只负责把各个 northbound adapter 挂进来
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/../network/src ${CMAKE_BINARY_DIR}/network)
-# llama.cpp 库
-add_subdirectory(${CMAKE_SOURCE_DIR}/../thirds/llama.cpp ${CMAKE_BINARY_DIR}/llama)
+# project root is already CMAKE_SOURCE_DIR
+add_subdirectory(${CMAKE_SOURCE_DIR}/network/src ${CMAKE_BINARY_DIR}/network)
 add_subdirectory(http)
