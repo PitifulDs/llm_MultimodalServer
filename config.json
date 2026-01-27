@@ -10,5 +10,10 @@
   "llama_n_threads": 4,
   "llama_n_threads_batch": 4,
   "kv_reset_margin": 256,
-  "default_max_tokens": 512
+  "default_max_tokens": 512,
+  "serving_backend": "local",
+  "stackflow_host": "127.0.0.1",
+  "stackflow_port": 10001,
+  "stackflow_unit": "llm",
+  "stackflow_timeout_ms": 10000
 }

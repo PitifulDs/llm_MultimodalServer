@@ -5,6 +5,10 @@
  */
 #include "StackFlow.h"
 #include "channel.h"
+#include "engine/LlamaEngine.h"
+#include "serving/core/ServingContext.h"
+#include "serving/core/Session.h"
+#include "glog/logging.h"
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -12,25 +16,50 @@
 #include <fstream>
 #include <stdexcept>
 #include <iostream>
+#include <atomic>
+#include <mutex>
 using namespace StackFlows;
 using json = nlohmann::json;
 
-int main_exit_flage = 0;
-static void __sigint(int iSigNo)
+static std::atomic<bool> main_exit_flag{false};
+static void __sigint(int)
 {
-    main_exit_flage = 1;
+    main_exit_flag.store(true, std::memory_order_relaxed);
 }
 typedef std::function<void(const std::string &data, bool finish)> task_callback_t;
+
+static std::string get_env_string(const char *name, const char *def_val = "")
+{
+    const char *v = std::getenv(name);
+    return (v && *v) ? std::string(v) : std::string(def_val);
+}
+
+static const char *kDefaultModelPath =
+    "/home/dongsong/workspace/llm_MultimodalServer/llm_MultimodalServer/models/"
+    "qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf";
+
+static std::string gen_request_id()
+{
+    static std::atomic<uint64_t> seq{0};
+    return "req-" + std::to_string(++seq);
+}
+
 class llm_task
 {
 private:
 public:
     std::string model_;
     std::string response_format_;
+    std::string model_path_;
     std::vector<std::string> inputs_;
     task_callback_t out_callback_;
     bool enoutput_;
     bool enstream_;
+    int max_token_len_ = 512;
+
+    std::string work_id_;
+    std::shared_ptr<LlamaEngine> engine_;
+    std::mutex engine_mu_;
 
     void set_output(task_callback_t out_callback)
     {
@@ -73,21 +102,105 @@ public:
         {
             return -1;
         }
+        if (config_body.contains("max_token_len") && config_body["max_token_len"].is_number_integer())
+        {
+            const int v = config_body["max_token_len"].get<int>();
+            if (v > 0)
+                max_token_len_ = v;
+        }
+
+        if (config_body.contains("model_path") && config_body["model_path"].is_string())
+        {
+            model_path_ = config_body["model_path"].get<std::string>();
+        }
+        if (model_path_.empty())
+        {
+            model_path_ = get_env_string("STACKFLOW_MODEL_PATH");
+        }
+        if (model_path_.empty())
+        {
+            model_path_ = get_env_string("LLM_MODEL_PATH");
+        }
+        if (model_path_.empty())
+        {
+            model_path_ = get_env_string("MODEL_PATH");
+        }
+        if (model_path_.empty())
+        {
+            model_path_ = kDefaultModelPath;
+        }
+        if (model_path_.empty())
+        {
+            LOG(ERROR) << "[llm_task] model_path missing";
+            return -1;
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(engine_mu_);
+            engine_ = std::make_shared<LlamaEngine>(model_path_);
+        }
         return 0;
     }
 
     void inference(const std::string &msg)
     {
-        if (out_callback_) {
-            out_callback_(msg, false);
-            out_callback_(std::string("hello"), false);
+        if (!out_callback_) {
+            return;
+        }
 
+        std::shared_ptr<LlamaEngine> engine;
+        {
+            std::lock_guard<std::mutex> lk(engine_mu_);
+            engine = engine_;
+        }
+        if (!engine)
+        {
             out_callback_(std::string(""), true);
+            return;
+        }
+
+        auto ctx = std::make_shared<ServingContext>();
+        ctx->request_id = gen_request_id();
+        ctx->session_id = ctx->request_id;
+        ctx->model = model_;
+        ctx->stream = enstream_;
+        ctx->is_chat = false;
+        ctx->prompt = msg;
+        ctx->params["max_tokens"] = std::to_string(max_token_len_);
+        ctx->session = std::make_shared<Session>(ctx->session_id, ctx->model);
+
+        if (enstream_)
+        {
+            ctx->on_chunk = [this](const StreamChunk &c)
+            {
+                if (!out_callback_)
+                    return;
+                if (c.is_finished)
+                {
+                    out_callback_(std::string(""), true);
+                }
+                else if (!c.delta.empty())
+                {
+                    out_callback_(c.delta, false);
+                }
+            };
+            engine->Run(ctx);
+        }
+        else
+        {
+            engine->Run(ctx);
+            if (!ctx->error_message.empty())
+            {
+                out_callback_(std::string(""), true);
+                return;
+            }
+            out_callback_(ctx->final_text, true);
         }
     }
 
     llm_task(const std::string &workid)
     {
+        work_id_ = workid;
     }
  
     void start()
@@ -315,11 +428,16 @@ public:
 
 int main(int argc, char *argv[])
 {
-    signal(SIGTERM, __sigint);
-    signal(SIGINT, __sigint);
+    google::InitGoogleLogging(argv[0]);
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = __sigint;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
     mkdir("/tmp/llm", 0777);
     llm_llm llm;
-    while (!main_exit_flage)
+    while (!main_exit_flag.load(std::memory_order_relaxed))
     {
         sleep(1);
     }

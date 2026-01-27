@@ -7,6 +7,7 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/../engine/DummyEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/RpcEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/EngineFactory.cc
+    ${CMAKE_SOURCE_DIR}/../engine/StackFlowEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/LlamaEngine.cc
     ${CMAKE_SOURCE_DIR}/../engine/ModelContext.cc
     ${CMAKE_SOURCE_DIR}/../serving/core/SessionManager.cc
@@ -79,5 +80,4 @@ target_link_libraries(serving_http_server
 set_target_properties(serving_http_server PROPERTIES
     OUTPUT_NAME "serving_http_server"
 )
-
 

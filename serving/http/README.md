@@ -212,13 +212,42 @@ Serving v2 将职责清晰拆分：
   "llama_n_threads": 4,
   "llama_n_threads_batch": 4,
   "kv_reset_margin": 256,
-  "default_max_tokens": 512
+  "default_max_tokens": 512,
+  "serving_backend": "local",
+  "stackflow_host": "127.0.0.1",
+  "stackflow_port": 10001,
+  "stackflow_unit": "llm",
+  "stackflow_timeout_ms": 10000
 }
 ```
 - `DEFAULT_MAX_TOKENS`：默认生成上限（默认 512，可被请求 `max_tokens` 覆盖）
 - `MAX_MODEL_QUEUE`：单模型队列上限（默认 64）
 - `MAX_SESSION_PENDING`：单 session 队列上限（默认 64）
 - `MAX_QUEUE_WAIT_MS`：队列等待超时（默认 2000ms）
+- `SERVING_BACKEND`：引擎后端（`local`/`stackflow`，默认 `local`）
+- `STACKFLOW_HOST`：unit-manager TCP 地址（默认 127.0.0.1）
+- `STACKFLOW_PORT`：unit-manager TCP 端口（默认 10001）
+- `STACKFLOW_UNIT`：unit 名称（默认 `llm`）
+- `STACKFLOW_TIMEOUT_MS`：远程读写超时（默认 10000ms）
+
+示例：
+```bash
+curl -N -X POST "http://127.0.0.1:8080/v1/completions?stream=true" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"dummy","prompt":"Tell me a joke"}'
+```
+
+## 5.2 压测脚本（SSE）
+```bash
+python3 sample/stress_sse.py --concurrency 30 --rounds 500 --abort-ratio 0.7 --abort-min 0.2 --abort-max 2.5
+```
+
+## 5.3 Web Demo
+静态页面位于 `demo/web/index.html`，可直接用浏览器打开，或使用本地静态服务器：
+```bash
+python3 -m http.server 8000 -d demo/web
+```
+默认请求 `http://127.0.0.1:8080/v1/chat/completions?stream=true`。
 
 ## 6. 健康检查与指标
 - `GET /health`：返回服务状态与启动时长
@@ -236,22 +265,52 @@ Serving v2 将职责清晰拆分：
 ```
 并配合对应 HTTP 状态码（400/404/405/429/500/501）。
 
-## 7. Web Demo 使用（Windows 访问 VM）
+## 7. StackFlows 远程推理（hybrid-comm / infra-controller）
+该模式通过 **unit-manager + StackFlow worker** 完成远程推理，Serving 仅作为客户端。
+
+### 7.1 启动 unit-manager（控制面）
+```bash
+cd unit-manager
+mkdir -p build && cd build
+cmake .. && make -j
+./unit_manager
+```
+默认读取 `unit-manager/master_config.json`，其中 `config_tcp_server` 为 TCP 端口（默认 10001）。
+
+### 7.2 启动 StackFlow worker（示例）
+```bash
+cd node/test
+mkdir -p build && cd build
+cmake .. && make -j
+./test
+```
+该示例使用 `StackFlow` + `hybrid-comm` 实现 RPC 与 PUB/SUB 逻辑。
+
+### 7.3 启动 Serving（远程模式）
+```bash
+SERVING_BACKEND=stackflow \
+STACKFLOW_HOST=127.0.0.1 \
+STACKFLOW_PORT=10001 \
+STACKFLOW_UNIT=llm \
+./serving/build/http/serving_http_server 8080
+```
+
+## 8. Web Demo 使用（Windows 访问 VM）
 Demo 页面与 API 是两个服务，**端口不能相同**：
 - Demo 静态页：`8000`
 - API 服务：`8080`（或 config.json / 启动参数指定）
 
-### 7.1 启动 API
+### 8.1 启动 API
 ```bash
 ./serving/build/http/serving_http_server 8080
 ```
 
-### 7.2 启动 Demo 页面
+### 8.2 启动 Demo 页面
 ```bash
 bash demo/web/serve_demo.sh 8000
 ```
 
-### 7.3 Windows 浏览器访问
+### 8.3 Windows 浏览器访问
 假设 VM IP 为 `192.168.110.128`：
 - 页面地址：`http://192.168.110.128:8000/`
 - API 地址：`http://192.168.110.128:8080`
@@ -260,13 +319,13 @@ bash demo/web/serve_demo.sh 8000
 - 页面里 API 地址不能用 `127.0.0.1` 或 `localhost`，那会指向 Windows 本机。
 - 8080 若无法访问，请检查 VM 防火墙或虚拟网络设置。
 
-## 8. Docker 使用
-### 8.1 构建镜像
+## 9. Docker 使用
+### 9.1 构建镜像
 ```bash
 docker build -t llm-serving .
 ```
 
-### 8.2 运行容器（挂载模型）
+### 9.2 运行容器（挂载模型）
 ```bash
 docker run --rm -p 8080:8080 \
   -e LLAMA_MODEL_PATH=/models/model.gguf \
@@ -274,7 +333,7 @@ docker run --rm -p 8080:8080 \
   llm-serving
 ```
 
-### 8.3 使用 config.json
+### 9.3 使用 config.json
 ```bash
 docker run --rm -p 8080:8080 \
   -v $(pwd)/config.json:/app/config.json \
@@ -282,27 +341,8 @@ docker run --rm -p 8080:8080 \
   -e LLAMA_MODEL_PATH=/models/model.gguf \
   llm-serving
 ```
-- `MAX_QUEUE_WAIT_MS`：队列等待超时（默认 2000ms）
-```
-示例：
-curl -N -X POST "http://127.0.0.1:8080/v1/completions?stream=true" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"dummy","prompt":"Tell me a joke"}'
 
-## 5.2 压测脚本（SSE）
-```
-python3 sample/stress_sse.py --concurrency 30 --rounds 500 --abort-ratio 0.7 --abort-min 0.2 --abort-max 2.5
-```
-
-## 5.3 Web Demo
-静态页面位于 `demo/web/index.html`，可直接用浏览器打开，或使用本地静态服务器：
-```
-python3 -m http.server 8000 -d demo/web
-```
-默认请求 `http://127.0.0.1:8080/v1/chat/completions?stream=true`。
-```
-
-## 6. Client ↔ Server 请求 / Streaming 时序图
+## 10. Client ↔ Server 请求 / Streaming 时序图
 ```
 Client                         Server (Serving v2)
   |                                   |

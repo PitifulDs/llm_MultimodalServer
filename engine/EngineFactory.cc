@@ -1,6 +1,7 @@
 #include "engine/EngineFactory.h"
 #include "engine/DummyEngine.h"
 #include "engine/LlamaEngine.h"
+#include "engine/StackFlowEngine.h"
 #include "serving/core/ModelEngine.h" // 返回 ModelEngine
 #include <cstdlib>
 #include <memory>
@@ -21,6 +22,15 @@ namespace
     // 真正的构造逻辑（不带缓存）
     std::shared_ptr<ModelEngine> CreateNewEngine(const std::string &model)
     {
+        const char *backend = std::getenv("SERVING_BACKEND");
+        if (backend && std::string(backend) == "stackflow")
+        {
+            return std::make_shared<StackFlowEngine>();
+        }
+        if (model == "stackflow")
+        {
+            return std::make_shared<StackFlowEngine>();
+        }
         if (model == "llama")
         {
             const char *path = GetEnvOrDefault(

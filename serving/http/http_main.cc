@@ -69,6 +69,11 @@ namespace
             set_env_from_json(cfg, "llama_n_threads_batch", "LLAMA_N_THREADS_BATCH");
             set_env_from_json(cfg, "kv_reset_margin", "KV_RESET_MARGIN");
             set_env_from_json(cfg, "default_max_tokens", "DEFAULT_MAX_TOKENS");
+            set_env_from_json(cfg, "serving_backend", "SERVING_BACKEND");
+            set_env_from_json(cfg, "stackflow_host", "STACKFLOW_HOST");
+            set_env_from_json(cfg, "stackflow_port", "STACKFLOW_PORT");
+            set_env_from_json(cfg, "stackflow_unit", "STACKFLOW_UNIT");
+            set_env_from_json(cfg, "stackflow_timeout_ms", "STACKFLOW_TIMEOUT_MS");
             std::cerr << "[serving-http] config loaded: " << cfg_path << std::endl;
         }
         catch (const std::exception &e)
