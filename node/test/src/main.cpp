@@ -44,6 +44,87 @@ static std::string gen_request_id()
     return "req-" + std::to_string(++seq);
 }
 
+static size_t utf8_valid_prefix_len(const std::string &s)
+{
+    size_t i = 0;
+    while (i < s.size())
+    {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 0;
+        if (c <= 0x7F)
+            len = 1;
+        else if ((c & 0xE0) == 0xC0)
+            len = 2;
+        else if ((c & 0xF0) == 0xE0)
+            len = 3;
+        else if ((c & 0xF8) == 0xF0)
+            len = 4;
+        else
+            break;
+
+        if (i + len > s.size())
+            break;
+
+        for (size_t j = 1; j < len; ++j)
+        {
+            unsigned char cc = static_cast<unsigned char>(s[i + j]);
+            if ((cc & 0xC0) != 0x80)
+                return i;
+        }
+        i += len;
+    }
+    return i;
+}
+
+static std::string utf8_sanitize(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size())
+    {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 0;
+        if (c <= 0x7F)
+            len = 1;
+        else if ((c & 0xE0) == 0xC0)
+            len = 2;
+        else if ((c & 0xF0) == 0xE0)
+            len = 3;
+        else if ((c & 0xF8) == 0xF0)
+            len = 4;
+        else
+        {
+            out.push_back('?');
+            ++i;
+            continue;
+        }
+
+        if (i + len > s.size())
+            break;
+
+        bool ok = true;
+        for (size_t j = 1; j < len; ++j)
+        {
+            unsigned char cc = static_cast<unsigned char>(s[i + j]);
+            if ((cc & 0xC0) != 0x80)
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok)
+        {
+            out.push_back('?');
+            ++i;
+            continue;
+        }
+        out.append(s, i, len);
+        i += len;
+    }
+    return out;
+}
+
 class llm_task
 {
 private:
@@ -60,6 +141,7 @@ public:
     std::string work_id_;
     std::shared_ptr<LlamaEngine> engine_;
     std::mutex engine_mu_;
+    std::string utf8_pending_;
 
     void set_output(task_callback_t out_callback)
     {
@@ -177,11 +259,24 @@ public:
                     return;
                 if (c.is_finished)
                 {
+                    if (!utf8_pending_.empty())
+                    {
+                        std::string flush = utf8_sanitize(utf8_pending_);
+                        utf8_pending_.clear();
+                        if (!flush.empty())
+                            out_callback_(flush, false);
+                    }
                     out_callback_(std::string(""), true);
                 }
                 else if (!c.delta.empty())
                 {
-                    out_callback_(c.delta, false);
+                    utf8_pending_.append(c.delta);
+                    const size_t n = utf8_valid_prefix_len(utf8_pending_);
+                    if (n > 0)
+                    {
+                        out_callback_(utf8_pending_.substr(0, n), false);
+                        utf8_pending_.erase(0, n);
+                    }
                 }
             };
             engine->Run(ctx);
@@ -194,7 +289,7 @@ public:
                 out_callback_(std::string(""), true);
                 return;
             }
-            out_callback_(ctx->final_text, true);
+            out_callback_(utf8_sanitize(ctx->final_text), true);
         }
     }
 
