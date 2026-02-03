@@ -2,6 +2,8 @@
 build/
 */build/
 **/build/
+infra-controller/build/
+install/lib/
 
 # build outputs (generic)
 *.o
@@ -12,6 +14,7 @@ build/
 *.dylib
 *.dll
 *.exe
+*.a
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake

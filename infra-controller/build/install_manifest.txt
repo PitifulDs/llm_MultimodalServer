@@ -1,1 +1,0 @@
-/work/infra-controller/../install/lib/libstackflow.a
