@@ -73,7 +73,7 @@
 # Serving v2（HTTP + Streaming SSE）架构说明
 ## 1. 背景与目标
 
-本模块是 llm_MultimodalServer 的 Serving v2 实现，目标是提供一个：
+本模块是 EdgeLLM-Serving 的 Serving v2 实现，目标是提供一个：
 - 工程级（非 demo）的 HTTP Server
 - 支持 JSON Body 的非流式请求
 - 支持 Streaming（SSE）形式的模型推理输出

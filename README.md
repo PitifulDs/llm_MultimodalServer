@@ -1,4 +1,4 @@
-# llm_MultimodalServer
+# EdgeLLM-Serving
 
 A lightweight LLM serving stack with:
 - HTTP OpenAI-compatible endpoint
