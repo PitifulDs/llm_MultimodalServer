@@ -1,6 +1,7 @@
 #include "engine/StackFlowEngine.h"
 
 #include "utils/json.hpp"
+#include "serving/core/Session.h"
 #include <glog/logging.h>
 
 #include <arpa/inet.h>
@@ -47,6 +48,9 @@ StackFlowEngine::StackFlowEngine()
     response_format_ = get_env_string("STACKFLOW_RESPONSE_FORMAT", "llm.utf-8");
     response_format_stream_ = get_env_string("STACKFLOW_RESPONSE_FORMAT_STREAM", "llm.utf-8.stream");
     timeout_ms_ = get_env_int("STACKFLOW_TIMEOUT_MS", 10000);
+    infer_timeout_ms_ = get_env_int("STACKFLOW_INFER_TIMEOUT_MS", 0);
+    reuse_work_id_ = get_env_int("STACKFLOW_REUSE_WORK_ID", 1) != 0;
+    serialize_reuse_ = get_env_int("STACKFLOW_SERIALIZE_REUSE", 1) != 0;
 }
 
 std::string StackFlowEngine::BuildPrompt(const std::vector<Message> &messages)
@@ -64,6 +68,17 @@ std::string StackFlowEngine::BuildPrompt(const std::vector<Message> &messages)
         }
     }
     return oss.str();
+}
+
+static json BuildMessagesPayload(const std::vector<Message> &messages)
+{
+    json j;
+    j["messages"] = json::array();
+    for (const auto &m : messages)
+    {
+        j["messages"].push_back({{"role", m.role}, {"content", m.content}});
+    }
+    return j;
 }
 
 std::string StackFlowEngine::ExtractSystemPrompt(const std::vector<Message> &messages)
@@ -178,8 +193,39 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     if (!ctx)
         return;
 
-    const std::string prompt = ctx->is_chat ? BuildPrompt(ctx->messages) : ctx->prompt;
-    const std::string system_prompt = ctx->is_chat ? ExtractSystemPrompt(ctx->messages) : "";
+    std::unique_lock<std::mutex> reuse_lk(reuse_mu_, std::defer_lock);
+    if (reuse_work_id_ && serialize_reuse_)
+    {
+        reuse_lk.lock();
+    }
+
+    std::vector<Message> full_messages;
+    if (ctx->is_chat)
+    {
+        if (ctx->session)
+        {
+            std::lock_guard<std::mutex> lk(ctx->session->mu);
+            full_messages = ctx->session->history;
+        }
+        full_messages.insert(full_messages.end(), ctx->messages.begin(), ctx->messages.end());
+        if (full_messages.empty())
+            full_messages = ctx->messages;
+    }
+
+    std::string payload;
+    json payload_json;
+    std::string system_prompt;
+    if (ctx->is_chat && !full_messages.empty())
+    {
+        payload_json = BuildMessagesPayload(full_messages);
+        payload = payload_json.dump();
+        system_prompt.clear();
+    }
+    else
+    {
+        payload = ctx->prompt;
+        system_prompt.clear();
+    }
 
     int fd = ConnectTcp(host_, port_);
     if (fd < 0)
@@ -209,6 +255,43 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         {
         }
     }
+    int infer_timeout_ms = infer_timeout_ms_ > 0 ? infer_timeout_ms_ : timeout_ms_;
+    if (!ctx->stream && infer_timeout_ms_ <= 0)
+    {
+        const long long by_tokens = static_cast<long long>(max_tokens) * 200;
+        if (by_tokens > infer_timeout_ms)
+            infer_timeout_ms = static_cast<int>(std::min<long long>(by_tokens, 120000));
+    }
+
+    auto set_param_number = [&](json &j, const char *key)
+    {
+        auto it = ctx->params.find(key);
+        if (it == ctx->params.end())
+            return;
+        try
+        {
+            double v = std::stod(it->second);
+            j[key] = v;
+        }
+        catch (...)
+        {
+        }
+    };
+
+    auto set_param_int = [&](json &j, const char *key)
+    {
+        auto it = ctx->params.find(key);
+        if (it == ctx->params.end())
+            return;
+        try
+        {
+            long long v = std::stoll(it->second);
+            j[key] = v;
+        }
+        catch (...)
+        {
+        }
+    };
 
     json setup_data = {
         {"model", ctx->model.empty() ? unit_name_ : ctx->model},
@@ -219,6 +302,20 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         {"prompt", system_prompt}
     };
 
+    set_param_number(setup_data, "temperature");
+    set_param_number(setup_data, "top_p");
+    set_param_int(setup_data, "top_k");
+    if (ctx->params.find("repeat_penalty") != ctx->params.end())
+        set_param_number(setup_data, "repeat_penalty");
+    else
+        set_param_number(setup_data, "repetition_penalty");
+    set_param_number(setup_data, "presence_penalty");
+    set_param_number(setup_data, "frequency_penalty");
+    set_param_int(setup_data, "repeat_last_n");
+    set_param_int(setup_data, "seed");
+
+    const std::string setup_key = response_format + "|" + setup_data.dump();
+
     json setup_req = {
         {"request_id", ctx->request_id},
         {"work_id", unit_name_},
@@ -227,53 +324,84 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         {"data", setup_data}
     };
 
-    if (!SendLine(fd, setup_req.dump()))
+    if (reuse_work_id_)
     {
-        ::close(fd);
-        ctx->error_message = "StackFlowEngine: send setup failed";
-        ctx->EmitFinish(FinishReason::error);
-        return;
-    }
-
-    if (!ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_))
-    {
-        ::close(fd);
-        ctx->error_message = "StackFlowEngine: setup timeout or cancelled";
-        ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
-        return;
-    }
-
-    try
-    {
-        json resp = json::parse(line);
-        if (resp.contains("error") && resp["error"].is_object())
+        std::lock_guard<std::mutex> lk(work_mu_);
+        const bool is_stream = ctx->stream;
+        const std::string &cached_key = is_stream ? cached_setup_key_stream_ : cached_setup_key_nostream_;
+        if (!cached_key.empty() && cached_key == setup_key)
         {
-            int code = resp["error"].value("code", 0);
-            if (code != 0)
-            {
-                ctx->error_message = resp["error"].value("message", "stackflow error");
-                ctx->EmitFinish(FinishReason::error);
-                ::close(fd);
-                return;
-            }
+            work_id = is_stream ? cached_work_id_stream_ : cached_work_id_nostream_;
         }
-        if (resp.contains("work_id") && resp["work_id"].is_string())
-            work_id = resp["work_id"].get<std::string>();
-    }
-    catch (...)
-    {
-        ctx->error_message = "StackFlowEngine: setup response parse failed";
-        ctx->EmitFinish(FinishReason::error);
-        ::close(fd);
-        return;
+        if (work_id.empty() && !cached_setup_key_stream_.empty() && cached_setup_key_stream_ == setup_key)
+        {
+            work_id = cached_work_id_stream_;
+        }
     }
 
     if (work_id.empty())
     {
-        ctx->error_message = "StackFlowEngine: empty work_id";
-        ctx->EmitFinish(FinishReason::error);
-        ::close(fd);
-        return;
+        if (!SendLine(fd, setup_req.dump()))
+        {
+            ::close(fd);
+            ctx->error_message = "StackFlowEngine: send setup failed";
+            ctx->EmitFinish(FinishReason::error);
+            return;
+        }
+
+        if (!ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_))
+        {
+            ::close(fd);
+            ctx->error_message = "StackFlowEngine: setup timeout or cancelled";
+            ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
+            return;
+        }
+
+        try
+        {
+            json resp = json::parse(line);
+            if (resp.contains("error") && resp["error"].is_object())
+            {
+                int code = resp["error"].value("code", 0);
+                if (code != 0)
+                {
+                    ctx->error_message = resp["error"].value("message", "stackflow error");
+                    if (code == -21 || code == -26)
+                    {
+                        ctx->params["error_code"] = "overloaded";
+                    }
+                    ctx->EmitFinish(FinishReason::error);
+                    ::close(fd);
+                    return;
+                }
+            }
+            if (resp.contains("work_id") && resp["work_id"].is_string())
+                work_id = resp["work_id"].get<std::string>();
+        }
+        catch (...)
+        {
+            ctx->error_message = "StackFlowEngine: setup response parse failed";
+            ctx->EmitFinish(FinishReason::error);
+            ::close(fd);
+            return;
+        }
+
+        if (work_id.empty())
+        {
+            ctx->error_message = "StackFlowEngine: empty work_id";
+            ctx->EmitFinish(FinishReason::error);
+            ::close(fd);
+            return;
+        }
+
+        if (reuse_work_id_)
+        {
+            std::lock_guard<std::mutex> lk(work_mu_);
+            cached_work_id_stream_ = work_id;
+            cached_work_id_nostream_ = work_id;
+            cached_setup_key_stream_ = setup_key;
+            cached_setup_key_nostream_ = setup_key;
+        }
     }
 
     json infer_req;
@@ -283,11 +411,18 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     infer_req["object"] = response_format;
     if (ctx->stream)
     {
-        infer_req["data"] = {{"delta", prompt}, {"index", 0}, {"finish", true}};
+        if (ctx->is_chat && !payload_json.is_null())
+        {
+            infer_req["data"] = {{"delta", payload_json}, {"index", 0}, {"finish", true}};
+        }
+        else
+        {
+            infer_req["data"] = {{"delta", payload}, {"index", 0}, {"finish", true}};
+        }
     }
     else
     {
-        infer_req["data"] = prompt;
+        infer_req["data"] = payload;
     }
 
     if (!SendLine(fd, infer_req.dump()))
@@ -329,6 +464,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     if (code != 0)
                     {
                         ctx->error_message = resp["error"].value("message", "stackflow error");
+                        if (code == -21 || code == -26)
+                        {
+                            ctx->params["error_code"] = "overloaded";
+                        }
                         ctx->EmitFinish(FinishReason::error);
                         break;
                     }
@@ -367,7 +506,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     }
     else
     {
-        if (ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_))
+        if (ReadLine(fd, line, buffer, ctx->cancelled, infer_timeout_ms))
         {
             try
             {
@@ -378,6 +517,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     if (code != 0)
                     {
                         ctx->error_message = resp["error"].value("message", "stackflow error");
+                        if (code == -21 || code == -26)
+                        {
+                            ctx->params["error_code"] = "overloaded";
+                        }
                         ctx->EmitFinish(FinishReason::error);
                     }
                 }
@@ -404,6 +547,11 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         }
     }
 
-    send_exit();
+    if (!reuse_work_id_)
+    {
+        send_exit();
+    }
     ::close(fd);
 }
+
+std::mutex StackFlowEngine::reuse_mu_;

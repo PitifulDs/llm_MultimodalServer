@@ -49,6 +49,22 @@ namespace
         return "llama";
     }
 
+    int get_default_max_tokens()
+    {
+        const char *env = std::getenv("DEFAULT_MAX_TOKENS");
+        if (!env || !*env)
+            return 0;
+        try
+        {
+            int v = std::stoi(env);
+            return v > 0 ? v : 0;
+        }
+        catch (...)
+        {
+            return 0;
+        }
+    }
+
     std::string gen_request_id()
     {
         static std::atomic<uint64_t> seq{0};
@@ -98,6 +114,34 @@ namespace
         default:
             return "error";
         }
+    }
+
+    void set_param_if_number(const json &body, const char *key, std::unordered_map<std::string, std::string> &params)
+    {
+        if (!body.contains(key))
+            return;
+        if (body[key].is_number_float())
+        {
+            params[key] = std::to_string(body[key].get<double>());
+        }
+        else if (body[key].is_number_integer())
+        {
+            params[key] = std::to_string(body[key].get<long long>());
+        }
+    }
+
+    void set_sampling_params(const json &body, std::unordered_map<std::string, std::string> &params)
+    {
+        set_param_if_number(body, "max_tokens", params);
+        set_param_if_number(body, "temperature", params);
+        set_param_if_number(body, "top_p", params);
+        set_param_if_number(body, "top_k", params);
+        set_param_if_number(body, "repeat_penalty", params);
+        set_param_if_number(body, "repetition_penalty", params);
+        set_param_if_number(body, "presence_penalty", params);
+        set_param_if_number(body, "frequency_penalty", params);
+        set_param_if_number(body, "repeat_last_n", params);
+        set_param_if_number(body, "seed", params);
     }
 
 } // namespace
@@ -277,6 +321,12 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         if (max_tokens > 0)
             ctx->params["max_tokens"] = std::to_string(max_tokens);
     }
+    else
+    {
+        const int def_max = get_default_max_tokens();
+        if (def_max > 0)
+            ctx->params["max_tokens"] = std::to_string(def_max);
+    }
 
     // parse messages
     ctx->messages.clear();
@@ -284,6 +334,17 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     {
         ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
     }
+    set_sampling_params(body, ctx->params);
+
+    const char *mt_val = nullptr;
+    auto mt_it = ctx->params.find("max_tokens");
+    if (mt_it != ctx->params.end())
+        mt_val = mt_it->second.c_str();
+    LOG(INFO) << "[chat] start req=" << ctx->request_id
+              << " model=" << ctx->model
+              << " session=" << ctx->session_id
+              << " stream=0"
+              << " max_tokens=" << (mt_val ? mt_val : "default");
 
     // 备份客户端全量 messages（用于更新 history）
     const std::vector<Message> client_messages = ctx->messages;
@@ -468,6 +529,12 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         if (max_tokens > 0)
             ctx->params["max_tokens"] = std::to_string(max_tokens);
     }
+    else
+    {
+        const int def_max = get_default_max_tokens();
+        if (def_max > 0)
+            ctx->params["max_tokens"] = std::to_string(def_max);
+    }
 
     // parse messages
     ctx->messages.clear();
@@ -475,6 +542,17 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     {
         ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
     }
+    set_sampling_params(body, ctx->params);
+
+    const char *mt_val = nullptr;
+    auto mt_it = ctx->params.find("max_tokens");
+    if (mt_it != ctx->params.end())
+        mt_val = mt_it->second.c_str();
+    LOG(INFO) << "[chat-stream] start req=" << ctx->request_id
+              << " model=" << ctx->model
+              << " session=" << ctx->session_id
+              << " stream=1"
+              << " max_tokens=" << (mt_val ? mt_val : "default");
 
     // 备份客户端全量 messages（用于更新 history）
     const std::vector<Message> client_messages = ctx->messages;

@@ -205,15 +205,12 @@ void usr_print_error(const std::string &request_id, const std::string &work_id, 
     zmq_com_send(zmq_out, out);
 }
 
-std::mutex unit_action_match_mtx;
-simdjson::ondemand::parser parser;
 typedef int (*sys_fun_call)(int, const nlohmann::json &);
 
 void unit_action_match(int com_id, const std::string &json_str)
 {
-    std::lock_guard<std::mutex> guard(unit_action_match_mtx);
-
     // json数据 string类转成simdjson可操作的类型
+    simdjson::ondemand::parser parser;
     simdjson::padded_string json_string(json_str);
     simdjson::ondemand::document doc;
     auto error = parser.iterate(json_string).get(doc);
@@ -276,8 +273,17 @@ void unit_action_match(int com_id, const std::string &json_str)
             usr_print_error(request_id, work_id, "{\"code\":-4, \"message\":\"inference data push false\"}", com_id);
         }
     } else {
-        if ((work_id_fragment[0].length() != 0) && (remote_call(com_id, json_str) != 0)) {
-            usr_print_error(request_id, work_id, "{\"code\":-9, \"message\":\"unit call false\"}", com_id);
+        if (work_id_fragment[0].length() != 0) {
+            // async setup/pause/exit/taskinfo to avoid blocking main handler
+            std::string json_copy = json_str;
+            std::string req_id_copy = request_id;
+            std::string work_id_copy = work_id;
+            std::thread([com_id, json_copy, req_id_copy, work_id_copy]() {
+                if (remote_call(com_id, json_copy) != 0) {
+                    usr_print_error(req_id_copy, work_id_copy,
+                                    "{\"code\":-9, \"message\":\"unit call false\"}", com_id);
+                }
+            }).detach();
         }
     }
 }

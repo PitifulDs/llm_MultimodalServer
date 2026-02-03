@@ -74,6 +74,11 @@ namespace
             set_env_from_json(cfg, "stackflow_port", "STACKFLOW_PORT");
             set_env_from_json(cfg, "stackflow_unit", "STACKFLOW_UNIT");
             set_env_from_json(cfg, "stackflow_timeout_ms", "STACKFLOW_TIMEOUT_MS");
+            set_env_from_json(cfg, "stackflow_infer_timeout_ms", "STACKFLOW_INFER_TIMEOUT_MS");
+            set_env_from_json(cfg, "stackflow_reuse_work_id", "STACKFLOW_REUSE_WORK_ID");
+            set_env_from_json(cfg, "stackflow_serialize_reuse", "STACKFLOW_SERIALIZE_REUSE");
+            set_env_from_json(cfg, "stackflow_max_concurrency", "STACKFLOW_MAX_CONCURRENCY");
+            set_env_from_json(cfg, "warmup_model", "WARMUP_MODEL");
             std::cerr << "[serving-http] config loaded: " << cfg_path << std::endl;
         }
         catch (const std::exception &e)
@@ -103,10 +108,22 @@ int main(int argc, char **argv)
 
     network::EventLoop loop;
 
-    // 模型 warmup
-    std::cout << "[serving-http] warming up model..." << std::endl;
-    EngineFactory::Create("llama");
-    std::cout << "[serving-http] warmup done" << std::endl;
+    // 模型 warmup（可关闭）
+    bool warmup = true;
+    if (const char *v = std::getenv("WARMUP_MODEL"))
+    {
+        warmup = std::string(v) != "0";
+    }
+    if (warmup)
+    {
+        std::cout << "[serving-http] warming up model..." << std::endl;
+        EngineFactory::Create("llama");
+        std::cout << "[serving-http] warmup done" << std::endl;
+    }
+    else
+    {
+        std::cout << "[serving-http] warmup skipped" << std::endl;
+    }
 
     HttpGateway gateway;
 

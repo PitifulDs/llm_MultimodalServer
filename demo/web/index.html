@@ -228,6 +228,19 @@
         <label>System (optional)</label>
         <input id="system" placeholder="You are a helpful assistant." />
 
+        <label>Session</label>
+        <div class="row">
+          <div>
+            <input id="sessionId" placeholder="Auto-generate per request" />
+          </div>
+          <div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:0;">
+              <input id="newSessionEach" type="checkbox" checked style="width:auto; margin:0;" />
+              <span>New session per request</span>
+            </label>
+          </div>
+        </div>
+
         <label>User Prompt</label>
         <textarea id="prompt">Introduce yourself in one sentence.</textarea>
 
@@ -265,11 +278,20 @@
     const sendBtn = document.getElementById('sendBtn');
     const stopBtn = document.getElementById('stopBtn');
     const modeEl = document.getElementById('streamMode');
+    const sessionIdEl = document.getElementById('sessionId');
+    const newSessionEachEl = document.getElementById('newSessionEach');
 
     let aborter = null;
 
     function setStatus(text) {
       statusEl.textContent = text;
+    }
+
+    function genId(prefix = 'sess') {
+      if (crypto && crypto.randomUUID) {
+        return `${prefix}-${crypto.randomUUID()}`;
+      }
+      return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     }
 
     function approxTokens(text) {
@@ -286,8 +308,14 @@
       const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
       const system = document.getElementById('system').value.trim();
       const prompt = document.getElementById('prompt').value.trim();
+      let sessionId = sessionIdEl.value.trim();
 
       if (!baseUrl || !prompt) return;
+
+      if (newSessionEachEl.checked || !sessionId) {
+        sessionId = genId('sess');
+        sessionIdEl.value = sessionId;
+      }
 
       output.textContent = '';
       ttfbEl.textContent = '-';
@@ -302,7 +330,13 @@
       if (system) messages.push({ role: 'system', content: system });
       messages.push({ role: 'user', content: prompt });
 
-      const payload = { model, max_tokens: maxTokens, messages };
+      const payload = {
+        model,
+        max_tokens: maxTokens,
+        messages,
+        session_id: sessionId,
+        request_id: genId('req'),
+      };
 
       aborter = new AbortController();
       const start = performance.now();
@@ -313,6 +347,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          cache: 'no-store',
           signal: aborter.signal,
         });
 
@@ -381,8 +416,14 @@
       const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
       const system = document.getElementById('system').value.trim();
       const prompt = document.getElementById('prompt').value.trim();
+      let sessionId = sessionIdEl.value.trim();
 
       if (!baseUrl || !prompt) return;
+
+      if (newSessionEachEl.checked || !sessionId) {
+        sessionId = genId('sess');
+        sessionIdEl.value = sessionId;
+      }
 
       output.textContent = '';
       ttfbEl.textContent = '-';
@@ -397,7 +438,13 @@
       if (system) messages.push({ role: 'system', content: system });
       messages.push({ role: 'user', content: prompt });
 
-      const payload = { model, max_tokens: maxTokens, messages };
+      const payload = {
+        model,
+        max_tokens: maxTokens,
+        messages,
+        session_id: sessionId,
+        request_id: genId('req'),
+      };
       aborter = new AbortController();
       const start = performance.now();
 
@@ -406,6 +453,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          cache: 'no-store',
           signal: aborter.signal,
         });
 

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>  // snprintf
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/uio.h>  // readv
 #include <unistd.h>
@@ -76,7 +77,8 @@ int sockets::createNonblockingOrDie(sa_family_t family) {
   int sockfd =
       ::socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (sockfd < 0) {
-    LOG(FATAL) << "sockets::createNonblockingOrDie";
+    LOG(FATAL) << "sockets::createNonblockingOrDie errno=" << errno
+               << " " << strerror(errno);
   }
 #endif
   return sockfd;

@@ -22,6 +22,8 @@ include_directories(
 
 file(GLOB SRCS 
     src/main.cpp
+    src/llm_task.cc
+    src/llm_server.cc
     ../../engine/LlamaEngine.cc
     ../../engine/ModelContext.cc
 )

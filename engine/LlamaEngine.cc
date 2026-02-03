@@ -9,6 +9,7 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <unordered_map>
 
 namespace
 {
@@ -26,6 +27,122 @@ int get_env_int(const char *name, int def)
     {
         return def;
     }
+}
+
+bool get_param_float(const std::unordered_map<std::string, std::string> &params, const char *key, float &out)
+{
+    auto it = params.find(key);
+    if (it == params.end())
+        return false;
+    try
+    {
+        out = std::stof(it->second);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool get_param_int(const std::unordered_map<std::string, std::string> &params, const char *key, int &out)
+{
+    auto it = params.find(key);
+    if (it == params.end())
+        return false;
+    try
+    {
+        out = std::stoi(it->second);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool get_param_uint32(const std::unordered_map<std::string, std::string> &params, const char *key, uint32_t &out)
+{
+    auto it = params.find(key);
+    if (it == params.end())
+        return false;
+    try
+    {
+        long long v = std::stoll(it->second);
+        if (v < 0)
+            v = 0;
+        out = static_cast<uint32_t>(v);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+llama_sampler *build_sampler(const llama_vocab *vocab, const std::unordered_map<std::string, std::string> &params)
+{
+    (void)vocab;
+    float temperature = 0.0f;
+    float top_p = 1.0f;
+    int top_k = 0;
+    float repeat_penalty = 1.0f;
+    float presence_penalty = 0.0f;
+    float frequency_penalty = 0.0f;
+    int repeat_last_n = 0;
+    uint32_t seed = LLAMA_DEFAULT_SEED;
+
+    const bool has_temp = get_param_float(params, "temperature", temperature);
+    const bool has_top_p = get_param_float(params, "top_p", top_p);
+    const bool has_top_k = get_param_int(params, "top_k", top_k);
+    bool has_repeat_penalty = get_param_float(params, "repeat_penalty", repeat_penalty);
+    if (!has_repeat_penalty)
+    {
+        has_repeat_penalty = get_param_float(params, "repetition_penalty", repeat_penalty);
+    }
+    const bool has_presence = get_param_float(params, "presence_penalty", presence_penalty);
+    const bool has_frequency = get_param_float(params, "frequency_penalty", frequency_penalty);
+    const bool has_repeat_last_n = get_param_int(params, "repeat_last_n", repeat_last_n);
+    const bool has_seed = get_param_uint32(params, "seed", seed);
+
+    bool use_sampling = false;
+    if (has_temp && temperature > 0.0f)
+        use_sampling = true;
+    if (has_top_k && top_k > 0)
+        use_sampling = true;
+    if (has_top_p && top_p > 0.0f && top_p < 1.0f)
+        use_sampling = true;
+    if ((has_repeat_penalty && repeat_penalty != 1.0f) || (has_presence && presence_penalty != 0.0f) ||
+        (has_frequency && frequency_penalty != 0.0f))
+        use_sampling = true;
+
+    if (!use_sampling)
+    {
+        return llama_sampler_init_greedy();
+    }
+
+    auto chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if ((has_repeat_penalty && repeat_penalty != 1.0f) || (has_presence && presence_penalty != 0.0f) ||
+        (has_frequency && frequency_penalty != 0.0f))
+    {
+        int last_n = 64;
+        if (has_repeat_last_n && repeat_last_n != 0)
+            last_n = repeat_last_n;
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(last_n, repeat_penalty, frequency_penalty, presence_penalty));
+    }
+    if (has_top_k && top_k > 0)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_k(top_k));
+    }
+    if (has_top_p && top_p > 0.0f && top_p < 1.0f)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(top_p, 1));
+    }
+    if (!has_temp || temperature <= 0.0f)
+        temperature = 1.0f;
+    llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
+    llama_sampler_chain_add(chain, llama_sampler_init_dist(has_seed ? seed : LLAMA_DEFAULT_SEED));
+    return chain;
 }
 } // namespace
 
@@ -289,6 +406,19 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         return;
     }
 
+    {
+        llama_sampler *new_sampler = build_sampler(vocab, ctx->params);
+        if (new_sampler)
+        {
+            if (mc->sampler)
+            {
+                llama_sampler_free(mc->sampler);
+                mc->sampler = nullptr;
+            }
+            mc->sampler = new_sampler;
+        }
+    }
+
     // 1) build delta prompt
     std::string prompt;
     if (ctx->is_chat)
@@ -352,6 +482,16 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         return;
     }
     mc->n_past += (int)toks.size();
+
+    // 让采样器感知本轮 prompt token（用于 penalties）
+    if (mc->sampler)
+    {
+        llama_sampler_reset(mc->sampler);
+        for (auto tok : toks)
+        {
+            llama_sampler_accept(mc->sampler, tok);
+        }
+    }
 
     // 取消点：prefill 之后
     if (ctx->cancelled.load(std::memory_order_acquire))

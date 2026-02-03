@@ -12,6 +12,7 @@
 #include <functional>
 #include <unordered_map>
 #include <mutex>
+#include <deque>
 #include <eventpp/eventqueue.h>
 #include <thread>
 #include <memory>
@@ -30,6 +31,9 @@ namespace StackFlows
         std::unordered_map<int, std::shared_ptr<pzmq>> zmq_;
         std::atomic<int> zmq_url_index_;
         std::unordered_map<std::string, int> zmq_url_map_;
+        std::mutex req_mu_;
+        std::unordered_map<std::string, std::string> req_url_;
+        std::deque<std::string> req_order_;
 
     public:
         std::string unit_name_;
@@ -69,6 +73,8 @@ namespace StackFlows
         void stop_subscriber(const std::string &zmq_url);
         int send_raw_to_pub(const std::string &raw);
         int send_raw_to_usr(const std::string &raw);
+        void bind_request_url(const std::string &req_id, const std::string &url);
+        void clear_request_url(const std::string &req_id);
         void set_push_url(const std::string &url);
         void cear_push_url();
         static int send_raw_for_url(const std::string &zmq_url, const std::string &raw);

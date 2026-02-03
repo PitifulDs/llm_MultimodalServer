@@ -40,6 +40,8 @@ void llm_channel_obj::subscriber_event_call(const std::function<void(const std::
                 set_push_url(zmq_com);
             request_id_ = sample_json_str_get(_raw, "request_id");
             work_id_ = sample_json_str_get(_raw, "work_id");
+            if (!zmq_com.empty())
+                bind_request_url(request_id_, zmq_com);
             break;
         }
         pos = _raw.find(user_inference_flage_str, pos + sizeof(user_inference_flage_str));
@@ -138,12 +140,50 @@ int llm_channel_obj::send_raw_to_usr(const std::string &raw)
 {
     if (zmq_[-2])
     {
+        std::string url;
+        {
+            std::lock_guard<std::mutex> lk(req_mu_);
+            auto it = req_url_.find(request_id_);
+            if (it != req_url_.end())
+                url = it->second;
+        }
+        if (!url.empty())
+        {
+            return send_raw_for_url(url, raw);
+        }
         return zmq_[-2]->send_data(raw);
     }
     else
     {
         return -1;
     }
+}
+
+void llm_channel_obj::bind_request_url(const std::string &req_id, const std::string &url)
+{
+    if (req_id.empty() || url.empty())
+        return;
+    std::lock_guard<std::mutex> lk(req_mu_);
+    if (req_url_.find(req_id) == req_url_.end())
+        req_order_.push_back(req_id);
+    req_url_[req_id] = url;
+    const size_t kMaxTrack = 256;
+    while (req_order_.size() > kMaxTrack)
+    {
+        const std::string old = req_order_.front();
+        req_order_.pop_front();
+        auto it = req_url_.find(old);
+        if (it != req_url_.end() && it->first == old)
+            req_url_.erase(it);
+    }
+}
+
+void llm_channel_obj::clear_request_url(const std::string &req_id)
+{
+    if (req_id.empty())
+        return;
+    std::lock_guard<std::mutex> lk(req_mu_);
+    req_url_.erase(req_id);
 }
 
 void llm_channel_obj::set_push_url(const std::string &url)

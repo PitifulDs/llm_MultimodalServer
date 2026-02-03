@@ -263,10 +263,7 @@ namespace StackFlows
                 // url:  "ipc:///tmp/rrpc.test"
                 // file: /tmp/rrpc.test
                 std::string socket_file = url.substr(rpc_url_head_length);
-                if (access(socket_file.c_str(), F_OK) != 0)
-                {
-                    return -1;
-                }
+                // don't hard-fail if socket file is not ready; let ZMQ connect retry
             }
             zmq_setsockopt(zmq_socket_, ZMQ_SNDTIMEO, &timeout_, sizeof(timeout_));
             zmq_setsockopt(zmq_socket_, ZMQ_RCVTIMEO, &timeout_, sizeof(timeout_));

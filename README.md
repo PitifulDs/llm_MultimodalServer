@@ -52,6 +52,14 @@ Start in order:
 
 Set `serving_backend` to `stackflow` in `config.json` or via env `SERVING_BACKEND=stackflow`.
 
+You can also use the helper:
+
+```bash
+bash scripts/start_all.sh
+```
+
+This loads `config.json` and exports worker env like `STACKFLOW_MODEL_PATH` and `STACKFLOW_MAX_CONCURRENCY`.
+
 ### Worker model path
 
 `node/test` uses a default model path in code. You can override via env:
@@ -78,6 +86,10 @@ cmake --build node/test/build -j
 - `default_max_tokens`
 - `serving_backend` (`local` or `stackflow`)
 - `stackflow_host`, `stackflow_port`, `stackflow_unit`, `stackflow_timeout_ms`
+- `stackflow_infer_timeout_ms`
+- `stackflow_reuse_work_id` (1 reuse / 0 always setup)
+- `stackflow_serialize_reuse` (1 serialize when reusing work_id)
+- `stackflow_max_concurrency` (worker-side concurrency limit)
 
 You can also set `CONFIG_PATH` to load a different config file.
 
@@ -104,3 +116,7 @@ rm -f /tmp/llm/*.sock*
 ```
 
 Then restart `unit-manager` and `node/test`.
+
+- If you see "Unit busy, try later.", increase concurrency by:
+  - running more workers (`node/test`), or
+  - raising `stackflow_max_concurrency` in `config.json` (applies to `node/test`).

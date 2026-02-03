@@ -19,6 +19,15 @@ private:
     std::string response_format_;
     std::string response_format_stream_;
     int timeout_ms_{10000};
+    int infer_timeout_ms_{0};
+    bool reuse_work_id_{true};
+    bool serialize_reuse_{true};
+    std::mutex work_mu_;
+    std::string cached_work_id_stream_;
+    std::string cached_work_id_nostream_;
+    std::string cached_setup_key_stream_;
+    std::string cached_setup_key_nostream_;
+    static std::mutex reuse_mu_;
 
     static std::string BuildPrompt(const std::vector<Message> &messages);
     static std::string ExtractSystemPrompt(const std::vector<Message> &messages);

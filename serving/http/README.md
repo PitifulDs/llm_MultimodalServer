@@ -193,6 +193,12 @@ Serving v2 将职责清晰拆分：
 - `LLAMA_N_THREADS`：推理线程数（默认 4）
 - `LLAMA_N_THREADS_BATCH`：batch 线程数（默认 4）
 - `KV_RESET_MARGIN`：KV cache 逼近 n_ctx 的重建阈值（默认 256）
+- `DEFAULT_MAX_TOKENS`：缺省 max_tokens（未传时生效）
+- `SERVING_BACKEND`：`local` / `stackflow`
+- `STACKFLOW_HOST` / `STACKFLOW_PORT` / `STACKFLOW_UNIT`
+- `STACKFLOW_TIMEOUT_MS` / `STACKFLOW_INFER_TIMEOUT_MS`
+- `STACKFLOW_REUSE_WORK_ID` / `STACKFLOW_SERIALIZE_REUSE`
+- `STACKFLOW_MAX_CONCURRENCY`（worker 并发）
 
 ## 5.1.1 config.json（启动时读取）
 默认读取根目录 `config.json`，也可通过环境变量 `CONFIG_PATH` 指定路径。
