@@ -33,7 +33,7 @@ static int get_env_int(const char *name, int def_val)
 }
 
 static const char *kDefaultModelPath =
-    "/home/dongsong/workspace/llm_MultimodalServer/llm_MultimodalServer/models/"
+    "models/"
     "qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf";
 
 static std::string gen_request_id()

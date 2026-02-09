@@ -7,6 +7,7 @@ CFG_PATH="${CONFIG_PATH:-${ROOT}/config.json}"
 export CFG_PATH
 
 mkdir -p "${LOG_DIR}"
+cd "${ROOT}"
 
 # load config for worker env (model path / concurrency)
 if [ -f "${CFG_PATH}" ]; then
@@ -25,6 +26,11 @@ emit("llama_model_path", "STACKFLOW_MODEL_PATH")
 emit("stackflow_max_concurrency", "STACKFLOW_MAX_CONCURRENCY")
 PY
   )"
+fi
+
+# resolve relative model path from config to absolute path for worker
+if [ -n "${STACKFLOW_MODEL_PATH:-}" ] && [[ "${STACKFLOW_MODEL_PATH}" != /* ]]; then
+  export STACKFLOW_MODEL_PATH="${ROOT}/${STACKFLOW_MODEL_PATH}"
 fi
 
 # stop any previous processes if pid files exist

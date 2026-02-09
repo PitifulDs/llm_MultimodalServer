@@ -35,7 +35,7 @@ namespace
         {
             const char *path = GetEnvOrDefault(
                 "LLAMA_MODEL_PATH",
-                "/home/dongsong/workspace/llm_MultimodalServer/llm_MultimodalServer/models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf");
+                "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf");
             return std::make_shared<LlamaEngine>(path);
         }
         if (model == "dummy")

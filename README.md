@@ -15,13 +15,13 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-Run:
+Run (from repo root so relative paths resolve):
 
 ```bash
 ./build/serving/http/serving_http_server
 ```
 
-By default it reads `config.json` in repo root.
+By default it reads `config.json` in repo root. Paths in `config.json` are **relative to the repo root**.
 
 Test:
 
@@ -58,11 +58,11 @@ You can also use the helper:
 bash scripts/start_all.sh
 ```
 
-This loads `config.json` and exports worker env like `STACKFLOW_MODEL_PATH` and `STACKFLOW_MAX_CONCURRENCY`.
+This loads `config.json`, resolves relative model paths against the repo root, and exports worker env like `STACKFLOW_MODEL_PATH` and `STACKFLOW_MAX_CONCURRENCY`.
 
 ### Worker model path
 
-`node/test` uses a default model path in code. You can override via env:
+`node/test` uses a default model path in code. You can override via env (absolute path recommended if you start from another directory):
 
 ```bash
 export STACKFLOW_MODEL_PATH=/path/to/model.gguf
