@@ -5,6 +5,7 @@
 #include "serving/core/ServingContext.h"
 #include "serving/core/SessionManager.h"
 #include "OpenAIStreamWriter.h"
+#include "HttpUtils.h"
 
 #include "../../utils/json.hpp"
 #include <glog/logging.h>
@@ -73,75 +74,35 @@ namespace
 
     bool msg_equal(const Message &a, const Message &b)
     {
-        return a.role == b.role && a.content == b.content;
+        return http_utils::msg_equal(a, b);
     }
 
     bool is_prefix(const std::vector<Message> &history,
                    const std::vector<Message> &incoming)
     {
-        if (history.size() > incoming.size())
-            return false;
-        for (size_t i = 0; i < history.size(); ++i)
-        {
-            if (!msg_equal(history[i], incoming[i]))
-                return false;
-        }
-        return true;
+        return http_utils::is_prefix(history, incoming);
     }
 
     std::vector<Message> diff_messages(const std::vector<Message> &history,
                                        const std::vector<Message> &incoming)
     {
-        if (!is_prefix(history, incoming))
-        {
-            return incoming;
-        }
-        return std::vector<Message>(incoming.begin() + history.size(), incoming.end());
+        return http_utils::diff_messages(history, incoming);
     }
 
     // FinishReason -> openai finish_reaso
     const char *finish_reason_to_str(FinishReason r)
     {
-        switch (r)
-        {
-        case FinishReason::stop:
-            return "stop";
-        case FinishReason::length:
-            return "length";
-        case FinishReason::cancelled:
-            return "cancelled";
-        case FinishReason::error:
-        default:
-            return "error";
-        }
+        return http_utils::finish_reason_to_str(r);
     }
 
     void set_param_if_number(const json &body, const char *key, std::unordered_map<std::string, std::string> &params)
     {
-        if (!body.contains(key))
-            return;
-        if (body[key].is_number_float())
-        {
-            params[key] = std::to_string(body[key].get<double>());
-        }
-        else if (body[key].is_number_integer())
-        {
-            params[key] = std::to_string(body[key].get<long long>());
-        }
+        http_utils::set_param_if_number(body, key, params);
     }
 
     void set_sampling_params(const json &body, std::unordered_map<std::string, std::string> &params)
     {
-        set_param_if_number(body, "max_tokens", params);
-        set_param_if_number(body, "temperature", params);
-        set_param_if_number(body, "top_p", params);
-        set_param_if_number(body, "top_k", params);
-        set_param_if_number(body, "repeat_penalty", params);
-        set_param_if_number(body, "repetition_penalty", params);
-        set_param_if_number(body, "presence_penalty", params);
-        set_param_if_number(body, "frequency_penalty", params);
-        set_param_if_number(body, "repeat_last_n", params);
-        set_param_if_number(body, "seed", params);
+        http_utils::set_sampling_params(body, params);
     }
 
 } // namespace

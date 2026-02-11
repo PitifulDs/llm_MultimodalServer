@@ -186,3 +186,16 @@ rm -f /tmp/llm/*.sock*
 - 通过统一 ServingContext 抽象接入本地与远程推理。
 - 我把 IO 与推理解耦，避免阻塞事件循环。
 - 我把配置、脚本与日志打包成可演示的完整项目。
+
+---
+
+**单元测试**
+
+当前提供最小单元测试（不依赖模型文件），用于验证 HTTP 工具函数与参数解析逻辑。
+
+```bash
+cmake -S tests/unit -B tests/unit/build
+cmake --build tests/unit/build -j
+./tests/unit/build/http_utils_test
+```
+
