@@ -131,3 +131,29 @@
 29. 如果有更多时间，你会做什么？
 答: 做 Prometheus 指标、完善 health check、加入更严格的超时/重试策略。
 
+
+---
+
+## Reactor 相关（network 模块）
+
+30. 什么是 Reactor？
+答: 事件驱动模型，IO 多路复用 + 回调分发，应用在事件就绪时进行读写。
+
+31. 你们项目里 Reactor 体现在哪些类？
+答: `network/` 模块，`EventLoop` 负责事件循环，`Poller` 封装 epoll，`Channel` 绑定 fd 与回调，`TcpServer`/`TcpConnection` 管理连接。
+
+32. Reactor 与 Proactor 区别？
+答: Reactor 由应用在就绪后主动读写；Proactor 由系统完成 IO 后回调。
+
+33. 为什么要非阻塞 IO？
+答: 防止单连接阻塞事件循环，保证高并发。
+
+34. 你们如何避免 IO 和推理互相阻塞？
+答: IO 在 EventLoop 线程，推理在 EngineExecutor 的 worker 线程池。
+
+35. epoll 的优势？
+答: 大量连接场景下效率高，避免轮询全部 fd。
+
+36. 适用场景？
+答: 高并发、连接多、单次处理轻量的网络服务。
+
