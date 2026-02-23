@@ -85,7 +85,7 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 bash scripts/start_all.sh
 ```
 
-`start_all.sh` 会读取 `config.json`，解析相对路径为绝对路径，导出 `STACKFLOW_MODEL_PATH` 和 `STACKFLOW_MAX_CONCURRENCY`，清理旧 socket，并将日志写到 `/tmp/llm_serving`。
+`start_all.sh` 会读取 `config.json`，解析相对路径为绝对路径，导出 `STACKFLOW_MODEL_PATH` / `LLAMA_MODEL_PATH` / `LLM_MODEL_PATH` / `STACKFLOW_MAX_CONCURRENCY`，并自动设置 `LD_LIBRARY_PATH`；随后清理旧 socket，将日志写到 `/tmp/llm_serving`。
 
 ---
 
@@ -198,4 +198,23 @@ cmake -S tests/unit -B tests/unit/build
 cmake --build tests/unit/build -j
 ./tests/unit/build/http_utils_test
 ```
+
+---
+
+**压测数据（2026-02-23）**
+
+`llama`（SSE，`sample/stress_sse.py`）
+- 场景 A：`concurrency=6, rounds=30, abort_ratio=0`
+- 结果：`total=30, ok=30, failed=0, aborted=0, avg_dur_s=15.437, avg_bytes=2691.4`
+- 场景 B：`concurrency=10, rounds=80, abort_ratio=0.4`
+- 结果：`total=80, ok=80, failed=0, aborted=33, avg_dur_s=15.907, avg_bytes=1606.7`
+
+原始日志：
+- `/tmp/llm_serving/bench_llama_stream_full.txt`
+- `/tmp/llm_serving/bench_llama_stream_mixabort.txt`
+
+`stackflow`（SSE，stable）
+- 场景：`concurrency=2, rounds=20, abort_ratio=0`
+- 结果：`total=20, ok=20, failed=0, aborted=0, avg_dur_s=2.199, avg_bytes=7439.6`
+- 日志：`/tmp/llm_serving/bench_stackflow_stream_stable.txt`
 

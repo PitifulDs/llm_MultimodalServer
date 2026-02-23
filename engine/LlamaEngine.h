@@ -18,6 +18,7 @@ public:
     ~LlamaEngine() override;
 
     void Run(std::shared_ptr<ServingContext> ctx) override;
+    bool IsReady() const;
 
 private:
     std::string model_path_;

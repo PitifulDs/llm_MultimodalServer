@@ -23,6 +23,8 @@ def emit(key, env):
         return
     print(f'export {env}="{v}"')
 emit("llama_model_path", "STACKFLOW_MODEL_PATH")
+emit("llama_model_path", "LLAMA_MODEL_PATH")
+emit("llama_model_path", "LLM_MODEL_PATH")
 emit("stackflow_max_concurrency", "STACKFLOW_MAX_CONCURRENCY")
 PY
   )"
@@ -32,6 +34,15 @@ fi
 if [ -n "${STACKFLOW_MODEL_PATH:-}" ] && [[ "${STACKFLOW_MODEL_PATH}" != /* ]]; then
   export STACKFLOW_MODEL_PATH="${ROOT}/${STACKFLOW_MODEL_PATH}"
 fi
+if [ -n "${LLAMA_MODEL_PATH:-}" ] && [[ "${LLAMA_MODEL_PATH}" != /* ]]; then
+  export LLAMA_MODEL_PATH="${ROOT}/${LLAMA_MODEL_PATH}"
+fi
+if [ -n "${LLM_MODEL_PATH:-}" ] && [[ "${LLM_MODEL_PATH}" != /* ]]; then
+  export LLM_MODEL_PATH="${ROOT}/${LLM_MODEL_PATH}"
+fi
+
+# runtime shared libraries
+export LD_LIBRARY_PATH="${ROOT}/build/bin:${ROOT}/build/network:${ROOT}/node/test/build/bin:${LD_LIBRARY_PATH:-}"
 
 # stop any previous processes if pid files exist
 if [ -f "${LOG_DIR}/serving_http.pid" ]; then

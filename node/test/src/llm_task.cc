@@ -7,6 +7,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <unistd.h>
 
 using json = nlohmann::json;
 
@@ -30,6 +32,51 @@ static int get_env_int(const char *name, int def_val)
     {
         return def_val;
     }
+}
+
+static std::string get_exe_dir()
+{
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0)
+        return std::string();
+    buf[n] = '\0';
+    std::filesystem::path p(buf);
+    return p.parent_path().string();
+}
+
+static std::string resolve_model_path(const std::string &raw_path)
+{
+    if (raw_path.empty())
+        return raw_path;
+    namespace fs = std::filesystem;
+    fs::path p(raw_path);
+    if (p.is_absolute())
+        return p.string();
+
+    std::vector<fs::path> bases;
+    bases.emplace_back(fs::current_path());
+    const std::string exe_dir = get_exe_dir();
+    if (!exe_dir.empty())
+    {
+        fs::path b(exe_dir);
+        bases.push_back(b);
+        bases.push_back(b / "..");
+        bases.push_back(b / "../..");
+        bases.push_back(b / "../../..");
+        bases.push_back(b / "../../../..");
+    }
+
+    for (const auto &base : bases)
+    {
+        std::error_code ec;
+        fs::path candidate = fs::weakly_canonical(base / p, ec);
+        if (!ec && fs::exists(candidate, ec))
+        {
+            return candidate.string();
+        }
+    }
+    return (fs::current_path() / p).string();
 }
 
 static const char *kDefaultModelPath =
@@ -228,6 +275,10 @@ int llm_task::load_model(const nlohmann::json &config_body)
     }
     if (model_path_.empty())
     {
+        model_path_ = get_env_string("LLAMA_MODEL_PATH");
+    }
+    if (model_path_.empty())
+    {
         model_path_ = get_env_string("LLM_MODEL_PATH");
     }
     if (model_path_.empty())
@@ -243,6 +294,12 @@ int llm_task::load_model(const nlohmann::json &config_body)
         LOG(ERROR) << "[llm_task] model_path missing";
         return -1;
     }
+    model_path_ = resolve_model_path(model_path_);
+    if (!std::filesystem::exists(model_path_))
+    {
+        LOG(ERROR) << "[llm_task] model path not found: " << model_path_;
+        return -1;
+    }
 
     {
         std::lock_guard<std::mutex> lk(s_engine_mu_);
@@ -252,6 +309,11 @@ int llm_task::load_model(const nlohmann::json &config_body)
         {
             LOG(INFO) << "[llm_task] loading model path=" << model_path_;
             cached = std::make_shared<LlamaEngine>(model_path_);
+            if (!cached || !cached->IsReady())
+            {
+                LOG(ERROR) << "[llm_task] model load failed path=" << model_path_;
+                return -1;
+            }
             s_engine_ = cached;
             s_model_path_ = model_path_;
             created = true;

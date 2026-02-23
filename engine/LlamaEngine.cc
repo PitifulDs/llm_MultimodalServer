@@ -305,7 +305,10 @@ LlamaEngine::LlamaEngine(const std::string &model_path): model_path_(model_path)
 
     llama_model_params mparams = llama_model_default_params();
     model_ = llama_model_load_from_file(model_path.c_str(), mparams);
-    assert(model_ && "failed to load llama model");
+    if (!model_)
+    {
+        LOG(ERROR) << "[llama] failed to load model from " << model_path.c_str();
+    }
 }
 
 LlamaEngine::~LlamaEngine()
@@ -313,6 +316,11 @@ LlamaEngine::~LlamaEngine()
     if (model_)
         llama_model_free(model_);
     llama_backend_free();
+}
+
+bool LlamaEngine::IsReady() const
+{
+    return model_ != nullptr;
 }
 
 std::shared_ptr<ModelContext> LlamaEngine::CreateNewContext()

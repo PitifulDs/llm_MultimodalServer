@@ -248,6 +248,20 @@ curl -N -X POST "http://127.0.0.1:8080/v1/completions?stream=true" \
 python3 sample/stress_sse.py --concurrency 30 --rounds 500 --abort-ratio 0.7 --abort-min 0.2 --abort-max 2.5
 ```
 
+
+### 5.2.1 最新压测结果（2026-02-23, llama）
+- 场景 A：`concurrency=6, rounds=30, abort_ratio=0`
+- 结果：`total=30, ok=30, failed=0, aborted=0, avg_dur_s=15.437, avg_bytes=2691.4`
+- 场景 B：`concurrency=10, rounds=80, abort_ratio=0.4`
+- 结果：`total=80, ok=80, failed=0, aborted=33, avg_dur_s=15.907, avg_bytes=1606.7`
+- 日志：`/tmp/llm_serving/bench_llama_stream_full.txt`、`/tmp/llm_serving/bench_llama_stream_mixabort.txt`
+
+
+### 5.2.2 最新压测结果（2026-02-23, stackflow）
+- 稳定场景：`concurrency=2, rounds=20, abort_ratio=0`
+- 结果：`total=20, ok=20, failed=0, aborted=0, avg_dur_s=2.199, avg_bytes=7439.6`
+- 日志：`/tmp/llm_serving/bench_stackflow_stream_stable.txt`
+
 ## 5.3 Web Demo
 静态页面位于 `demo/web/index.html`，可直接用浏览器打开，或使用本地静态服务器：
 ```bash
