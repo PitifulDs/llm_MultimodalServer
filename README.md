@@ -200,6 +200,13 @@ bash scripts/start_all.sh
 - `docs/ARCHITECTURE.md`：架构、时序图、模块调用链
 - `docs/DESIGN_PATTERNS.md`：项目中使用到的设计模式与代码示例
 - `docs/INTERVIEW_QA.md`：面试高频问题与回答模板
+- `docs/PROJECT_HIGHLIGHTS.md`：开场亮点与可量化结果
+- `docs/TRADEOFFS.md`：关键技术取舍与方案对比
+- `docs/POSTMORTEM.md`：真实问题复盘与修复策略
+- `docs/PERF_REPORT.md`：压测方法、结果与吞吐估算
+- `docs/API_EXAMPLES.md`：可直接复制的 API 调用示例
+- `docs/OBSERVABILITY.md`：日志、指标与排障流程
+- `docs/INTERVIEW_PITCH.md`：1/3/8 分钟面试讲解稿
 
 **排查与日志**
 - 清理 socket:
@@ -234,6 +241,14 @@ cmake -S tests/unit -B tests/unit/build
 cmake --build tests/unit/build -j
 ./tests/unit/build/http_utils_test
 ```
+
+**Smoke 测试（服务自检）**
+
+```bash
+BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test.sh
+```
+
+可选参数：`BASE_URL` / `MODEL` / `TIMEOUT`。
 
 ---
 

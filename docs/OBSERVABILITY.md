@@ -1,0 +1,37 @@
+# 可观测与排障手册
+
+## 1. 日志位置
+- 统一日志目录：`/tmp/llm_serving`
+- 常见文件：
+  - `serving_http.log`
+  - `unit_manager.log`
+  - `node_test.log`
+
+## 2. 常用排查命令
+
+查看最近 200 行：
+```bash
+tail -n 200 /tmp/llm_serving/serving_http.log
+```
+
+实时追踪多进程日志：
+```bash
+tail -f /tmp/llm_serving/serving_http.log /tmp/llm_serving/unit_manager.log /tmp/llm_serving/node_test.log
+```
+
+按 request_id 关联：
+```bash
+rg "req-" /tmp/llm_serving/*.log
+```
+
+## 3. 建议重点关注字段
+- HTTP 层：`[http]`、`header_len`、`content_length`
+- 调度层：`[execQ] start`、`queue wait`
+- 结果层：`[chat] done`、`reason=error/cancelled/stop`
+- 远程层：`setup/inference/exit`、`connect failed`、`timeout`
+
+## 4. 故障定位流程
+1. 看 `serving_http.log`：请求是否到达？状态码是什么？
+2. 看 `unit_manager.log`：是否收到 setup/inference？
+3. 看 `node_test.log`：模型是否加载成功？是否有 token 输出？
+4. 对齐 `request_id`，确认断点发生在哪一层。
