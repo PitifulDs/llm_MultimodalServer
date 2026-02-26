@@ -163,7 +163,9 @@ bash scripts/start_all.sh
 
 **详细文档**
 
-详见 `docs/ARCHITECTURE.md`（包含模块职责、链路说明、面试讲解要点）。
+- `docs/ARCHITECTURE.md`：架构、时序图、模块调用链
+- `docs/DESIGN_PATTERNS.md`：项目中使用到的设计模式与代码示例
+- `docs/INTERVIEW_QA.md`：面试高频问题与回答模板
 
 **排查与日志**
 - 清理 socket:
