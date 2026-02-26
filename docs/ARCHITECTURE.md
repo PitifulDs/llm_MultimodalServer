@@ -47,7 +47,7 @@ flowchart TB
   C -->|HTTP/SSE| N
   SF -->|RPC/TCP| U
 ```
-
+![alt text](image.png)
 ### 2.2 目录结构图（代码在哪）
 
 ```text
@@ -156,6 +156,60 @@ sequenceDiagram
 2. `HttpGateway` 创建 `HttpStreamSession` 与 `OpenAIStreamWriter`，绑定 `on_chunk/on_finish`。
 3. `EngineExecutor` 调用 `ModelEngine::Run`，不断触发 `ctx->on_chunk`。
 4. `OpenAIStreamWriter` 将 delta 转成 SSE，结束时写 `[DONE]`。
+
+## 2.7 端到端调用时序（含函数名）
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant N as NetworkHttpServer
+  participant G as HttpGateway
+  participant SX as SessionExecutor
+  participant X as EngineExecutor
+  participant SF as StackFlowEngine
+  participant UM as unit-manager
+  participant W as worker(node/test)
+  participant O as OpenAIStreamWriter
+
+  C->>N: POST /v1/chat/completions
+  N->>G: HandleChatCompletion/HandleChatCompletionStream
+  G->>SX: Submit(session, task)
+  SX->>X: Execute(ctx)
+  X->>SF: Run(ctx)
+
+  SF->>UM: setup
+  UM->>W: on_data(setup)
+  W-->>UM: setup_resp(work_id)
+  UM-->>SF: setup response
+
+  SF->>UM: inference
+  UM->>W: on_data(inference)
+  W-->>UM: token/data
+  UM-->>SF: inference response
+
+  alt stream=true
+    SF-->>G: ctx->EmitDelta(...)
+    G->>O: OnChunk(delta)
+    O-->>C: data: {...}
+    SF-->>G: ctx->EmitFinish(stop)
+    O-->>C: data: [DONE]
+  else stream=false
+    SF-->>G: ctx->EmitDelta/EmitFinish
+    G-->>C: JSON chat.completion
+  end
+
+  SF->>UM: exit
+  UM->>W: on_data(exit)
+```
+![alt text](image-1.png)
+代码定位：
+- `serving/http/NetworkHttpServer.cc`
+- `serving/http/HttpGateway.cc`
+- `serving/core/EngineExecutor.cc`
+- `engine/StackFlowEngine.cc`
+- `unit-manager/src/remote_server.cpp`
+- `node/test/src/llm_server.cc`
+- `node/test/src/llm_task.cc`
 
 ## 3. 模块详解
 
