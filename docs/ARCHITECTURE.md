@@ -15,7 +15,72 @@ EdgeLLM-Serving 是端到端 LLM Serving 系统，支持两种后端。
 
 ---
 
-## 2. 核心流程图
+## 2. 项目结构图（清晰版）
+
+### 2.1 分层结构图（谁调用谁）
+
+```mermaid
+flowchart TB
+  C[Client]
+
+  subgraph S[Serving 进程]
+    N[NetworkHttpServer\nTCP/HTTP 解析]
+    G[HttpGateway\n协议适配/参数校验]
+    X[EngineExecutor\n队列调度/线程池]
+    L[LlamaEngine\n本地推理]
+    SF[StackFlowEngine\n远程调用]
+
+    N --> G --> X
+    X --> L
+    X --> SF
+  end
+
+  subgraph R[Remote 进程组]
+    U[unit-manager\n路由 + worker 管理]
+    W[node/test worker\n模型执行]
+    HC[hybrid-comm]
+
+    U --> W
+    W <--> HC
+  end
+
+  C -->|HTTP/SSE| N
+  SF -->|RPC/TCP| U
+```
+
+### 2.2 目录结构图（代码在哪）
+
+```text
+EdgeLLM-Serving/
+├─ serving/
+│  ├─ http/
+│  │  ├─ NetworkHttpServer.cc
+│  │  ├─ HttpGateway.cc
+│  │  └─ OpenAIStreamWriter.cc
+│  └─ core/
+│     ├─ ServingContext.h
+│     └─ EngineExecutor.cc
+├─ engine/
+│  ├─ EngineFactory.cc
+│  ├─ LlamaEngine.cc
+│  ├─ StackFlowEngine.cc
+│  └─ RpcEngine.cc
+├─ network/              # Reactor: EventLoop/Poller/Channel/TcpServer
+├─ unit-manager/         # 远程调度与 worker 生命周期管理
+├─ node/test/            # demo worker 入口与任务执行
+├─ hybrid-comm/          # RPC/ZMQ 风格消息通道
+├─ scripts/              # start_all.sh / stop_all.sh
+└─ docs/                 # ARCHITECTURE / DESIGN_PATTERNS / INTERVIEW_QA
+```
+
+一句话记忆:
+- `serving` 负责“对外协议 + 调度”；
+- `engine` 负责“推理实现”；
+- `network/unit-manager/hybrid-comm/node` 负责“远程通信与执行链路”。
+
+---
+
+## 2.3 核心流程图
 
 ```mermaid
 flowchart LR
@@ -39,7 +104,7 @@ flowchart LR
 ---
 
 
-## 2.1 时序图（非流式）
+## 2.4 时序图（非流式）
 
 ```mermaid
 sequenceDiagram
@@ -56,7 +121,7 @@ sequenceDiagram
   G-->>Client: JSON response
 ```
 
-## 2.2 时序图（流式 SSE）
+## 2.5 时序图（流式 SSE）
 
 ```mermaid
 sequenceDiagram
@@ -78,7 +143,7 @@ sequenceDiagram
   W-->>Client: data: [DONE]
 ```
 
-## 2.3 模块间调用链（关键函数）
+## 2.6 模块间调用链（关键函数）
 
 非流式调用链:
 1. `NetworkHttpServer` 组包完成后调用 `HttpGateway::HandleChatCompletion`。

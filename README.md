@@ -20,16 +20,50 @@
 
 ---
 
-**架构**
+**架构（分层视图）**
 
+```mermaid
+flowchart TB
+  C[Client / Browser / curl]
+
+  subgraph S[Serving 进程]
+    N[NetworkHttpServer\nTCP/HTTP 解析]
+    G[HttpGateway\n协议校验/会话/SSE]
+    E[EngineExecutor\n队列调度/线程池]
+    L[LlamaEngine\n本地 llama.cpp]
+    SF[StackFlowEngine\n远程 RPC 客户端]
+
+    N --> G --> E
+    E --> L
+    E --> SF
+  end
+
+  subgraph R[Remote 推理链路]
+    U[unit-manager\n路由与生命周期]
+    W[node/test worker\n模型执行]
+    H[hybrid-comm]
+    U --> W
+    W <--> H
+  end
+
+  C -->|HTTP/SSE| N
+  SF -->|TCP/RPC| U
 ```
-Client
-  └─ HTTP/SSE
-     └─ NetworkHttpServer (TCP/HTTP 解析)
-        └─ HttpGateway (路由/校验/会话/SSE)
-           └─ EngineExecutor (队列 + 调度)
-              ├─ LlamaEngine (本地 llama.cpp)
-              └─ StackFlowEngine (远程 RPC)
+
+**目录结构（定位视图）**
+
+```text
+EdgeLLM-Serving/
+├─ serving/
+│  ├─ http/              # OpenAI 协议接入、SSE 输出
+│  └─ core/              # ServingContext、EngineExecutor
+├─ engine/               # LlamaEngine / StackFlowEngine / Factory
+├─ network/              # Reactor 网络库（EventLoop/Poller/Channel）
+├─ unit-manager/         # 远程调度与 worker 管理
+├─ node/test/            # demo worker（远程推理执行）
+├─ hybrid-comm/          # 远程通信封装
+├─ scripts/              # start_all/stop_all 等脚本
+└─ docs/                 # 架构、设计模式、面试问答
 ```
 
 **一次请求链路**
