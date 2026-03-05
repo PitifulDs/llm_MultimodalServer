@@ -135,6 +135,30 @@ bash scripts/start_all.sh
 - `stackflow_host`, `stackflow_port`, `stackflow_unit`
 - `stackflow_timeout_ms`, `stackflow_infer_timeout_ms`
 - `stackflow_reuse_work_id`, `stackflow_serialize_reuse`, `stackflow_max_concurrency`
+- `session_persist_redis`, `redis_host`, `redis_port`, `redis_db`
+- `session_redis_prefix`, `session_redis_ttl_seconds`, `redis_timeout_ms`
+
+**Redis 会话持久化（可选）**
+
+用于把 `session history` 落到 Redis，支持进程重启后恢复历史上下文。
+
+开启方式（`config.json`）:
+```json
+{
+  "session_persist_redis": 1,
+  "redis_host": "127.0.0.1",
+  "redis_port": 6379,
+  "redis_db": 0,
+  "session_redis_prefix": "edge:session:",
+  "session_redis_ttl_seconds": 1800,
+  "redis_timeout_ms": 1000
+}
+```
+
+行为说明:
+- `SessionManager::getOrCreate` 会优先从 Redis 拉取历史并恢复。
+- 请求成功结束（`stop/length`）后会写回最新历史到 Redis。
+- `SessionManager::close` 会删除对应 Redis key。
 
 ---
 
@@ -268,4 +292,3 @@ BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test.sh
 - 场景：`concurrency=2, rounds=20, abort_ratio=0`
 - 结果：`total=20, ok=20, failed=0, aborted=0, avg_dur_s=2.199, avg_bytes=7439.6`
 - 日志：`/tmp/llm_serving/bench_stackflow_stream_stable.txt`
-

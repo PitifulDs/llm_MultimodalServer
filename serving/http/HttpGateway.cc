@@ -341,14 +341,22 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     }
 
     // on_finish：仅 stop/length 更新 history，避免 cancelled/error 污染 session
-    ctx->on_finish = [this, session, ctx, client_messages, start_time](FinishReason r)
+    ctx->on_finish = [this, session, ctx, client_messages, start_time, mgr = session_mgr_.get()](FinishReason r)
     {
         if (r == FinishReason::stop || r == FinishReason::length)
         {
-            std::lock_guard<std::mutex> lk(session->mu);
-            session->history = client_messages;
-            session->history.push_back({"assistant", ctx->final_text});
-            session->touch();
+            std::vector<Message> history_snapshot;
+            {
+                std::lock_guard<std::mutex> lk(session->mu);
+                session->history = client_messages;
+                session->history.push_back({"assistant", ctx->final_text});
+                session->touch();
+                history_snapshot = session->history;
+            }
+            if (mgr)
+            {
+                mgr->PersistHistory(session->session_id, history_snapshot);
+            }
         }
 
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -586,14 +594,22 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     };
 
     // on_finish：仅 stop/length 更新 history；然后关闭 SSE
-    ctx->on_finish = [this, session, ctx, client_messages, http_session, start_time](FinishReason r)
+    ctx->on_finish = [this, session, ctx, client_messages, http_session, start_time, mgr = session_mgr_.get()](FinishReason r)
     {
         if (r == FinishReason::stop || r == FinishReason::length)
         {
-            std::lock_guard<std::mutex> lk(session->mu);
-            session->history = client_messages;
-            session->history.push_back({"assistant", ctx->final_text});
-            session->touch();
+            std::vector<Message> history_snapshot;
+            {
+                std::lock_guard<std::mutex> lk(session->mu);
+                session->history = client_messages;
+                session->history.push_back({"assistant", ctx->final_text});
+                session->touch();
+                history_snapshot = session->history;
+            }
+            if (mgr)
+            {
+                mgr->PersistHistory(session->session_id, history_snapshot);
+            }
         }
         http_session->Close();
 

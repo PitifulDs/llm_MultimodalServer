@@ -10,6 +10,8 @@
 
 #include "serving/core/Session.h"
 
+class RedisSessionStore;
+
 class SessionManager {
 public:
     using Clock = Session::Clock;
@@ -31,6 +33,7 @@ public:
     };
 
     explicit SessionManager(const Options &op);
+    ~SessionManager();
 
     // 获取或创建（不存在则创建）
     std::shared_ptr<Session> getOrCreate(const std::string &session_id, const std::string &model);
@@ -49,6 +52,10 @@ public:
 
     // 统计信息
     size_t size() const;
+
+    // 可选：将 session history 持久化到 Redis（best effort）
+    void PersistHistory(const std::string &session_id, const std::vector<Message> &history);
+    void DeletePersistedHistory(const std::string &session_id);
 
 private:
     // LRU: list front = most recent, back = least recent
@@ -72,8 +79,8 @@ private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, Entry> map_;
     LruList lru_; // only store session_id
+
+    std::unique_ptr<RedisSessionStore> redis_store_;
 };
-
-
 
 

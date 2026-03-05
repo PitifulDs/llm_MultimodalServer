@@ -20,5 +20,12 @@
   "stackflow_reuse_work_id": 1,
   "stackflow_serialize_reuse": 1,
   "stackflow_max_concurrency": 2,
-  "warmup_model": 0
+  "warmup_model": 0,
+  "session_persist_redis": 0,
+  "redis_host": "127.0.0.1",
+  "redis_port": 6379,
+  "redis_db": 0,
+  "session_redis_prefix": "edge:session:",
+  "session_redis_ttl_seconds": 1800,
+  "redis_timeout_ms": 1000
 }

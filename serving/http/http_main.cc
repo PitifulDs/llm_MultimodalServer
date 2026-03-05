@@ -79,6 +79,13 @@ namespace
             set_env_from_json(cfg, "stackflow_serialize_reuse", "STACKFLOW_SERIALIZE_REUSE");
             set_env_from_json(cfg, "stackflow_max_concurrency", "STACKFLOW_MAX_CONCURRENCY");
             set_env_from_json(cfg, "warmup_model", "WARMUP_MODEL");
+            set_env_from_json(cfg, "session_persist_redis", "SESSION_PERSIST_REDIS");
+            set_env_from_json(cfg, "redis_host", "REDIS_HOST");
+            set_env_from_json(cfg, "redis_port", "REDIS_PORT");
+            set_env_from_json(cfg, "redis_db", "REDIS_DB");
+            set_env_from_json(cfg, "session_redis_prefix", "SESSION_REDIS_PREFIX");
+            set_env_from_json(cfg, "session_redis_ttl_seconds", "SESSION_REDIS_TTL_SECONDS");
+            set_env_from_json(cfg, "redis_timeout_ms", "REDIS_TIMEOUT_MS");
             std::cerr << "[serving-http] config loaded: " << cfg_path << std::endl;
         }
         catch (const std::exception &e)

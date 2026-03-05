@@ -1,11 +1,67 @@
 #include "serving/core/SessionManager.h"
 
+#include <cstdlib>
+
 #include <glog/logging.h>
+
+#include "serving/core/RedisSessionStore.h"
+
+namespace
+{
+bool env_true(const char *name, bool def = false)
+{
+    const char *v = std::getenv(name);
+    if (!v || !*v)
+        return def;
+    const std::string s(v);
+    return s == "1" || s == "true" || s == "TRUE" || s == "on" || s == "ON";
+}
+
+int env_int(const char *name, int def)
+{
+    const char *v = std::getenv(name);
+    if (!v || !*v)
+        return def;
+    try
+    {
+        return std::stoi(v);
+    }
+    catch (...)
+    {
+        return def;
+    }
+}
+
+std::string env_str(const char *name, const char *def)
+{
+    const char *v = std::getenv(name);
+    if (!v || !*v)
+        return std::string(def);
+    return std::string(v);
+}
+} // namespace
 
 SessionManager::SessionManager(const Options &op)
     : opt_(op)
 {
+    if (env_true("SESSION_PERSIST_REDIS", false))
+    {
+        RedisSessionStore::Options ro;
+        ro.host = env_str("REDIS_HOST", "127.0.0.1");
+        ro.port = env_int("REDIS_PORT", 6379);
+        ro.db = env_int("REDIS_DB", 0);
+        ro.key_prefix = env_str("SESSION_REDIS_PREFIX", "edge:session:");
+        ro.ttl_seconds = env_int("SESSION_REDIS_TTL_SECONDS", static_cast<int>(opt_.idle_ttl.count()));
+        ro.timeout_ms = env_int("REDIS_TIMEOUT_MS", 1000);
+        redis_store_ = std::make_unique<RedisSessionStore>(std::move(ro));
+        LOG(INFO) << "[session] redis persistence enabled host="
+                  << env_str("REDIS_HOST", "127.0.0.1")
+                  << " port=" << env_int("REDIS_PORT", 6379)
+                  << " db=" << env_int("REDIS_DB", 0);
+    }
 }
+
+SessionManager::~SessionManager() = default;
 
 // ======================== public APIs ========================
 
@@ -23,6 +79,16 @@ std::shared_ptr<Session> SessionManager::getOrCreate(const std::string &session_
 
     // create new session
     auto s = std::make_shared<Session>(session_id, model);
+    if (redis_store_)
+    {
+        std::vector<Message> persisted;
+        if (redis_store_->LoadHistory(session_id, persisted) && !persisted.empty())
+        {
+            s->history = std::move(persisted);
+            LOG(INFO) << "[session] restored history from redis sid=" << session_id
+                      << " turns=" << s->history.size();
+        }
+    }
 
     lru_.push_front(session_id);
     Entry e;
@@ -52,8 +118,16 @@ std::shared_ptr<Session> SessionManager::get(const std::string &session_id)
 
 bool SessionManager::close(const std::string &session_id)
 {
-    std::lock_guard<std::mutex> lk(mu_);
-    return eraseUnlocked_(session_id);
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        removed = eraseUnlocked_(session_id);
+    }
+    if (removed)
+    {
+        DeletePersistedHistory(session_id);
+    }
+    return removed;
 }
 
 void SessionManager::touch(const std::string &session_id)
@@ -110,6 +184,24 @@ size_t SessionManager::size() const
 {
     std::lock_guard<std::mutex> lk(mu_);
     return map_.size();
+}
+
+void SessionManager::PersistHistory(const std::string &session_id, const std::vector<Message> &history)
+{
+    if (!redis_store_)
+        return;
+    if (session_id.empty())
+        return;
+    redis_store_->SaveHistory(session_id, history);
+}
+
+void SessionManager::DeletePersistedHistory(const std::string &session_id)
+{
+    if (!redis_store_)
+        return;
+    if (session_id.empty())
+        return;
+    redis_store_->DeleteHistory(session_id);
 }
 
 // ======================== private helpers ========================

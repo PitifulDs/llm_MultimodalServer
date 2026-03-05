@@ -355,6 +355,13 @@ sequenceDiagram
 - `stackflow_host`, `stackflow_port`, `stackflow_unit`
 - `stackflow_timeout_ms`, `stackflow_infer_timeout_ms`
 - `stackflow_reuse_work_id`, `stackflow_serialize_reuse`, `stackflow_max_concurrency`
+- `session_persist_redis`, `redis_host`, `redis_port`, `redis_db`
+- `session_redis_prefix`, `session_redis_ttl_seconds`, `redis_timeout_ms`
+
+会话持久化（可选）:
+- 开启 `session_persist_redis=1` 后，`SessionManager` 在 `getOrCreate` 时会尝试从 Redis 恢复历史。
+- 在请求正常结束（`stop/length`）后，`HttpGateway` 会调用 `SessionManager::PersistHistory` 写回 Redis。
+- key 规则：`${session_redis_prefix}${session_id}`，值为消息数组 JSON，带 TTL。
 
 ---
 
@@ -437,4 +444,3 @@ sequenceDiagram
 - **IO 与推理线程分离**: 防止推理阻塞事件循环
 - **SSE 必须写 [DONE]**: 前端依赖结束标志释放状态
 - **work_id 复用串行化**: 避免多个请求抢占同一模型上下文
-
