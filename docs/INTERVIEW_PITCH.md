@@ -100,6 +100,118 @@
    - `WriteInLoop`
    - `End`
 
+## 项目里用到的大模型知识
+- `Chat Template / Prompt 拼接`
+  - 多轮 `messages` 不是直接拼字符串，而是按模型模板转成 prompt，并且只取本轮增量部分。
+- `Tokenization / Detokenization`
+  - 文本先转 token，再把生成的 token 转回文本片段输出。
+- `Prefill + Decode`
+  - 先把 prompt 做 prefill，再逐 token decode，这是标准自回归推理流程。
+- `KV Cache / 多轮续写`
+  - 会话级保存 `model_ctx + n_past`，后续请求复用上下文，减少重复计算。
+- `会话记忆与增量 diff`
+  - `Session.history` 保存多轮历史；如果新请求是旧历史的前缀扩展，只把新增消息送进模型。
+- `上下文窗口管理`
+  - 用 `n_ctx` 和 `KV_RESET_MARGIN` 做溢出保护，接近上限就重建上下文。
+- `采样参数`
+  - 项目打通了 `max_tokens`、`temperature`、`top_p`、`top_k`、`repeat_penalty`、`presence_penalty`、`frequency_penalty`、`seed`。
+- `停止条件与 finish reason`
+  - 识别结束 token，并区分 `stop / length / cancelled / error`。
+- `流式生成（SSE）`
+  - 内部按 delta/token 回调，再适配成 OpenAI 风格 SSE chunk 和 `[DONE]`。
+- `取消生成`
+  - 客户端断开或任务取消时，生成流程会尽快停止，避免无效计算。
+- `本地/远程双后端统一抽象`
+  - 本地 `llama.cpp` 和远程 `stackflow` 都统一到 `ServingContext -> ModelEngine::Run`。
+- `远程模型实例复用`
+  - `work_id` 本质上是远程模型实例/上下文标识，复用能减少 setup 成本，但要串行化防止状态串扰。
+- `会话持久化`
+  - 现在支持把 `Session.history` 落 Redis，进程重启后恢复多轮历史。
+
+## 面试可复述版本（LLM 知识）
+- 这个项目不只是“调模型 API”，而是把 `chat template`、tokenize/detokenize、prefill/decode、KV cache、多轮记忆、采样参数、流式生成、上下文窗口管理这些大模型核心知识，真正落到了服务端实现里。
+
+## 名词解释速记
+- `Prompt`
+  - 喂给模型的输入文本。
+- `Chat Template`
+  - 把 `system/user/assistant` 多轮消息按模型要求格式化成 prompt 的模板。
+- `Token`
+  - 模型处理的最小文本单元，不一定等于一个汉字或一个单词。
+- `Tokenization`
+  - 把文本切成 token 的过程。
+- `Detokenization`
+  - 把 token 再还原成可读文本的过程。
+- `Prefill`
+  - 先把整段 prompt 输入模型，计算出初始上下文状态。
+- `Decode`
+  - 在已有上下文基础上，一步一步生成下一个 token。
+- `自回归生成`
+  - 每次生成一个 token，再把它作为下一步输入的一部分继续生成。
+- `KV Cache`
+  - Transformer 推理时缓存历史 token 的 Key/Value，避免每轮都从头计算。
+- `n_past`
+  - 当前已经写入 KV Cache 的 token 数。
+- `上下文窗口 / Context Window`
+  - 模型一次最多能看到的 token 长度上限。
+- `n_ctx`
+  - 上下文窗口大小配置。
+- `Sampling`
+  - 按概率而不是固定贪心地选择下一个 token。
+- `temperature`
+  - 温度，越高越随机，越低越保守。
+- `top_k`
+  - 只在概率最高的前 `k` 个 token 里采样。
+- `top_p`
+  - 只在累计概率达到阈值 `p` 的候选 token 集合里采样。
+- `repeat_penalty`
+  - 对已生成过的 token 加惩罚，减少重复。
+- `presence_penalty`
+  - 某个词只要出现过，再出现就会被惩罚。
+- `frequency_penalty`
+  - 某个词出现越多，后续惩罚越大。
+- `seed`
+  - 随机种子，用来让采样结果更可复现。
+- `EOG / EOS`
+  - 生成结束 token，模型输出到这里就停止。
+- `Finish Reason`
+  - 一次生成结束的原因，比如 `stop`、`length`、`cancelled`、`error`。
+- `SSE`
+  - `Server-Sent Events`，服务端通过 HTTP 持续单向推送流式结果。
+- `Delta`
+  - 流式输出里每次新增的一小段文本。
+- `Session`
+  - 一次多轮对话会话，对应一份历史和可能复用的模型上下文。
+- `Session History`
+  - 当前会话里累计的历史消息。
+- `Auto Diff`
+  - 比较旧历史和新请求，只把新增消息送给模型。
+- `Model Context`
+  - 模型运行时上下文，通常包括 KV Cache、采样器等状态。
+- `work_id`
+  - 远程 worker 侧的实例/上下文标识，用于复用和路由。
+- `OpenAI 兼容`
+  - 兼容的是 API 协议和返回格式，不代表底层一定是 OpenAI 模型。
+
+## 项目里智能指针的用法
+- `unique_ptr`
+  - 用来管理独占资源，只有一个主人，跟宿主对象一起创建和销毁。
+  - 项目里典型是 `HttpGateway` 独占 `SessionManager`，以及网络层/控制层独占底层句柄、线程对象。
+- `shared_ptr`
+  - 用来解决跨模块、跨线程、跨回调的生命周期问题，多个地方都可能还在用这个对象。
+  - 项目里典型是 `ServingContext`、`Session`、`ModelEngine`、`HttpStreamSession`、`NetworkHttpResponse`。
+  - 比如一次流式请求会经过 `HttpGateway -> SessionExecutor -> EngineExecutor -> Engine -> SSE 回写`，对象会被多层 lambda 和异步任务捕获，用 `shared_ptr` 才能保证它在链路结束前不被提前销毁。
+- `weak_ptr`
+  - 表示“我引用你，但我不拥有你”，常用于回调、防循环引用、防悬挂访问。
+  - 项目里 `node/test` 的回调先拿 `weak_ptr`，执行时再 `lock()`；对象已经释放就直接返回，避免回调晚到导致野指针。
+- `enable_shared_from_this`
+  - 用在对象内部安全拿到自己的 `shared_ptr`。
+  - 这个项目里最典型的是异步写回：`NetworkHttpResponse::Write/End` 如果不在 IO 线程，会先 `shared_from_this()` 抓一份 `self`，再把任务投递到 `queueInLoop`，这样回调真正执行前对象不会析构。
+  - `HttpStreamSession` 也一样，`Start()` 时保留一份 `self_`，流结束 `Close()` 再释放，保证整个 SSE 生命周期稳定。
+
+## 面试可复述版本（智能指针）
+- 这个项目里智能指针不是为了“语法现代”，而是明确表达生命周期语义：`unique_ptr` 管独占资源，`shared_ptr` 管异步链路生命周期，`weak_ptr` 防回调悬挂，`shared_from_this` 解决跨线程回调里的对象保活。
+
 ## 高频追问的一句话答法
 - 为什么要 OpenAI 兼容：上层接入成本最低。
 - 为什么要 Reactor：避免 IO 线程被推理阻塞。
