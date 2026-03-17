@@ -1,0 +1,33 @@
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <string>
+
+#include "serving/core/agent/ToolRegistry.h"
+
+struct ServingContext;
+class EngineExecutor;
+
+class AgentExecutor
+{
+public:
+    struct Options
+    {
+        int default_max_steps = 4;
+        size_t max_tool_output_chars = 4000;
+        std::string docs_root = ".";
+        std::string config_path = "config.json";
+    };
+
+    AgentExecutor(EngineExecutor &executor, Options options);
+
+    void SetStatusProvider(std::function<std::string()> provider);
+    void Run(const std::shared_ptr<ServingContext> &ctx);
+
+private:
+    EngineExecutor &executor_;
+    Options options_;
+    ToolRegistry tool_registry_;
+    std::function<std::string()> status_provider_;
+};

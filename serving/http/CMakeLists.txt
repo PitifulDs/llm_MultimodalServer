@@ -14,6 +14,11 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/serving/core/RedisSessionStore.cc
     # ${CMAKE_SOURCE_DIR}/serving/core/Session.cc
     ${CMAKE_SOURCE_DIR}/serving/core/EngineExecutor.cc
+    ${CMAKE_SOURCE_DIR}/serving/core/agent/AgentExecutor.cc
+    ${CMAKE_SOURCE_DIR}/serving/core/agent/AgentParser.cc
+    ${CMAKE_SOURCE_DIR}/serving/core/agent/AgentPrompt.cc
+    ${CMAKE_SOURCE_DIR}/serving/core/agent/ToolRegistry.cc
+    ${CMAKE_SOURCE_DIR}/serving/core/agent/BuiltinTools.cc
     ${CMAKE_SOURCE_DIR}/serving/core/ThreadPool.cc
     ${CMAKE_SOURCE_DIR}/serving/core/SessionExecutor.cc
 )
@@ -37,6 +42,7 @@ target_compile_features(serving_core
 # 2. serving_http 静态库（核心逻辑）
 # =====================================
 add_library(serving_http STATIC
+    ChatRequestParser.cc
     HttpGateway.cc
     HttpStreamSession.cc
     OpenAIStreamWriter.cc 

@@ -2,6 +2,7 @@
 
 #include "http_types.h"
 #include "HttpStreamSession.h"
+#include "ChatRequestParser.h"
 #include "serving/core/ServingContext.h"
 #include "serving/core/SessionManager.h"
 #include "OpenAIStreamWriter.h"
@@ -72,37 +73,10 @@ namespace
         return "req-" + std::to_string(++seq);
     }
 
-    bool msg_equal(const Message &a, const Message &b)
-    {
-        return http_utils::msg_equal(a, b);
-    }
-
-    bool is_prefix(const std::vector<Message> &history,
-                   const std::vector<Message> &incoming)
-    {
-        return http_utils::is_prefix(history, incoming);
-    }
-
-    std::vector<Message> diff_messages(const std::vector<Message> &history,
-                                       const std::vector<Message> &incoming)
-    {
-        return http_utils::diff_messages(history, incoming);
-    }
-
     // FinishReason -> openai finish_reaso
     const char *finish_reason_to_str(FinishReason r)
     {
         return http_utils::finish_reason_to_str(r);
-    }
-
-    void set_param_if_number(const json &body, const char *key, std::unordered_map<std::string, std::string> &params)
-    {
-        http_utils::set_param_if_number(body, key, params);
-    }
-
-    void set_sampling_params(const json &body, std::unordered_map<std::string, std::string> &params)
-    {
-        http_utils::set_sampling_params(body, params);
     }
 
 } // namespace
@@ -119,6 +93,31 @@ HttpGateway::HttpGateway()
     opt.gc_batch = 64;
 
     session_mgr_ = std::make_unique<SessionManager>(opt);
+
+    AgentExecutor::Options agent_opt;
+    if (const char *cfg = std::getenv("CONFIG_PATH"))
+    {
+        if (*cfg)
+            agent_opt.config_path = cfg;
+    }
+    agent_executor_ = std::make_unique<AgentExecutor>(executor_, agent_opt);
+    agent_executor_->SetStatusProvider([this]()
+    {
+        const auto uptime_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start_time_)
+                .count();
+
+        json out = {
+            {"status", "ok"},
+            {"uptime_ms", uptime_ms},
+            {"requests_total", total_requests_.load(std::memory_order_relaxed)},
+            {"requests_in_flight", in_flight_.load(std::memory_order_relaxed)},
+            {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
+            {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
+            {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)}};
+        return out.dump();
+    });
 
     // Session GC 后台线程
     std::thread([mgr = session_mgr_.get()]()
@@ -233,14 +232,11 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     total_requests_.fetch_add(1, std::memory_order_relaxed);
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
-    json body;
-    try
+    const std::string request_id = gen_request_id();
+    auto parsed = ParseChatRequestBody(req.body, false, *session_mgr_, get_default_model(), get_default_max_tokens(), request_id);
+    if (!parsed.ok)
     {
-        body = json::parse(req.body);
-    }
-    catch (...)
-    {
-        WriteError(res, 400, "invalid json", "invalid_request_error", "invalid_json");
+        WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
@@ -248,54 +244,8 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         return;
     }
 
-    const std::string model = body.value("model", get_default_model());
-    if (!body.contains("messages") || !body["messages"].is_array())
-    {
-        WriteError(res, 400, "messages must be array", "invalid_request_error", "invalid_messages");
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    auto ctx = std::make_shared<ServingContext>();
-    ctx->request_id = gen_request_id();
-    ctx->model = model;
-    ctx->stream = false;
-    ctx->is_chat = true;
-
-    // session_id
-    std::string session_id;
-    if (body.contains("session_id") && body["session_id"].is_string())
-        session_id = body["session_id"].get<std::string>();
-    else
-        session_id = ctx->request_id;
-
-    ctx->session_id = session_id;
-    ctx->session = session_mgr_->getOrCreate(session_id, model);
-
-    // generation params
-    if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
-    {
-        const int max_tokens = body["max_tokens"].get<int>();
-        if (max_tokens > 0)
-            ctx->params["max_tokens"] = std::to_string(max_tokens);
-    }
-    else
-    {
-        const int def_max = get_default_max_tokens();
-        if (def_max > 0)
-            ctx->params["max_tokens"] = std::to_string(def_max);
-    }
-
-    // parse messages
-    ctx->messages.clear();
-    for (const auto &m : body["messages"])
-    {
-        ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
-    }
-    set_sampling_params(body, ctx->params);
+    auto ctx = parsed.request.ctx;
+    const std::string model = ctx->model;
 
     const char *mt_val = nullptr;
     auto mt_it = ctx->params.find("max_tokens");
@@ -305,37 +255,17 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
               << " model=" << ctx->model
               << " session=" << ctx->session_id
               << " stream=0"
+              << " agent=" << (ctx->use_agent ? 1 : 0)
               << " max_tokens=" << (mt_val ? mt_val : "default");
 
     // 备份客户端全量 messages（用于更新 history）
-    const std::vector<Message> client_messages = ctx->messages;
+    const std::vector<Message> client_messages = parsed.request.client_messages;
 
-    // auto-diff（只在锁内读写 session）
     auto session = ctx->session;
     {
         std::lock_guard<std::mutex> lk(session->mu);
-
-        const std::vector<Message> &incoming = ctx->messages;
-        if (!session->history.empty())
-        {
-            if (is_prefix(session->history, incoming))
-            {
-                ctx->messages = diff_messages(session->history, incoming);
-            }
-            else
-            {
-                session->history.clear();
-                session->model_ctx.reset();
-                ctx->messages = incoming;
-            }
-        }
-        else
-        {
-            ctx->messages = incoming;
-        }
-
         LOG(INFO) << "[auto-diff] session=" << session->session_id
-                  << " incoming=" << incoming.size()
+                  << " incoming=" << client_messages.size()
                   << " delta=" << ctx->messages.size()
                   << " hist=" << session->history.size();
     }
@@ -379,7 +309,14 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
 
     // 同 session 串行执行（只 Execute 一次）
     bool accepted = session_executor_.Submit(ctx->session, [this, ctx]
-                                             { executor_.Execute(ctx); });
+                                             {
+                                                 if (ctx->use_agent && agent_executor_)
+                                                 {
+                                                     agent_executor_->Run(ctx);
+                                                     return;
+                                                 }
+                                                 executor_.Execute(ctx);
+                                             });
 
     if (!accepted)
     {
@@ -449,14 +386,11 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
 
     LOG(INFO) << "[chat-stream] enter HandleChatCompletionStream";
 
-    json body;
-    try
+    const std::string request_id = gen_request_id();
+    auto parsed = ParseChatRequestBody(req.body, true, *session_mgr_, get_default_model(), get_default_max_tokens(), request_id);
+    if (!parsed.ok)
     {
-        body = json::parse(req.body);
-    }
-    catch (...)
-    {
-        WriteError(*res_ptr, 400, "invalid json", "invalid_request_error", "invalid_json");
+        WriteError(*res_ptr, parsed.status, parsed.message, parsed.type, parsed.code);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
@@ -464,54 +398,8 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         return;
     }
 
-    if (!body.contains("messages") || !body["messages"].is_array())
-    {
-        WriteError(*res_ptr, 400, "messages must be array", "invalid_request_error", "invalid_messages");
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    const std::string model = body.value("model", get_default_model());
-
-    auto ctx = std::make_shared<ServingContext>();
-    ctx->request_id = gen_request_id();
-    ctx->model = model;
-    ctx->stream = true;
-    ctx->is_chat = true;
-
-    std::string session_id;
-    if (body.contains("session_id") && body["session_id"].is_string())
-        session_id = body["session_id"].get<std::string>();
-    else
-        session_id = ctx->request_id;
-
-    ctx->session_id = session_id;
-    ctx->session = session_mgr_->getOrCreate(session_id, model);
-
-    // generation params
-    if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
-    {
-        const int max_tokens = body["max_tokens"].get<int>();
-        if (max_tokens > 0)
-            ctx->params["max_tokens"] = std::to_string(max_tokens);
-    }
-    else
-    {
-        const int def_max = get_default_max_tokens();
-        if (def_max > 0)
-            ctx->params["max_tokens"] = std::to_string(def_max);
-    }
-
-    // parse messages
-    ctx->messages.clear();
-    for (const auto &m : body["messages"])
-    {
-        ctx->messages.push_back({m.value("role", ""), m.value("content", "")});
-    }
-    set_sampling_params(body, ctx->params);
+    auto ctx = parsed.request.ctx;
+    const std::string model = ctx->model;
 
     const char *mt_val = nullptr;
     auto mt_it = ctx->params.find("max_tokens");
@@ -521,37 +409,17 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
               << " model=" << ctx->model
               << " session=" << ctx->session_id
               << " stream=1"
+              << " agent=" << (ctx->use_agent ? 1 : 0)
               << " max_tokens=" << (mt_val ? mt_val : "default");
 
     // 备份客户端全量 messages（用于更新 history）
-    const std::vector<Message> client_messages = ctx->messages;
+    const std::vector<Message> client_messages = parsed.request.client_messages;
 
-    // auto-diff（锁内只处理 session 状态，锁外执行 engine）
     auto session = ctx->session;
     {
         std::lock_guard<std::mutex> lk(session->mu);
-
-        const std::vector<Message> incoming = ctx->messages;
-        if (!session->history.empty())
-        {
-            if (is_prefix(session->history, incoming))
-            {
-                ctx->messages = diff_messages(session->history, incoming);
-            }
-            else
-            {
-                session->history.clear();
-                session->model_ctx.reset();
-                ctx->messages = incoming;
-            }
-        }
-        else
-        {
-            ctx->messages = incoming;
-        }
-
         LOG(INFO) << "[auto-diff] session=" << session->session_id
-                  << " incoming=" << incoming.size()
+                  << " incoming=" << client_messages.size()
                   << " delta=" << ctx->messages.size()
                   << " hist=" << session->history.size();
     }
@@ -586,10 +454,6 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     // on_chunk：拼接 final_text + 喂给 writer
     ctx->on_chunk = [writer, ctx](const StreamChunk &chunk)
     {
-        if (!chunk.is_finished)
-        {
-            ctx->final_text += chunk.delta;
-        }
         writer->OnChunk(chunk);
     };
 
@@ -631,6 +495,11 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     // 同 session 串行执行（只 Execute 一次）
     bool accepted  = session_executor_.Submit(session, [this, ctx]
     {
+        if (ctx->use_agent && agent_executor_)
+        {
+            agent_executor_->Run(ctx);
+            return;
+        }
         executor_.Execute(ctx);
         // executor 内部会在 queue full 时 EmitFinish(error)，writer 会输出对应 SSE 并结束
     });

@@ -53,6 +53,9 @@ struct ServingContext
     bool stream = false;
     // 首轮标记（Engine 内设置，只读给下游）
     bool is_first_turn = false;
+    bool use_agent = false;
+    int agent_max_steps = 0;
+    std::vector<std::string> agent_tools;
 
     // ChatCompletion
     std::vector<Message> messages;
@@ -174,6 +177,5 @@ struct ServingContext
         }
     }
 };
-
 
 

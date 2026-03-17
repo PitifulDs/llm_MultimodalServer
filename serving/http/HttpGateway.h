@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include "protocol/Protocol.h"
+#include "serving/core/agent/AgentExecutor.h"
 #include "serving/core/SessionManager.h"
 #include "serving/core/EngineExecutor.h"
 #include "serving/core/SessionExecutor.h"
@@ -55,6 +56,7 @@ private:
     StackFlowsClient *sf_client_{nullptr};   // 不持有所有权
     std::unique_ptr<SessionManager> session_mgr_;
     EngineExecutor executor_; // 共享一个 executor，所有请求都走这里
+    std::unique_ptr<AgentExecutor> agent_executor_;
     SessionExecutor session_executor_;
 
     std::chrono::steady_clock::time_point start_time_;
