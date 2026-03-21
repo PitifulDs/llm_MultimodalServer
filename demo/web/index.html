@@ -211,7 +211,9 @@
         <div class="row">
           <div>
             <label>Model</label>
-            <input id="model" value="llama" />
+            <select id="model">
+              <option value="qwen2.5-1.5b" selected>qwen2.5-1.5b</option>
+            </select>
           </div>
           <div>
             <label>Max Tokens</label>
@@ -224,6 +226,34 @@
           <option value="stream" selected>Stream (SSE)</option>
           <option value="non-stream">Non-stream</option>
         </select>
+
+        <div class="row">
+          <div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:0;">
+              <input id="enableAgent" type="checkbox" style="width:auto; margin:0;" />
+              <span>Enable Agent</span>
+            </label>
+          </div>
+          <div>
+            <label>Max Steps</label>
+            <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
+          </div>
+        </div>
+
+        <label>Agent Preset</label>
+        <select id="agentPreset">
+          <option value="">Custom</option>
+          <option value="status">Server Status</option>
+          <option value="config">Default Model & Config</option>
+          <option value="docs">Streaming & Docs</option>
+        </select>
+
+        <label>Agent Tools</label>
+        <input
+          id="agentTools"
+          value="search_docs,get_config,get_server_status"
+          placeholder="Comma-separated tools"
+        />
 
         <label>System (optional)</label>
         <input id="system" placeholder="You are a helpful assistant." />
@@ -278,8 +308,39 @@
     const sendBtn = document.getElementById('sendBtn');
     const stopBtn = document.getElementById('stopBtn');
     const modeEl = document.getElementById('streamMode');
+    const modelEl = document.getElementById('model');
     const sessionIdEl = document.getElementById('sessionId');
     const newSessionEachEl = document.getElementById('newSessionEach');
+    const enableAgentEl = document.getElementById('enableAgent');
+    const agentMaxStepsEl = document.getElementById('agentMaxSteps');
+    const agentPresetEl = document.getElementById('agentPreset');
+    const agentToolsEl = document.getElementById('agentTools');
+    const systemEl = document.getElementById('system');
+    const promptEl = document.getElementById('prompt');
+
+    const AGENT_PRESETS = {
+      status: {
+        enableAgent: true,
+        maxSteps: 3,
+        tools: ['get_server_status'],
+        system: 'You are a concise operations assistant for EdgeLLM-Serving.',
+        prompt: '当前服务健康状态怎么样？有多少请求正在处理中？请基于真实状态回答。',
+      },
+      config: {
+        enableAgent: true,
+        maxSteps: 4,
+        tools: ['get_config'],
+        system: 'You are a concise configuration assistant for EdgeLLM-Serving.',
+        prompt: '默认模型是什么？默认 max_tokens 是多少？如果能查到，也说明当前后端类型。',
+      },
+      docs: {
+        enableAgent: true,
+        maxSteps: 4,
+        tools: ['search_docs'],
+        system: 'You are a concise documentation assistant for EdgeLLM-Serving.',
+        prompt: '这个项目是否支持流式输出？接口怎么调用？请基于项目文档回答。',
+      },
+    };
 
     let aborter = null;
 
@@ -299,15 +360,93 @@
     }
 
     function setButtonLabel() {
-      sendBtn.textContent = modeEl.value === 'stream' ? 'Send (stream)' : 'Send (non-stream)';
+      const modeLabel = modeEl.value === 'stream' ? 'Send (stream)' : 'Send (non-stream)';
+      sendBtn.textContent = enableAgentEl.checked ? `${modeLabel} [agent]` : modeLabel;
+    }
+
+    function parseAgentTools() {
+      return agentToolsEl.value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    function buildPayload({ model, maxTokens, system, prompt, sessionId }) {
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: prompt });
+
+      const payload = {
+        model,
+        max_tokens: maxTokens,
+        messages,
+        session_id: sessionId,
+        request_id: genId('req'),
+      };
+
+      if (enableAgentEl.checked) {
+        payload.agent = true;
+        payload.max_steps = parseInt(agentMaxStepsEl.value, 10) || 4;
+        payload.tools = parseAgentTools();
+      }
+
+      return payload;
+    }
+
+    async function loadModels() {
+      const baseUrl = document.getElementById('baseUrl').value.trim();
+      if (!baseUrl) return;
+
+      try {
+        const resp = await fetch(`${baseUrl}/v1/models`, { cache: 'no-store' });
+        if (!resp.ok) return;
+
+        const json = await resp.json();
+        const items = Array.isArray(json.data) ? json.data : [];
+        if (!items.length) return;
+
+        const currentValue = modelEl.value;
+        modelEl.innerHTML = '';
+
+        let selectedValue = currentValue;
+        items.forEach((item) => {
+          const id = item?.id;
+          if (!id) return;
+          const option = document.createElement('option');
+          option.value = id;
+          option.textContent = item.default ? `${id} (default)` : id;
+          if (item.default) selectedValue = id;
+          modelEl.appendChild(option);
+        });
+
+        const values = items.map((item) => item?.id).filter(Boolean);
+        if (currentValue && values.includes(currentValue)) {
+          selectedValue = currentValue;
+        }
+        modelEl.value = selectedValue;
+      } catch (err) {
+        // ignore and keep fallback option
+      }
+    }
+
+    function applyPreset(name) {
+      const preset = AGENT_PRESETS[name];
+      if (!preset) return;
+
+      enableAgentEl.checked = !!preset.enableAgent;
+      agentMaxStepsEl.value = String(preset.maxSteps || 4);
+      agentToolsEl.value = (preset.tools || []).join(',');
+      systemEl.value = preset.system || '';
+      promptEl.value = preset.prompt || '';
+      setButtonLabel();
     }
 
     async function streamChat() {
       const baseUrl = document.getElementById('baseUrl').value.trim();
       const model = document.getElementById('model').value.trim();
       const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
-      const system = document.getElementById('system').value.trim();
-      const prompt = document.getElementById('prompt').value.trim();
+      const system = systemEl.value.trim();
+      const prompt = promptEl.value.trim();
       let sessionId = sessionIdEl.value.trim();
 
       if (!baseUrl || !prompt) return;
@@ -326,17 +465,7 @@
       sendBtn.disabled = true;
       stopBtn.disabled = false;
 
-      const messages = [];
-      if (system) messages.push({ role: 'system', content: system });
-      messages.push({ role: 'user', content: prompt });
-
-      const payload = {
-        model,
-        max_tokens: maxTokens,
-        messages,
-        session_id: sessionId,
-        request_id: genId('req'),
-      };
+      const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
 
       aborter = new AbortController();
       const start = performance.now();
@@ -414,8 +543,8 @@
       const baseUrl = document.getElementById('baseUrl').value.trim();
       const model = document.getElementById('model').value.trim();
       const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
-      const system = document.getElementById('system').value.trim();
-      const prompt = document.getElementById('prompt').value.trim();
+      const system = systemEl.value.trim();
+      const prompt = promptEl.value.trim();
       let sessionId = sessionIdEl.value.trim();
 
       if (!baseUrl || !prompt) return;
@@ -434,17 +563,7 @@
       sendBtn.disabled = true;
       stopBtn.disabled = false;
 
-      const messages = [];
-      if (system) messages.push({ role: 'system', content: system });
-      messages.push({ role: 'user', content: prompt });
-
-      const payload = {
-        model,
-        max_tokens: maxTokens,
-        messages,
-        session_id: sessionId,
-        request_id: genId('req'),
-      };
+      const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
       aborter = new AbortController();
       const start = performance.now();
 
@@ -493,7 +612,13 @@
     });
 
     modeEl.addEventListener('change', setButtonLabel);
+    enableAgentEl.addEventListener('change', setButtonLabel);
+    document.getElementById('baseUrl').addEventListener('change', loadModels);
+    agentPresetEl.addEventListener('change', () => {
+      applyPreset(agentPresetEl.value);
+    });
     setButtonLabel();
+    loadModels();
   </script>
 </body>
 </html>

@@ -8,6 +8,7 @@
 // #include "engine/DummyEngine.h"
 #include "engine/RpcEngine.h"
 #include "engine/EngineFactory.h"
+#include "engine/ModelRegistry.h"
 
 #include "../../utils/json.hpp"
 
@@ -124,7 +125,7 @@ int main(int argc, char **argv)
     if (warmup)
     {
         std::cout << "[serving-http] warming up model..." << std::endl;
-        EngineFactory::Create("llama");
+        EngineFactory::Create(ModelRegistry::GetDefaultModel());
         std::cout << "[serving-http] warmup done" << std::endl;
     }
     else

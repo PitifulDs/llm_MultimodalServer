@@ -1,9 +1,9 @@
 #include "engine/EngineFactory.h"
 #include "engine/DummyEngine.h"
 #include "engine/LlamaEngine.h"
+#include "engine/ModelRegistry.h"
 #include "engine/StackFlowEngine.h"
 #include "serving/core/ModelEngine.h" // 返回 ModelEngine
-#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -13,36 +13,35 @@ namespace
     std::mutex g_mu;
     std::unordered_map<std::string, std::shared_ptr<ModelEngine>> g_cache; 
 
-    const char *GetEnvOrDefault(const char *name, const char *fallback)
-    {
-        const char *val = std::getenv(name);
-        return (val && *val) ? val : fallback;
-    }
-
     // 真正的构造逻辑（不带缓存）
     std::shared_ptr<ModelEngine> CreateNewEngine(const std::string &model)
     {
-        const char *backend = std::getenv("SERVING_BACKEND");
-        if (backend && std::string(backend) == "stackflow")
+        const ModelSpec spec = ModelRegistry::Resolve(model);
+        if (!spec.valid)
+            return nullptr;
+
+        if (spec.engine == "stackflow")
         {
-            return std::make_shared<StackFlowEngine>();
+            StackFlowEngine::Options options;
+            options.host = spec.stackflow_host;
+            options.port = spec.stackflow_port;
+            options.unit_name = spec.stackflow_unit;
+            options.response_format = spec.stackflow_response_format;
+            options.response_format_stream = spec.stackflow_response_format_stream;
+            options.timeout_ms = spec.stackflow_timeout_ms;
+            options.infer_timeout_ms = spec.stackflow_infer_timeout_ms;
+            options.reuse_work_id = spec.stackflow_reuse_work_id;
+            options.serialize_reuse = spec.stackflow_serialize_reuse;
+            return std::make_shared<StackFlowEngine>(options);
         }
-        if (model == "stackflow")
+        if (spec.engine == "llama")
         {
-            return std::make_shared<StackFlowEngine>();
+            return std::make_shared<LlamaEngine>(spec.model_path);
         }
-        if (model == "llama")
-        {
-            const char *path = GetEnvOrDefault(
-                "LLAMA_MODEL_PATH",
-                "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf");
-            return std::make_shared<LlamaEngine>(path);
-        }
-        if (model == "dummy")
+        if (spec.engine == "dummy")
         {
             return std::make_shared<DummyEngine>("Hello");
         }
-        // 其它模型...
         return nullptr;
     }
 } // namespace

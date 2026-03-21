@@ -66,6 +66,9 @@ EdgeLLM-Serving/
 └─ docs/                 # 架构、设计模式、面试问答
 ```
 
+Agent 架构文档:
+- `docs/AGENT.md`
+
 **一次请求链路**
 1. `NetworkHttpServer` 按 Content-Length 组包。
 2. `HttpGateway` 校验 JSON、解析参数、处理 session。
@@ -91,7 +94,12 @@ Test:
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"llama\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}" | jq
+  -d "{\"model\":\"qwen2.5-1.5b\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}" | jq
+```
+
+列出当前可用模型:
+```bash
+curl -s "http://127.0.0.1:8080/v1/models" | jq
 ```
 
 ---
@@ -119,6 +127,11 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 bash scripts/start_all.sh
 ```
 
+如果要一键启动后端 + demo web，并自动尝试打开浏览器：
+```bash
+bash scripts/start_agent_demo.sh
+```
+
 `start_all.sh` 会读取 `config.json`，解析相对路径为绝对路径，导出 `STACKFLOW_MODEL_PATH` / `LLAMA_MODEL_PATH` / `LLM_MODEL_PATH` / `STACKFLOW_MAX_CONCURRENCY`，并自动设置 `LD_LIBRARY_PATH`；随后清理旧 socket，将日志写到 `/tmp/llm_serving`。
 
 ---
@@ -127,8 +140,16 @@ bash scripts/start_all.sh
 
 `config.json` 启动时加载，路径默认相对仓库根目录。
 
+推荐把请求里的 `model` 当成“逻辑模型名”，例如 `qwen2.5-1.5b`。  
+服务端会根据 `config.json` 中的 `models` 注册表决定这个模型走本地 `llama.cpp` 还是远程 `stackflow`。
+
+示例：
+- `qwen2.5-1.5b` -> 本地 `llama.cpp`
+- `qwen2.5-1.5b-remote` -> 远程 `stackflow`
+
 常用配置:
 - `http_port`, `default_model`
+- `models`（模型注册表，按模型名解析 backend / engine / model_path）
 - `llama_model_path`, `llama_n_ctx`, `llama_n_threads`, `llama_n_threads_batch`
 - `default_max_tokens`, `kv_reset_margin`
 - `serving_backend`（`local` 或 `stackflow`）
@@ -137,6 +158,35 @@ bash scripts/start_all.sh
 - `stackflow_reuse_work_id`, `stackflow_serialize_reuse`, `stackflow_max_concurrency`
 - `session_persist_redis`, `redis_host`, `redis_port`, `redis_db`
 - `session_redis_prefix`, `session_redis_ttl_seconds`, `redis_timeout_ms`
+
+模型注册表示例：
+```json
+{
+  "default_model": "qwen2.5-1.5b",
+  "models": {
+    "qwen2.5-1.5b": {
+      "backend": "local",
+      "engine": "llama",
+      "model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf"
+    },
+    "qwen2.5-1.5b-remote": {
+      "backend": "stackflow",
+      "engine": "stackflow",
+      "host": "127.0.0.1",
+      "port": 10001,
+      "unit": "llm"
+    }
+  }
+}
+```
+
+这样同一个 HTTP 服务里可以按请求模型名切换：
+- 请求 `"model":"qwen2.5-1.5b"` 时走本地
+- 请求 `"model":"qwen2.5-1.5b-remote"` 时走远程
+
+说明：
+- `/v1/models` 会返回当前模型注册表中的模型名，前端可用它生成模型下拉
+- `stackflow` 远程模式下的 `usage` 目前是基于文本长度的近似统计，不是精确 tokenizer 结果
 
 **Redis 会话持久化（可选）**
 

@@ -224,6 +224,12 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
+    if (method == "GET" && url == "/v1/models")
+    {
+        gateway_->HandleModels(req, *res_ptr);
+        return;
+    }
+
     if (method != "POST")
     {
         write_json_error(res_ptr, 405, "Method Not Allowed", "invalid_request_error", "method_not_allowed");

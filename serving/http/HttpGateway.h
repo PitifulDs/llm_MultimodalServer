@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include "protocol/Protocol.h"
+#include "engine/ModelRegistry.h"
 #include "serving/core/agent/AgentExecutor.h"
 #include "serving/core/SessionManager.h"
 #include "serving/core/EngineExecutor.h"
@@ -45,6 +46,7 @@ public:
     // 健康检查 / 指标
     void HandleHealth(const HttpRequest &req, HttpResponse &res);
     void HandleMetrics(const HttpRequest &req, HttpResponse &res);
+    void HandleModels(const HttpRequest &req, HttpResponse &res);
 
 private:
     void WriteError(HttpResponse &res, int status, const std::string &message,

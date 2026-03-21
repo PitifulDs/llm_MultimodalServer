@@ -9,7 +9,21 @@
 class StackFlowEngine final : public ModelEngine
 {
 public:
+    struct Options
+    {
+        std::string host{"127.0.0.1"};
+        int port{10001};
+        std::string unit_name{"llm"};
+        std::string response_format{"llm.utf-8"};
+        std::string response_format_stream{"llm.utf-8.stream"};
+        int timeout_ms{10000};
+        int infer_timeout_ms{0};
+        bool reuse_work_id{true};
+        bool serialize_reuse{true};
+    };
+
     StackFlowEngine();
+    explicit StackFlowEngine(const Options &options);
     void Run(std::shared_ptr<ServingContext> ctx) override;
 
 private:

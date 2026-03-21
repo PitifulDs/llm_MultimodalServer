@@ -7,6 +7,7 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/engine/DummyEngine.cc
     ${CMAKE_SOURCE_DIR}/engine/RpcEngine.cc
     ${CMAKE_SOURCE_DIR}/engine/EngineFactory.cc
+    ${CMAKE_SOURCE_DIR}/engine/ModelRegistry.cc
     ${CMAKE_SOURCE_DIR}/engine/StackFlowEngine.cc
     ${CMAKE_SOURCE_DIR}/engine/LlamaEngine.cc
     ${CMAKE_SOURCE_DIR}/engine/ModelContext.cc

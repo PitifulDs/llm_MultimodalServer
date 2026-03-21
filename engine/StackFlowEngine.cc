@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 
@@ -38,19 +39,50 @@ namespace
             return def_val;
         }
     }
+
+    int estimate_tokens_from_text(const std::string &text)
+    {
+        if (text.empty())
+            return 0;
+        return std::max(1, static_cast<int>((text.size() + 3) / 4));
+    }
 } // namespace
 
 StackFlowEngine::StackFlowEngine()
 {
-    host_ = get_env_string("STACKFLOW_HOST", "127.0.0.1");
-    port_ = get_env_int("STACKFLOW_PORT", 10001);
-    unit_name_ = get_env_string("STACKFLOW_UNIT", "llm");
-    response_format_ = get_env_string("STACKFLOW_RESPONSE_FORMAT", "llm.utf-8");
-    response_format_stream_ = get_env_string("STACKFLOW_RESPONSE_FORMAT_STREAM", "llm.utf-8.stream");
-    timeout_ms_ = get_env_int("STACKFLOW_TIMEOUT_MS", 10000);
-    infer_timeout_ms_ = get_env_int("STACKFLOW_INFER_TIMEOUT_MS", 0);
-    reuse_work_id_ = get_env_int("STACKFLOW_REUSE_WORK_ID", 1) != 0;
-    serialize_reuse_ = get_env_int("STACKFLOW_SERIALIZE_REUSE", 1) != 0;
+    Options options;
+    options.host = get_env_string("STACKFLOW_HOST", "127.0.0.1");
+    options.port = get_env_int("STACKFLOW_PORT", 10001);
+    options.unit_name = get_env_string("STACKFLOW_UNIT", "llm");
+    options.response_format = get_env_string("STACKFLOW_RESPONSE_FORMAT", "llm.utf-8");
+    options.response_format_stream = get_env_string("STACKFLOW_RESPONSE_FORMAT_STREAM", "llm.utf-8.stream");
+    options.timeout_ms = get_env_int("STACKFLOW_TIMEOUT_MS", 10000);
+    options.infer_timeout_ms = get_env_int("STACKFLOW_INFER_TIMEOUT_MS", 0);
+    options.reuse_work_id = get_env_int("STACKFLOW_REUSE_WORK_ID", 1) != 0;
+    options.serialize_reuse = get_env_int("STACKFLOW_SERIALIZE_REUSE", 1) != 0;
+
+    host_ = options.host;
+    port_ = options.port;
+    unit_name_ = options.unit_name;
+    response_format_ = options.response_format;
+    response_format_stream_ = options.response_format_stream;
+    timeout_ms_ = options.timeout_ms;
+    infer_timeout_ms_ = options.infer_timeout_ms;
+    reuse_work_id_ = options.reuse_work_id;
+    serialize_reuse_ = options.serialize_reuse;
+}
+
+StackFlowEngine::StackFlowEngine(const Options &options)
+{
+    host_ = options.host;
+    port_ = options.port;
+    unit_name_ = options.unit_name;
+    response_format_ = options.response_format;
+    response_format_stream_ = options.response_format_stream;
+    timeout_ms_ = options.timeout_ms;
+    infer_timeout_ms_ = options.infer_timeout_ms;
+    reuse_work_id_ = options.reuse_work_id;
+    serialize_reuse_ = options.serialize_reuse;
 }
 
 std::string StackFlowEngine::BuildPrompt(const std::vector<Message> &messages)
@@ -226,6 +258,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         payload = ctx->prompt;
         system_prompt.clear();
     }
+
+    ctx->usage.prompt_tokens = estimate_tokens_from_text(payload);
+    ctx->usage.completion_tokens = 0;
+    ctx->usage.total_tokens = ctx->usage.prompt_tokens;
 
     int fd = ConnectTcp(host_, port_);
     if (fd < 0)
@@ -482,9 +518,15 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     const std::string delta = data.value("delta", "");
                     const bool finish = data.value("finish", false);
                     if (!delta.empty())
+                    {
                         ctx->EmitDelta(delta);
+                        ctx->usage.completion_tokens = estimate_tokens_from_text(ctx->final_text);
+                        ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
+                    }
                     if (finish)
                     {
+                        ctx->usage.completion_tokens = estimate_tokens_from_text(ctx->final_text);
+                        ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
                         ctx->EmitFinish(FinishReason::stop);
                         break;
                     }
@@ -492,6 +534,8 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                 else if (data.is_string())
                 {
                     ctx->EmitDelta(data.get<std::string>());
+                    ctx->usage.completion_tokens = estimate_tokens_from_text(ctx->final_text);
+                    ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
                     ctx->EmitFinish(FinishReason::stop);
                     break;
                 }
@@ -532,6 +576,8 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     else if (data.is_object())
                         ctx->final_text = data.value("delta", "");
                 }
+                ctx->usage.completion_tokens = estimate_tokens_from_text(ctx->final_text);
+                ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
                 if (!ctx->finished.load(std::memory_order_acquire))
                     ctx->EmitFinish(FinishReason::stop);
             }

@@ -209,6 +209,35 @@ void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
     res.End();
 }
 
+void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    json items = json::array();
+    const auto models = ModelRegistry::ListModels();
+    const std::string default_model = ModelRegistry::GetDefaultModel();
+
+    for (const auto &name : models)
+    {
+        items.push_back({
+            {"id", name},
+            {"object", "model"},
+            {"owned_by", "edge-llm-serving"},
+            {"default", name == default_model}
+        });
+    }
+
+    json out = {
+        {"object", "list"},
+        {"data", items}
+    };
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
 void HttpGateway::HandleCompletion(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;

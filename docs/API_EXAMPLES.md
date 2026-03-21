@@ -16,14 +16,19 @@ curl -s http://127.0.0.1:8080/metrics | jq
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama","messages":[{"role":"user","content":"hello"}]}' | jq
+  -d '{"model":"qwen2.5-1.5b","messages":[{"role":"user","content":"hello"}]}' | jq
+```
+
+获取模型列表：
+```bash
+curl -s "http://127.0.0.1:8080/v1/models" | jq
 ```
 
 ## 4. 流式 SSE chat
 ```bash
 curl -N -X POST "http://127.0.0.1:8080/v1/chat/completions?stream=true" \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama","messages":[{"role":"user","content":"介绍下华为"}],"max_tokens":128}'
+  -d '{"model":"qwen2.5-1.5b","messages":[{"role":"user","content":"介绍下华为"}],"max_tokens":128}'
 ```
 
 ## 5. 带采样参数
@@ -31,7 +36,7 @@ curl -N -X POST "http://127.0.0.1:8080/v1/chat/completions?stream=true" \
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model":"llama",
+    "model":"qwen2.5-1.5b",
     "messages":[{"role":"user","content":"写一个快速排序"}],
     "max_tokens":200,
     "temperature":0.7,
@@ -45,7 +50,17 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 ```bash
 curl -i -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama","messages":"bad"}'
+  -d '{"model":"qwen2.5-1.5b","messages":"bad"}'
+
+远程模型示例（通过模型名路由到 stackflow）：
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-1.5b-remote","messages":[{"role":"user","content":"hello from remote"}]}' | jq
+```
+
+备注：
+- 远程 `stackflow` 返回里的 `usage` 当前为近似值
 ```
 
 预期：`HTTP 400`。
