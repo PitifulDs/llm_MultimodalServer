@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 LOG_DIR="/tmp/llm_serving"
 CFG_PATH="${CONFIG_PATH:-${ROOT}/config.json}"
 export CFG_PATH
@@ -31,14 +31,23 @@ PY
 fi
 
 # resolve relative model path from config to absolute path for worker
-if [ -n "${STACKFLOW_MODEL_PATH:-}" ] && [[ "${STACKFLOW_MODEL_PATH}" != /* ]]; then
-  export STACKFLOW_MODEL_PATH="${ROOT}/${STACKFLOW_MODEL_PATH}"
+if [ -n "${STACKFLOW_MODEL_PATH:-}" ]; then
+  case "${STACKFLOW_MODEL_PATH}" in
+    /*) ;;
+    *) export STACKFLOW_MODEL_PATH="${ROOT}/${STACKFLOW_MODEL_PATH}" ;;
+  esac
 fi
-if [ -n "${LLAMA_MODEL_PATH:-}" ] && [[ "${LLAMA_MODEL_PATH}" != /* ]]; then
-  export LLAMA_MODEL_PATH="${ROOT}/${LLAMA_MODEL_PATH}"
+if [ -n "${LLAMA_MODEL_PATH:-}" ]; then
+  case "${LLAMA_MODEL_PATH}" in
+    /*) ;;
+    *) export LLAMA_MODEL_PATH="${ROOT}/${LLAMA_MODEL_PATH}" ;;
+  esac
 fi
-if [ -n "${LLM_MODEL_PATH:-}" ] && [[ "${LLM_MODEL_PATH}" != /* ]]; then
-  export LLM_MODEL_PATH="${ROOT}/${LLM_MODEL_PATH}"
+if [ -n "${LLM_MODEL_PATH:-}" ]; then
+  case "${LLM_MODEL_PATH}" in
+    /*) ;;
+    *) export LLM_MODEL_PATH="${ROOT}/${LLM_MODEL_PATH}" ;;
+  esac
 fi
 
 # runtime shared libraries

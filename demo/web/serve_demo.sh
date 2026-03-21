@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${1:-8000}"
