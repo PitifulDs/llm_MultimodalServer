@@ -7,6 +7,7 @@
 #include "utils/json.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -18,6 +19,26 @@ namespace
 bool get_agent_enabled(const json &body)
 {
     return body.contains("agent") && body["agent"].is_boolean() && body["agent"].get<bool>();
+}
+
+std::string to_lower_copy(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch)
+                   { return static_cast<char>(std::tolower(ch)); });
+    return s;
+}
+
+std::string get_agent_mode(const json &body)
+{
+    if (!body.contains("agent_mode") || !body["agent_mode"].is_string())
+        return "code_analysis";
+
+    std::string mode = to_lower_copy(body["agent_mode"].get<std::string>());
+    if (mode == "assistant" || mode == "code" || mode == "code_agent")
+        mode = "code_analysis";
+    if (mode != "code_analysis")
+        return "code_analysis";
+    return mode;
 }
 
 int get_agent_max_steps(const json &body)
@@ -94,6 +115,7 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     ctx->stream = stream;
     ctx->is_chat = true;
     ctx->use_agent = get_agent_enabled(body);
+    ctx->agent_mode = ctx->use_agent ? get_agent_mode(body) : std::string();
     ctx->agent_max_steps = get_agent_max_steps(body);
     ctx->agent_tools = get_agent_tools(body);
 

@@ -315,3 +315,57 @@
 2) 关键难点（分包、SSE、远程链路）
 3) 具体改动（文件级）
 4) 可量化结果（压测、稳定性）
+
+
+## 17. 智能指针（项目实际用法）
+
+69. 你项目里主要用了哪些智能指针？
+答: 主要用了 `std::shared_ptr`、`std::unique_ptr` 和 `std::weak_ptr`。
+- `shared_ptr` 用在异步链路里共享对象生命周期，比如 `ServingContext`、`Session`、`ModelEngine`。
+- `unique_ptr` 用在所有权非常明确的对象上，比如 `SessionManager`、`AgentExecutor`、`Poller`、`Socket`。
+- `weak_ptr` 用在回调和缓存场景，避免循环引用或对象被意外长期持有。
+
+70. 为什么 `ServingContext` 要用 `shared_ptr`？
+答: 因为它会跨越 HTTP 网关、SessionExecutor、EngineExecutor、具体引擎、流式回调这几层异步链路。若用栈对象或裸指针，很容易在异步执行时悬空。用 `shared_ptr` 可以保证“谁还在用，谁就能让对象继续存活”。
+可展开: 这是典型的“跨线程/跨回调共享生命周期”场景。
+
+71. 为什么 `Session` 也用 `shared_ptr`？
+答: `Session` 同时会被 `SessionManager`、`HttpGateway`、引擎层持有。比如 `HttpGateway` 取到 session 后要做 auto-diff，引擎层还可能继续使用 `session->history` 或 `session->model_ctx`。所以它不是单一 owner，适合 `shared_ptr`。
+
+72. `ModelEngine` 为什么不是栈对象，而是 `shared_ptr`？
+答: 因为引擎对象会被缓存复用。比如 `EngineFactory` 里有 `unordered_map<string, shared_ptr<ModelEngine>>`，同一模型不需要每次请求都重新构造。这样可以减少模型初始化开销。
+可展开: 这是“共享复用 + 缓存池”的典型用法。
+
+73. 你项目里 `unique_ptr` 主要用在哪？
+答: 主要用在“所有权明确且不共享”的成员对象上。
+- `HttpGateway` 独占 `SessionManager` 和 `AgentExecutor`
+- `network` 模块里 `EventLoop` 独占 `Poller`，`TcpConnection` 独占 `Socket` / `Channel`
+- `unit-manager` 独占 `TcpServer` 或 `pzmq` 通道对象
+这样可以明确对象销毁边界，也避免不必要的引用计数开销。
+
+74. 为什么 worker 侧用了 `weak_ptr`？
+答: worker 侧回调函数会异步触发，如果直接捕获 `shared_ptr<llm_task>` 或 `shared_ptr<llm_channel_obj>`，容易形成循环引用，导致任务结束后对象不释放。现在的做法是回调里只保存 `weak_ptr`，真正执行时再 `lock()`，如果对象已经销毁就直接返回。
+可展开: 这是一种典型的“观察但不拥有”策略。
+
+75. 你项目里 `weak_ptr` 还有什么例子？
+答: `llm_task` 里对共享 `LlamaEngine` 的静态缓存使用了 `weak_ptr<LlamaEngine>`。这样做的意思是：我想复用这个引擎，但不想因为一个全局静态 `shared_ptr` 让它一直常驻内存、永远不释放。需要时 `lock()`，没有就重新创建。
+
+76. 为什么不大量使用裸指针？
+答: 裸指针在这个项目里主要保留给“非拥有关系”或者底层接口，比如网络模块的 fd/channel 绑定。真正涉及跨线程、跨回调、异步执行的对象，如果大量用裸指针，生命周期会非常难管，容易出现悬空指针、重复释放、内存泄漏。
+
+77. 什么时候你会优先选 `shared_ptr`，什么时候选 `unique_ptr`？
+答:
+- 如果对象只有一个 owner，而且生命周期边界很清晰，我优先选 `unique_ptr`。
+- 如果对象会被多个模块共享，尤其是异步场景，我才选 `shared_ptr`。
+- 如果只需要引用但不想拥有，就用 `weak_ptr`。
+项目里基本也是按这个原则来的。
+
+78. 智能指针会不会有性能开销？
+答: 会，尤其是 `shared_ptr` 有引用计数成本，所以不能滥用。但在这个项目里，`shared_ptr` 主要放在业务对象和异步边界上，这些地方正确性比那点引用计数开销更重要。底层资源和高频局部对象，还是尽量用 `unique_ptr` 或栈对象。
+
+79. 如果面试官问“你们智能指针设计是否合理”，你怎么答？
+答: 我会说这个项目的设计思路是分层的：
+- 业务层和异步链路重视生命周期安全，所以多用 `shared_ptr`
+- 资源管理层重视所有权清晰，所以多用 `unique_ptr`
+- 回调和缓存场景为了防循环引用，用 `weak_ptr`
+这个划分比较符合工程实践，不是为了“到处都用智能指针”。

@@ -127,6 +127,11 @@ curl -s "http://127.0.0.1:8080/v1/models" | jq
 bash scripts/start_all.sh
 ```
 
+只验证 analysis agent 的真实模型工具调用链路：
+```bash
+bash scripts/smoke_test_analysis_agent.sh
+```
+
 如果要一键启动后端 + demo web，并自动尝试打开浏览器：
 ```bash
 bash scripts/start_agent_demo.sh

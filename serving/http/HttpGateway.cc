@@ -16,6 +16,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -73,6 +74,23 @@ namespace
         return "req-" + std::to_string(++seq);
     }
 
+    std::filesystem::path detect_repo_root()
+    {
+        if (const char *cfg = std::getenv("CONFIG_PATH"))
+        {
+            if (*cfg)
+            {
+                std::error_code ec;
+                auto cfg_path = std::filesystem::weakly_canonical(std::filesystem::path(cfg), ec);
+                if (ec)
+                    cfg_path = std::filesystem::path(cfg).lexically_normal();
+                if (cfg_path.has_parent_path())
+                    return cfg_path.parent_path();
+            }
+        }
+        return std::filesystem::current_path();
+    }
+
     // FinishReason -> openai finish_reaso
     const char *finish_reason_to_str(FinishReason r)
     {
@@ -95,6 +113,10 @@ HttpGateway::HttpGateway()
     session_mgr_ = std::make_unique<SessionManager>(opt);
 
     AgentExecutor::Options agent_opt;
+    const auto repo_root = detect_repo_root();
+    agent_opt.repo_root = repo_root.string();
+    agent_opt.docs_root = repo_root.string();
+    agent_opt.config_path = (repo_root / "config.json").string();
     if (const char *cfg = std::getenv("CONFIG_PATH"))
     {
         if (*cfg)

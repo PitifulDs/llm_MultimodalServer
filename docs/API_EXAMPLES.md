@@ -51,8 +51,32 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 curl -i -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen2.5-1.5b","messages":"bad"}'
+```
 
-远程模型示例（通过模型名路由到 stackflow）：
+预期：`HTTP 400`。
+
+## 7. 只读 Analysis Agent 示例
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"qwen2.5-1.5b",
+    "agent": true,
+    "agent_mode": "code_analysis",
+    "max_steps": 4,
+    "tools": ["search_code","read_file","list_files","search_docs","get_config","get_server_status"],
+    "messages":[
+      {"role":"user","content":"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？"}
+    ]
+  }' | jq
+```
+
+如果要验证真实模型是否真的触发了只读工具调用，可以运行：
+```bash
+bash scripts/smoke_test_analysis_agent.sh
+```
+
+## 8. 远程模型示例（通过模型名路由到 stackflow）
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
@@ -61,6 +85,3 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 
 备注：
 - 远程 `stackflow` 返回里的 `usage` 当前为近似值
-```
-
-预期：`HTTP 400`。

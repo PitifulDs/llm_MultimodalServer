@@ -8,12 +8,59 @@
 #include "serving/core/agent/BuiltinTools.h"
 
 #include <algorithm>
+#include <set>
 #include <vector>
 
 #include <glog/logging.h>
 
 namespace
 {
+constexpr const char *kCodeAnalysisMode = "code_analysis";
+
+std::string normalize_agent_mode(const std::string &mode)
+{
+    if (mode.empty() || mode == "assistant" || mode == "code" || mode == "code_agent")
+        return kCodeAnalysisMode;
+    if (mode != kCodeAnalysisMode)
+        return kCodeAnalysisMode;
+    return mode;
+}
+
+std::vector<std::string> default_tools_for_mode(const std::string &mode)
+{
+    if (mode == kCodeAnalysisMode)
+    {
+        return {
+            "search_code",
+            "read_file",
+            "list_files",
+            "search_docs",
+            "get_config",
+            "get_server_status"};
+    }
+
+    return {
+        "search_docs",
+        "get_config",
+        "get_server_status"};
+}
+
+std::vector<std::string> sanitize_tools(const ToolRegistry &registry,
+                                        const std::vector<std::string> &tools)
+{
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const auto &name : tools)
+    {
+        if (!registry.Has(name))
+            continue;
+        if (!seen.insert(name).second)
+            continue;
+        out.push_back(name);
+    }
+    return out;
+}
+
 bool is_tool_allowed(const std::vector<std::string> &allowed_tools, const std::string &name)
 {
     if (allowed_tools.empty())
@@ -38,6 +85,7 @@ AgentExecutor::AgentExecutor(EngineExecutor &executor, Options options)
     : executor_(executor), options_(std::move(options))
 {
     BuiltinToolsOptions builtin_options;
+    builtin_options.repo_root = options_.repo_root;
     builtin_options.docs_root = options_.docs_root;
     builtin_options.config_path = options_.config_path;
     builtin_options.max_tool_output_chars = options_.max_tool_output_chars;
@@ -74,9 +122,15 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
     }
 
     const int max_steps = ctx->agent_max_steps > 0 ? ctx->agent_max_steps : options_.default_max_steps;
+    const std::string agent_mode = normalize_agent_mode(ctx->agent_mode);
     std::vector<std::string> allowed_tools = ctx->agent_tools.empty()
-                                                 ? tool_registry_.RegisteredToolNames()
+                                                 ? default_tools_for_mode(agent_mode)
                                                  : ctx->agent_tools;
+    allowed_tools = sanitize_tools(tool_registry_, allowed_tools);
+    if (allowed_tools.empty())
+    {
+        allowed_tools = sanitize_tools(tool_registry_, default_tools_for_mode(agent_mode));
+    }
 
     auto shadow_session = std::make_shared<Session>(ctx->session_id + "#agent#" + ctx->request_id, ctx->model);
     {
@@ -85,7 +139,7 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
     }
 
     std::vector<Message> step_messages;
-    step_messages.push_back({"system", BuildToolPrompt(allowed_tools)});
+    step_messages.push_back({"system", BuildToolPrompt(agent_mode, allowed_tools)});
     step_messages.insert(step_messages.end(), ctx->messages.begin(), ctx->messages.end());
 
     std::string last_model_output;

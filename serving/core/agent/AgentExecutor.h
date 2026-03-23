@@ -16,6 +16,7 @@ public:
     {
         int default_max_steps = 4;
         size_t max_tool_output_chars = 4000;
+        std::string repo_root = ".";
         std::string docs_root = ".";
         std::string config_path = "config.json";
     };

@@ -170,6 +170,40 @@
       font-size: 12px;
     }
 
+    .debug-card {
+      margin-top: 20px;
+    }
+
+    .debug-box {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(10, 16, 31, 0.72);
+      border: 1px solid var(--border);
+    }
+
+    .debug-title {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .debug-hint {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .debug-code {
+      margin: 0;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     @media (max-width: 900px) {
       .hero { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
@@ -242,6 +276,7 @@
 
         <label>Agent Preset</label>
         <select id="agentPreset">
+          <option value="analysis" selected>Code Analysis</option>
           <option value="">Custom</option>
           <option value="status">Server Status</option>
           <option value="config">Default Model & Config</option>
@@ -251,7 +286,7 @@
         <label>Agent Tools</label>
         <input
           id="agentTools"
-          value="search_docs,get_config,get_server_status"
+          value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
           placeholder="Comma-separated tools"
         />
 
@@ -294,6 +329,28 @@
       </div>
     </div>
 
+    <div class="card debug-card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>Debug</strong>
+        <span id="debugMode" class="badge">CHAT</span>
+      </div>
+
+      <div class="debug-box">
+        <div class="debug-title">Request Target</div>
+        <div id="debugTarget" class="debug-hint">No request sent yet.</div>
+      </div>
+
+      <div class="debug-box">
+        <div class="debug-title">Agent Hint</div>
+        <div id="agentHint" class="debug-hint">Agent is disabled.</div>
+      </div>
+
+      <div class="debug-box">
+        <div class="debug-title">Last Sent Payload</div>
+        <pre id="payloadPreview" class="debug-code">No request sent yet.</pre>
+      </div>
+    </div>
+
     <div class="footer">
       This is a lightweight demo UI. It assumes your server implements OpenAI-like SSE streaming.
     </div>
@@ -305,6 +362,10 @@
     const ttfbEl = document.getElementById('ttfb');
     const tokEl = document.getElementById('tokCount');
     const durEl = document.getElementById('dur');
+    const debugModeEl = document.getElementById('debugMode');
+    const debugTargetEl = document.getElementById('debugTarget');
+    const agentHintEl = document.getElementById('agentHint');
+    const payloadPreviewEl = document.getElementById('payloadPreview');
     const sendBtn = document.getElementById('sendBtn');
     const stopBtn = document.getElementById('stopBtn');
     const modeEl = document.getElementById('streamMode');
@@ -319,6 +380,13 @@
     const promptEl = document.getElementById('prompt');
 
     const AGENT_PRESETS = {
+      analysis: {
+        enableAgent: true,
+        maxSteps: 4,
+        tools: ['search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
+        system: 'You are a concise read-only code analysis agent for EdgeLLM-Serving.',
+        prompt: 'HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？请基于仓库代码回答，并指出相关文件。',
+      },
       status: {
         enableAgent: true,
         maxSteps: 3,
@@ -362,6 +430,7 @@
     function setButtonLabel() {
       const modeLabel = modeEl.value === 'stream' ? 'Send (stream)' : 'Send (non-stream)';
       sendBtn.textContent = enableAgentEl.checked ? `${modeLabel} [agent]` : modeLabel;
+      debugModeEl.textContent = enableAgentEl.checked ? 'AGENT' : 'CHAT';
     }
 
     function parseAgentTools() {
@@ -386,11 +455,37 @@
 
       if (enableAgentEl.checked) {
         payload.agent = true;
+        payload.agent_mode = 'code_analysis';
         payload.max_steps = parseInt(agentMaxStepsEl.value, 10) || 4;
         payload.tools = parseAgentTools();
       }
 
       return payload;
+    }
+
+    function buildAgentHint() {
+      if (!enableAgentEl.checked) {
+        return 'Agent is disabled. Requests go directly to /v1/chat/completions without tool orchestration.';
+      }
+
+      const tools = parseAgentTools();
+      return [
+        'Agent mode: code_analysis',
+        `Allowed tools: ${tools.length ? tools.join(', ') : '(none)'}`,
+        'Server-side tool calls are logged as: [agent] req=... step=... tool=...',
+        'For a real-model verification, run: bash scripts/smoke_test_analysis_agent.sh',
+      ].join('\n');
+    }
+
+    function renderDebugPanel({ baseUrl = '', endpoint = '', payload = null } = {}) {
+      agentHintEl.textContent = buildAgentHint();
+
+      if (!payload) {
+        return;
+      }
+
+      debugTargetEl.textContent = `${baseUrl}${endpoint}`;
+      payloadPreviewEl.textContent = JSON.stringify(payload, null, 2);
     }
 
     async function loadModels() {
@@ -466,6 +561,11 @@
       stopBtn.disabled = false;
 
       const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
+      renderDebugPanel({
+        baseUrl,
+        endpoint: '/v1/chat/completions?stream=true',
+        payload,
+      });
 
       aborter = new AbortController();
       const start = performance.now();
@@ -564,6 +664,11 @@
       stopBtn.disabled = false;
 
       const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
+      renderDebugPanel({
+        baseUrl,
+        endpoint: '/v1/chat/completions',
+        payload,
+      });
       aborter = new AbortController();
       const start = performance.now();
 
@@ -612,12 +717,22 @@
     });
 
     modeEl.addEventListener('change', setButtonLabel);
-    enableAgentEl.addEventListener('change', setButtonLabel);
+    enableAgentEl.addEventListener('change', () => {
+      setButtonLabel();
+      renderDebugPanel();
+    });
     document.getElementById('baseUrl').addEventListener('change', loadModels);
     agentPresetEl.addEventListener('change', () => {
       applyPreset(agentPresetEl.value);
     });
+    agentMaxStepsEl.addEventListener('input', () => renderDebugPanel());
+    agentToolsEl.addEventListener('input', () => renderDebugPanel());
+    systemEl.addEventListener('input', () => renderDebugPanel());
+    promptEl.addEventListener('input', () => renderDebugPanel());
+    modeEl.addEventListener('change', () => renderDebugPanel());
     setButtonLabel();
+    applyPreset(agentPresetEl.value);
+    renderDebugPanel();
     loadModels();
   </script>
 </body>
