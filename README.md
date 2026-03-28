@@ -67,7 +67,7 @@ EdgeLLM-Serving/
 ```
 
 Agent 架构文档:
-- `docs/AGENT.md`
+- `docs/智能体使用说明.md`
 
 **一次请求链路**
 1. `NetworkHttpServer` 按 Content-Length 组包。
@@ -146,11 +146,12 @@ bash scripts/start_agent_demo.sh
 `config.json` 启动时加载，路径默认相对仓库根目录。
 
 推荐把请求里的 `model` 当成“逻辑模型名”，例如 `qwen2.5-1.5b`。  
-服务端会根据 `config.json` 中的 `models` 注册表决定这个模型走本地 `llama.cpp` 还是远程 `stackflow`。
+服务端会根据 `config.json` 中的 `models` 注册表识别该模型支持哪些后端，再根据请求中的 `inference_backend` 决定走本地 `llama.cpp` 还是远程 `stackflow`。
 
 示例：
-- `qwen2.5-1.5b` -> 本地 `llama.cpp`
-- `qwen2.5-1.5b-remote` -> 远程 `stackflow`
+- `model = qwen2.5-1.5b, inference_backend = local` -> 本地 `llama.cpp`
+- `model = qwen2.5-1.5b, inference_backend = rpc` -> 远程 `stackflow`
+- `model = qwen3.5-2b, inference_backend = local` -> 本地 `llama.cpp`
 
 常用配置:
 - `http_port`, `default_model`
@@ -185,12 +186,13 @@ bash scripts/start_agent_demo.sh
 }
 ```
 
-这样同一个 HTTP 服务里可以按请求模型名切换：
-- 请求 `"model":"qwen2.5-1.5b"` 时走本地
-- 请求 `"model":"qwen2.5-1.5b-remote"` 时走远程
+这样同一个 HTTP 服务里可以按“模型 + 后端开关”切换：
+- 请求 `"model":"qwen2.5-1.5b","inference_backend":"local"` 时走本地
+- 请求 `"model":"qwen2.5-1.5b","inference_backend":"rpc"` 时走远程
+- 如果请求里不带 `inference_backend`，则按模型注册表中的默认映射解析
 
 说明：
-- `/v1/models` 会返回当前模型注册表中的模型名，前端可用它生成模型下拉
+- `/v1/models` 会返回当前模型注册表中的模型名，以及每个模型支持的 `backends`
 - `stackflow` 远程模式下的 `usage` 目前是基于文本长度的近似统计，不是精确 tokenizer 结果
 
 **Redis 会话持久化（可选）**
@@ -276,16 +278,17 @@ bash scripts/start_agent_demo.sh
 
 **详细文档**
 
-- `docs/ARCHITECTURE.md`：架构、时序图、模块调用链
-- `docs/DESIGN_PATTERNS.md`：项目中使用到的设计模式与代码示例
-- `docs/INTERVIEW_QA.md`：面试高频问题与回答模板
-- `docs/PROJECT_HIGHLIGHTS.md`：开场亮点与可量化结果
-- `docs/TRADEOFFS.md`：关键技术取舍与方案对比
-- `docs/POSTMORTEM.md`：真实问题复盘与修复策略
-- `docs/PERF_REPORT.md`：压测方法、结果与吞吐估算
-- `docs/API_EXAMPLES.md`：可直接复制的 API 调用示例
-- `docs/OBSERVABILITY.md`：日志、指标与排障流程
-- `docs/INTERVIEW_PITCH.md`：1/3/8 分钟面试讲解稿
+- `docs/系统架构.md`：架构、时序图、模块调用链
+- `docs/设计模式.md`：项目中使用到的设计模式与代码示例
+- `docs/面试问答.md`：面试高频问题与回答模板
+- `docs/项目亮点.md`：开场亮点与可量化结果
+- `docs/技术取舍.md`：关键技术取舍与方案对比
+- `docs/问题复盘.md`：真实问题复盘与修复策略
+- `docs/性能压测报告.md`：压测方法、结果与吞吐估算
+- `docs/API调用示例.md`：可直接复制的 API 调用示例
+- `docs/可观测性与排障.md`：日志、指标与排障流程
+- `docs/面试讲解稿.md`：1/3/8 分钟面试讲解稿
+- `docs/本地推理与RPC推理.md`：两种推理后端的差异、优势与适用场景
 
 **排查与日志**
 - 清理 socket:

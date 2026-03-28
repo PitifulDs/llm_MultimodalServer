@@ -150,12 +150,12 @@ std::string search_docs_tool(const BuiltinToolsOptions &options, const nlohmann:
     std::vector<std::filesystem::path> files;
     const std::filesystem::path root(options.docs_root);
     files.push_back(root / "README.md");
-    files.push_back(root / "serving" / "http" / "README.md");
-    files.push_back(root / "docs" / "ARCHITECTURE.md");
-    files.push_back(root / "docs" / "API_EXAMPLES.md");
-    files.push_back(root / "docs" / "DESIGN_PATTERNS.md");
-    files.push_back(root / "docs" / "PROJECT_HIGHLIGHTS.md");
-    files.push_back(root / "docs" / "AGENT.md");
+    files.push_back(root / "serving" / "http" / "使用说明.md");
+    files.push_back(root / "docs" / "系统架构.md");
+    files.push_back(root / "docs" / "API调用示例.md");
+    files.push_back(root / "docs" / "设计模式.md");
+    files.push_back(root / "docs" / "项目亮点.md");
+    files.push_back(root / "docs" / "智能体使用说明.md");
     files.push_back(root / "agent" / "AGENT.md");
 
     const std::vector<std::string> terms = split_terms(query);
