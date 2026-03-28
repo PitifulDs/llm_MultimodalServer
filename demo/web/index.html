@@ -94,6 +94,13 @@
       margin: 10px 0 6px;
     }
 
+    .hint {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
     input, textarea, select {
       width: 100%;
       background: rgba(10, 16, 31, 0.8);
@@ -111,6 +118,61 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 12px;
+    }
+
+    .mode-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .mode-card {
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(10, 16, 31, 0.52);
+    }
+
+    .mode-card strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .mode-card p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .section-title {
+      margin-top: 16px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .agent-shell {
+      margin-top: 10px;
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(10, 16, 31, 0.42);
+    }
+
+    .agent-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .agent-panel[hidden] {
+      display: none !important;
     }
 
     .actions {
@@ -250,48 +312,90 @@
             </select>
           </div>
           <div>
-            <label>Max Tokens</label>
-            <input id="maxTokens" type="number" min="1" max="4096" value="128" />
+            <label>Inference Backend</label>
+            <select id="inferenceBackend">
+              <option value="local" selected>Local llama.cpp</option>
+              <option value="rpc">RPC / Worker</option>
+            </select>
           </div>
         </div>
 
-        <label>Mode</label>
-        <select id="streamMode">
-          <option value="stream" selected>Stream (SSE)</option>
-          <option value="non-stream">Non-stream</option>
-        </select>
+        <div class="hint">
+          `Local` means this Linux server loads the GGUF directly. `RPC / Worker` means the HTTP server forwards the request to a remote StackFlow worker.
+        </div>
 
         <div class="row">
           <div>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:0;">
-              <input id="enableAgent" type="checkbox" style="width:auto; margin:0;" />
-              <span>Enable Agent</span>
-            </label>
+            <label>Max Tokens</label>
+            <input id="maxTokens" type="number" min="1" max="4096" value="128" />
           </div>
           <div>
-            <label>Max Steps</label>
-            <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
+            <label>Mode</label>
+            <select id="streamMode">
+              <option value="stream" selected>Stream (SSE)</option>
+              <option value="non-stream">Non-stream</option>
+            </select>
           </div>
         </div>
 
-        <label>Agent Preset</label>
-        <select id="agentPreset">
-          <option value="analysis" selected>Code Analysis</option>
-          <option value="">Custom</option>
-          <option value="status">Server Status</option>
-          <option value="config">Default Model & Config</option>
-          <option value="docs">Streaming & Docs</option>
-        </select>
+        <div class="mode-grid">
+          <div class="mode-card">
+            <strong>Normal Chat</strong>
+            <p>Ask the model directly. Use this for regular Q&amp;A, writing, translation, and normal conversation.</p>
+          </div>
+          <div class="mode-card">
+            <strong>Agent Mode</strong>
+            <p>Use tools before answering. Best for repo search, config lookup, docs lookup, and server status inspection.</p>
+          </div>
+        </div>
 
-        <label>Agent Tools</label>
-        <input
-          id="agentTools"
-          value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
-          placeholder="Comma-separated tools"
-        />
+        <div class="section-title">Request Type</div>
+        <div class="agent-shell">
+          <div class="agent-toggle">
+            <label style="display:flex; align-items:center; gap:8px; margin:0;">
+              <input id="enableAgent" type="checkbox" style="width:auto; margin:0;" />
+              <span>Enable Agent</span>
+            </label>
+            <div id="requestModeHint" class="hint" style="margin-top:0; text-align:right;">
+              Agent is off. The model will answer directly.
+            </div>
+          </div>
+
+          <div id="agentPanel" class="agent-panel" hidden>
+            <div class="row">
+              <div>
+                <label>Max Steps</label>
+                <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
+              </div>
+              <div>
+                <label>Agent Preset</label>
+                <select id="agentPreset">
+                  <option value="" selected>Custom</option>
+                  <option value="analysis">Code Analysis</option>
+                  <option value="status">Server Status</option>
+                  <option value="config">Default Model & Config</option>
+                  <option value="docs">Streaming & Docs</option>
+                </select>
+              </div>
+            </div>
+
+            <label>Agent Tools</label>
+            <input
+              id="agentTools"
+              value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
+              placeholder="Comma-separated tools"
+            />
+            <div class="hint">
+              Agent tools are only needed when the answer should come from code, config, docs, or live server status.
+            </div>
+          </div>
+        </div>
 
         <label>System (optional)</label>
         <input id="system" placeholder="You are a helpful assistant." />
+        <div class="hint">
+          Leave this empty for normal usage. Only add a system prompt when you want to force a specific style or role.
+        </div>
 
         <label>Session</label>
         <div class="row">
@@ -304,6 +408,9 @@
               <span>New session per request</span>
             </label>
           </div>
+        </div>
+        <div class="hint">
+          Turn off <code>New session per request</code> if you want a multi-turn conversation that keeps context.
         </div>
 
         <label>User Prompt</label>
@@ -370,12 +477,15 @@
     const stopBtn = document.getElementById('stopBtn');
     const modeEl = document.getElementById('streamMode');
     const modelEl = document.getElementById('model');
+    const backendEl = document.getElementById('inferenceBackend');
     const sessionIdEl = document.getElementById('sessionId');
     const newSessionEachEl = document.getElementById('newSessionEach');
     const enableAgentEl = document.getElementById('enableAgent');
     const agentMaxStepsEl = document.getElementById('agentMaxSteps');
     const agentPresetEl = document.getElementById('agentPreset');
     const agentToolsEl = document.getElementById('agentTools');
+    const agentPanelEl = document.getElementById('agentPanel');
+    const requestModeHintEl = document.getElementById('requestModeHint');
     const systemEl = document.getElementById('system');
     const promptEl = document.getElementById('prompt');
 
@@ -411,6 +521,7 @@
     };
 
     let aborter = null;
+    let modelCatalog = [];
 
     function setStatus(text) {
       statusEl.textContent = text;
@@ -427,10 +538,24 @@
       return Math.max(0, Math.round(text.length / 4));
     }
 
+    function backendLabel(value) {
+      return value === 'rpc' ? 'RPC / Worker' : 'Local llama.cpp';
+    }
+
     function setButtonLabel() {
       const modeLabel = modeEl.value === 'stream' ? 'Send (stream)' : 'Send (non-stream)';
       sendBtn.textContent = enableAgentEl.checked ? `${modeLabel} [agent]` : modeLabel;
       debugModeEl.textContent = enableAgentEl.checked ? 'AGENT' : 'CHAT';
+    }
+
+    function updateAgentUI() {
+      const enabled = enableAgentEl.checked;
+      agentPanelEl.hidden = !enabled;
+      requestModeHintEl.textContent = enabled
+        ? 'Agent is on. The model may call tools before answering.'
+        : 'Agent is off. The model will answer directly.';
+      setButtonLabel();
+      renderDebugPanel();
     }
 
     function parseAgentTools() {
@@ -447,6 +572,7 @@
 
       const payload = {
         model,
+        inference_backend: backendEl.value,
         max_tokens: maxTokens,
         messages,
         session_id: sessionId,
@@ -465,15 +591,22 @@
 
     function buildAgentHint() {
       if (!enableAgentEl.checked) {
-        return 'Agent is disabled. Requests go directly to /v1/chat/completions without tool orchestration.';
+        return [
+          'Current mode: normal chat',
+          `Inference backend: ${backendLabel(backendEl.value)}`,
+          'Requests go directly to /v1/chat/completions.',
+          'Use this for ordinary conversation, writing, translation, or quick model checks.',
+        ].join('\n');
       }
 
       const tools = parseAgentTools();
       return [
+        'Current mode: agent',
+        `Inference backend: ${backendLabel(backendEl.value)}`,
         'Agent mode: code_analysis',
         `Allowed tools: ${tools.length ? tools.join(', ') : '(none)'}`,
+        'Use this only when the answer should come from repo files, docs, config, or live server state.',
         'Server-side tool calls are logged as: [agent] req=... step=... tool=...',
-        'For a real-model verification, run: bash scripts/smoke_test_analysis_agent.sh',
       ].join('\n');
     }
 
@@ -499,6 +632,7 @@
         const json = await resp.json();
         const items = Array.isArray(json.data) ? json.data : [];
         if (!items.length) return;
+        modelCatalog = items;
 
         const currentValue = modelEl.value;
         modelEl.innerHTML = '';
@@ -533,7 +667,7 @@
       agentToolsEl.value = (preset.tools || []).join(',');
       systemEl.value = preset.system || '';
       promptEl.value = preset.prompt || '';
-      setButtonLabel();
+      updateAgentUI();
     }
 
     async function streamChat() {
@@ -718,8 +852,7 @@
 
     modeEl.addEventListener('change', setButtonLabel);
     enableAgentEl.addEventListener('change', () => {
-      setButtonLabel();
-      renderDebugPanel();
+      updateAgentUI();
     });
     document.getElementById('baseUrl').addEventListener('change', loadModels);
     agentPresetEl.addEventListener('change', () => {
@@ -727,12 +860,11 @@
     });
     agentMaxStepsEl.addEventListener('input', () => renderDebugPanel());
     agentToolsEl.addEventListener('input', () => renderDebugPanel());
+    backendEl.addEventListener('change', () => renderDebugPanel());
     systemEl.addEventListener('input', () => renderDebugPanel());
     promptEl.addEventListener('input', () => renderDebugPanel());
     modeEl.addEventListener('change', () => renderDebugPanel());
-    setButtonLabel();
-    applyPreset(agentPresetEl.value);
-    renderDebugPanel();
+    updateAgentUI();
     loadModels();
   </script>
 </body>

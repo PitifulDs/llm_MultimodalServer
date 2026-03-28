@@ -13,10 +13,15 @@ namespace
     std::mutex g_mu;
     std::unordered_map<std::string, std::shared_ptr<ModelEngine>> g_cache; 
 
-    // 真正的构造逻辑（不带缓存）
-    std::shared_ptr<ModelEngine> CreateNewEngine(const std::string &model)
+    std::string build_cache_key(const std::string &model, const std::string &preferred_backend)
     {
-        const ModelSpec spec = ModelRegistry::Resolve(model);
+        return model + "||" + preferred_backend;
+    }
+
+    // 真正的构造逻辑（不带缓存）
+    std::shared_ptr<ModelEngine> CreateNewEngine(const std::string &model, const std::string &preferred_backend)
+    {
+        const ModelSpec spec = ModelRegistry::Resolve(model, preferred_backend);
         if (!spec.valid)
             return nullptr;
 
@@ -45,23 +50,24 @@ namespace
         return nullptr;
     }
 } // namespace
-std::shared_ptr<ModelEngine> EngineFactory::Create(const std::string &model)
+std::shared_ptr<ModelEngine> EngineFactory::Create(const std::string &model, const std::string &preferred_backend)
 {
+    const std::string cache_key = build_cache_key(model, preferred_backend);
     { // 先查缓存
         std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_cache.find(model);
+        auto it = g_cache.find(cache_key);
         if (it != g_cache.end())
             return it->second;
     }
 
     // 锁外创建：避免加载模型时一直占着锁（可选但建议）
-    auto eng = CreateNewEngine(model);
+    auto eng = CreateNewEngine(model, preferred_backend);
     if (!eng)
         return nullptr;
 
     // 二次检查 + 写入（防止并发下重复创建）
     std::lock_guard<std::mutex> lk(g_mu);
-    auto &slot = g_cache[model];
+    auto &slot = g_cache[cache_key];
     if (!slot)
         slot = eng;
     return slot;

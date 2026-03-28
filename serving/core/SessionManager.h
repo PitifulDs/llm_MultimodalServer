@@ -36,7 +36,7 @@ public:
     ~SessionManager();
 
     // 获取或创建（不存在则创建）
-    std::shared_ptr<Session> getOrCreate(const std::string &session_id, const std::string &model);
+    std::shared_ptr<Session> getOrCreate(const std::string &session_id, const std::string &model, const std::string &backend = "");
     
     // 只获取（不存在返回空）
     std::shared_ptr<Session> get(const std::string &session_id);
@@ -82,5 +82,4 @@ private:
 
     std::unique_ptr<RedisSessionStore> redis_store_;
 };
-
 

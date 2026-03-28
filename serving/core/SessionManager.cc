@@ -65,20 +65,33 @@ SessionManager::~SessionManager() = default;
 
 // ======================== public APIs ========================
 
-std::shared_ptr<Session> SessionManager::getOrCreate(const std::string &session_id, const std::string &model)
+std::shared_ptr<Session> SessionManager::getOrCreate(const std::string &session_id,
+                                                     const std::string &model,
+                                                     const std::string &backend)
 {
     std::lock_guard<std::mutex> lk(mu_);
 
     auto it = map_.find(session_id);
     if (it != map_.end())
     {
+        if (it->second.session->model != model || it->second.session->inference_backend != backend)
+        {
+            LOG(INFO) << "[session] reset sid=" << session_id
+                      << " model=" << it->second.session->model << "->" << model
+                      << " backend=" << it->second.session->inference_backend << "->" << backend;
+            it->second.session->model = model;
+            it->second.session->inference_backend = backend;
+            it->second.session->history.clear();
+            it->second.session->model_ctx.reset();
+            it->second.session->closed = false;
+        }
         it->second.session->touch();
         moveToFront_(it->second);
         return it->second.session;
     }
 
     // create new session
-    auto s = std::make_shared<Session>(session_id, model);
+    auto s = std::make_shared<Session>(session_id, model, backend);
     if (redis_store_)
     {
         std::vector<Message> persisted;

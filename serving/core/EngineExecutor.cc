@@ -10,6 +10,15 @@
 #include <utility>
 
 // ================= EngineExecutor =================
+namespace
+{
+std::string build_route_key(const std::shared_ptr<ServingContext> &ctx)
+{
+    if (!ctx)
+        return {};
+    return ctx->model + "||" + ctx->inference_backend;
+}
+}
 
 EngineExecutor::EngineExecutor(ThreadPool &pool)
     : pool_(pool) 
@@ -29,7 +38,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         return false;
 
     // 2) per-model 串行投递
-    const std::string model = ctx->model;
+    const std::string route_key = build_route_key(ctx);
 
     auto get_env_int = [](const char *name, int def) -> int {
         const char *v = std::getenv(name);
@@ -51,7 +60,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 
     const auto enqueued_at = std::chrono::steady_clock::now();
 
-    bool ok = SubmitPerModel(model, [this, ctx, enqueued_at, max_queue_wait_ms]
+    bool ok = SubmitPerModel(route_key, [this, ctx, enqueued_at, max_queue_wait_ms]
     {
         // 任务开始时再检查一次
         if (ctx->finished.load(std::memory_order_acquire))
@@ -74,6 +83,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         }
 
         LOG(INFO) << "[execQ] start model=" << ctx->model
+                  << " backend=" << (ctx->inference_backend.empty() ? "auto" : ctx->inference_backend)
                   << " req=" << ctx->request_id
                   << " wait_ms=" << wait_ms;
 
@@ -81,9 +91,9 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         std::shared_ptr<ModelEngine> engine;
         {
             std::lock_guard<std::mutex> lk(map_mu_);
-            auto &slot = engines_[ctx->model];
+            auto &slot = engines_[build_route_key(ctx)];
             if (!slot)
-                slot = EngineFactory::Create(ctx->model);
+                slot = EngineFactory::Create(ctx->model, ctx->inference_backend);
             engine = slot;
         }
 
@@ -110,7 +120,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     if (!ok)
     {
         // 立即失败：避免客户端挂死超时
-        ctx->error_message = "EngineExecutor: model queue full, model=" + model;
+        ctx->error_message = "EngineExecutor: model queue full, model=" + ctx->model;
         ctx->params["error_code"] = "overloaded";
         ctx->EmitFinish(FinishReason::error);
         return false;

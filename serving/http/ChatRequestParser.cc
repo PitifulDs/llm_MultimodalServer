@@ -28,6 +28,22 @@ std::string to_lower_copy(std::string s)
     return s;
 }
 
+std::string get_inference_backend(const json &body)
+{
+    std::string backend;
+    if (body.contains("inference_backend") && body["inference_backend"].is_string())
+        backend = body["inference_backend"].get<std::string>();
+    else if (body.contains("backend") && body["backend"].is_string())
+        backend = body["backend"].get<std::string>();
+
+    backend = to_lower_copy(std::move(backend));
+    if (backend == "rpc" || backend == "remote" || backend == "worker" || backend == "stackflow")
+        return "stackflow";
+    if (backend == "local" || backend == "llama")
+        return "local";
+    return "";
+}
+
 std::string get_agent_mode(const json &body)
 {
     if (!body.contains("agent_mode") || !body["agent_mode"].is_string())
@@ -112,6 +128,7 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     auto ctx = std::make_shared<ServingContext>();
     ctx->request_id = request_id;
     ctx->model = body.value("model", default_model);
+    ctx->inference_backend = get_inference_backend(body);
     ctx->stream = stream;
     ctx->is_chat = true;
     ctx->use_agent = get_agent_enabled(body);
@@ -124,7 +141,7 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     else
         ctx->session_id = request_id;
 
-    ctx->session = session_mgr.getOrCreate(ctx->session_id, ctx->model);
+    ctx->session = session_mgr.getOrCreate(ctx->session_id, ctx->model, ctx->inference_backend);
 
     if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
     {

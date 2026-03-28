@@ -235,16 +235,22 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
     json items = json::array();
-    const auto models = ModelRegistry::ListModels();
-    const std::string default_model = ModelRegistry::GetDefaultModel();
+    const auto models = ModelRegistry::ListModelInfos();
 
-    for (const auto &name : models)
+    for (const auto &model : models)
     {
+        json backends = json::array();
+        if (model.has_local)
+            backends.push_back("local");
+        if (model.has_rpc)
+            backends.push_back("rpc");
+
         items.push_back({
-            {"id", name},
+            {"id", model.id},
             {"object", "model"},
             {"owned_by", "edge-llm-serving"},
-            {"default", name == default_model}
+            {"default", model.is_default},
+            {"backends", backends}
         });
     }
 

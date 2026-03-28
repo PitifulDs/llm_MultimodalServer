@@ -22,10 +22,19 @@ struct ModelSpec
     bool stackflow_serialize_reuse = true;
 };
 
+struct ModelInfo
+{
+    std::string id;
+    bool is_default = false;
+    bool has_local = false;
+    bool has_rpc = false;
+};
+
 class ModelRegistry
 {
 public:
-    static ModelSpec Resolve(const std::string &model_name);
+    static ModelSpec Resolve(const std::string &model_name, const std::string &preferred_backend = "");
     static std::string GetDefaultModel();
     static std::vector<std::string> ListModels();
+    static std::vector<ModelInfo> ListModelInfos();
 };

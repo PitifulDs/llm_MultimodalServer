@@ -47,6 +47,7 @@ struct ServingContext
     std::string request_id;
     std::string session_id;
     std::string model;
+    std::string inference_backend;
 
     // ===== Request Type =====
     bool is_chat = false;
@@ -178,5 +179,4 @@ struct ServingContext
         }
     }
 };
-
 

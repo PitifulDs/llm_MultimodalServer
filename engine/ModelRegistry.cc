@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -83,6 +84,73 @@ bool json_or_default(const json &j, const char *key, bool fallback)
     return fallback;
 }
 
+std::string to_lower_copy(std::string s)
+{
+    for (char &ch : s)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
+
+bool ends_with(const std::string &value, const std::string &suffix)
+{
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string normalize_backend_name(std::string backend)
+{
+    backend = to_lower_copy(std::move(backend));
+    if (backend == "rpc" || backend == "remote" || backend == "worker" || backend == "stackflow")
+        return "stackflow";
+    if (backend == "local" || backend == "llama")
+        return "local";
+    return "";
+}
+
+std::string display_model_name(const std::string &name)
+{
+    if (ends_with(name, "-remote"))
+        return name.substr(0, name.size() - 7);
+    return name;
+}
+
+const json *find_model_entry(const json &models, const std::string &requested, const std::string &preferred_backend)
+{
+    auto find_object = [&](const std::string &name) -> const json * {
+        auto it = models.find(name);
+        if (it != models.end() && it->is_object())
+            return &(*it);
+        return nullptr;
+    };
+
+    const std::string normalized_backend = normalize_backend_name(preferred_backend);
+    if (normalized_backend == "stackflow")
+    {
+        if (const json *entry = find_object(requested + "-remote"))
+            return entry;
+        if (const json *entry = find_object(requested))
+            return entry;
+        if (ends_with(requested, "-remote"))
+        {
+            if (const json *entry = find_object(requested))
+                return entry;
+            return find_object(display_model_name(requested));
+        }
+        return nullptr;
+    }
+
+    if (normalized_backend == "local")
+    {
+        if (const json *entry = find_object(requested))
+            return entry;
+        if (ends_with(requested, "-remote"))
+            return find_object(display_model_name(requested));
+        return nullptr;
+    }
+
+    return find_object(requested);
+}
+
 ModelSpec build_stackflow_spec(const std::string &requested_name, const json &source, const json &cfg)
 {
     ModelSpec spec;
@@ -134,25 +202,31 @@ ModelSpec build_local_llama_spec(const std::string &requested_name, const json &
 }
 } // namespace
 
-ModelSpec ModelRegistry::Resolve(const std::string &model_name)
+ModelSpec ModelRegistry::Resolve(const std::string &model_name, const std::string &preferred_backend)
 {
     const json cfg = load_config();
     const std::string requested = model_name.empty() ? GetDefaultModel() : model_name;
+    const std::string normalized_backend = normalize_backend_name(preferred_backend);
 
     if (cfg.contains("models") && cfg["models"].is_object())
     {
         const auto &models = cfg["models"];
-        auto it = models.find(requested);
-        if (it != models.end() && it->is_object())
+        const json *entry = find_model_entry(models, requested, normalized_backend);
+        if (entry)
         {
-            const json &entry = *it;
-            const std::string backend = json_or_default(entry, "backend", std::string(""));
-            const std::string engine = json_or_default(entry, "engine", std::string(""));
+            const json &source = *entry;
+            if (normalized_backend == "stackflow")
+                return build_stackflow_spec(requested, source, cfg);
+            if (normalized_backend == "local")
+                return build_local_llama_spec(requested, source, cfg);
+
+            const std::string backend = json_or_default(source, "backend", std::string(""));
+            const std::string engine = json_or_default(source, "engine", std::string(""));
 
             if (backend == "stackflow" || engine == "stackflow")
-                return build_stackflow_spec(requested, entry, cfg);
+                return build_stackflow_spec(requested, source, cfg);
             if (backend == "local" || engine == "llama" || engine.empty())
-                return build_local_llama_spec(requested, entry, cfg);
+                return build_local_llama_spec(requested, source, cfg);
             if (backend == "dummy" || engine == "dummy")
             {
                 ModelSpec spec;
@@ -164,6 +238,11 @@ ModelSpec ModelRegistry::Resolve(const std::string &model_name)
             }
         }
     }
+
+    if (normalized_backend == "stackflow")
+        return build_stackflow_spec(requested, json::object(), cfg);
+    if (normalized_backend == "local")
+        return build_local_llama_spec(requested, json::object(), cfg);
 
     if (requested == "dummy")
     {
@@ -199,21 +278,59 @@ std::string ModelRegistry::GetDefaultModel()
 
 std::vector<std::string> ModelRegistry::ListModels()
 {
+    const auto infos = ListModelInfos();
+    std::vector<std::string> names;
+    names.reserve(infos.size());
+    for (const auto &info : infos)
+        names.push_back(info.id);
+    if (names.empty())
+        names.push_back("llama");
+    return names;
+}
+
+std::vector<ModelInfo> ModelRegistry::ListModelInfos()
+{
     const json cfg = load_config();
-    std::set<std::string> names;
+    std::map<std::string, ModelInfo> infos;
+    const std::string default_model = display_model_name(GetDefaultModel());
 
     if (cfg.contains("models") && cfg["models"].is_object())
     {
         for (auto it = cfg["models"].begin(); it != cfg["models"].end(); ++it)
         {
-            names.insert(it.key());
+            if (!it->is_object())
+                continue;
+
+            const std::string id = display_model_name(it.key());
+            auto &info = infos[id];
+            info.id = id;
+            info.is_default = id == default_model;
+
+            const std::string backend = normalize_backend_name(json_or_default(*it, "backend", std::string("")));
+            const std::string engine = normalize_backend_name(json_or_default(*it, "engine", std::string("")));
+
+            if (backend == "stackflow" || engine == "stackflow")
+                info.has_rpc = true;
+            else
+                info.has_local = true;
         }
     }
 
-    names.insert(GetDefaultModel());
+    if (infos.find(default_model) == infos.end())
+    {
+        auto &info = infos[default_model];
+        info.id = default_model;
+        info.is_default = true;
+        const ModelSpec spec = Resolve(default_model);
+        if (spec.engine == "stackflow")
+            info.has_rpc = true;
+        else if (spec.engine == "llama")
+            info.has_local = true;
+    }
 
-    if (names.empty())
-        names.insert("llama");
-
-    return std::vector<std::string>(names.begin(), names.end());
+    std::vector<ModelInfo> out;
+    out.reserve(infos.size());
+    for (auto &[_, info] : infos)
+        out.push_back(info);
+    return out;
 }

@@ -15,13 +15,14 @@ struct  Session
 {
     using Clock = std::chrono::steady_clock;
 
-    explicit Session(std::string session_id, std::string model_name)
-        : session_id(std::move(session_id)), model(std::move(model_name))
+    explicit Session(std::string session_id, std::string model_name, std::string backend_name = {})
+        : session_id(std::move(session_id)), model(std::move(model_name)), inference_backend(std::move(backend_name))
     {
     }
 
     std::string session_id;
     std::string model;
+    std::string inference_backend;
 
     // runtime state
     std::shared_ptr<ModelContext> model_ctx;    // kv chae / llm ctx
