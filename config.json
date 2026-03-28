@@ -1,16 +1,26 @@
 {
   "http_port": 8080,
-  "default_model": "qwen2.5-1.5b",
+  "default_model": "qwen3.5-2b",
   "worker_threads": 4,
   "max_model_queue": 64,
   "max_session_pending": 64,
   "max_queue_wait_ms": 2000,
-  "llama_model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf",
+  "llama_model_path": "/home/dongsong/workspace/models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
   "models": {
     "qwen2.5-1.5b": {
       "backend": "local",
       "engine": "llama",
       "model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf"
+    },
+    "qwen3.5-35b-a3b": {
+      "backend": "local",
+      "engine": "llama",
+      "model_path": "/home/dongsong/workspace/models/qwen3.5/Qwen3.5-35B-A3B-Q4_K_M.gguf"
+    },
+    "qwen3.5-2b": {
+      "backend": "local",
+      "engine": "llama",
+      "model_path": "/home/dongsong/workspace/models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf"
     },
     "qwen2.5-1.5b-remote": {
       "backend": "stackflow",
@@ -22,7 +32,7 @@
     "llama": {
       "backend": "local",
       "engine": "llama",
-      "model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf"
+      "model_path": "/home/dongsong/workspace/models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf"
     }
   },
   "llama_n_ctx": 4096,
