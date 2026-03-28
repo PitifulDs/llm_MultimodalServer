@@ -51,6 +51,72 @@ std::string json_to_string(const nlohmann::json &j)
         return j.get<std::string>();
     return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
+
+bool extract_relaxed_json_string_field(const std::string &raw,
+                                       const std::string &key,
+                                       std::string &out)
+{
+    const std::string marker = "\"" + key + "\"";
+    const auto key_pos = raw.find(marker);
+    if (key_pos == std::string::npos)
+        return false;
+
+    const auto colon_pos = raw.find(':', key_pos + marker.size());
+    if (colon_pos == std::string::npos)
+        return false;
+
+    size_t pos = colon_pos + 1;
+    while (pos < raw.size() && std::isspace(static_cast<unsigned char>(raw[pos])) != 0)
+        ++pos;
+    if (pos >= raw.size() || raw[pos] != '"')
+        return false;
+
+    ++pos;
+    std::string value;
+    bool escape = false;
+    for (; pos < raw.size(); ++pos)
+    {
+        const char ch = raw[pos];
+        if (escape)
+        {
+            switch (ch)
+            {
+            case 'n':
+                value.push_back('\n');
+                break;
+            case 't':
+                value.push_back('\t');
+                break;
+            case 'r':
+                value.push_back('\r');
+                break;
+            case '"':
+            case '\\':
+            case '/':
+                value.push_back(ch);
+                break;
+            default:
+                value.push_back(ch);
+                break;
+            }
+            escape = false;
+            continue;
+        }
+
+        if (ch == '\\')
+        {
+            escape = true;
+            continue;
+        }
+        if (ch == '"')
+        {
+            out = value;
+            return true;
+        }
+        value.push_back(ch);
+    }
+    return false;
+}
 } // namespace
 
 AgentAction ParseAgentAction(const std::string &raw_output)
@@ -84,6 +150,14 @@ AgentAction ParseAgentAction(const std::string &raw_output)
     }
     catch (...)
     {
+    }
+
+    std::string relaxed_answer;
+    if (extract_relaxed_json_string_field(normalized, "answer", relaxed_answer))
+    {
+        action.type = AgentAction::Type::final_answer;
+        action.answer = trim_copy(std::move(relaxed_answer));
+        return action;
     }
 
     return action;

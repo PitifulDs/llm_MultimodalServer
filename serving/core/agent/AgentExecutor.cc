@@ -8,6 +8,8 @@
 #include "serving/core/agent/BuiltinTools.h"
 
 #include <algorithm>
+#include <cctype>
+#include <sstream>
 #include <set>
 #include <vector>
 
@@ -79,6 +81,130 @@ std::string truncate_text(const std::string &text, size_t max_chars)
 
     return text.substr(0, max_chars) + "\n...[truncated]";
 }
+
+bool parse_first_search_code_match(const std::string &tool_output,
+                                   std::string &path_out,
+                                   int &line_out)
+{
+    std::istringstream iss(tool_output);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        const std::string prefix = "- file=";
+        const auto pos = line.find(prefix);
+        if (pos == std::string::npos)
+            continue;
+
+        const auto text_pos = line.find(" text=", pos + prefix.size());
+        const std::string file_part = text_pos == std::string::npos
+                                          ? line.substr(pos + prefix.size())
+                                          : line.substr(pos + prefix.size(), text_pos - (pos + prefix.size()));
+
+        const auto colon_pos = file_part.rfind(':');
+        if (colon_pos == std::string::npos)
+            continue;
+
+        const std::string maybe_line = file_part.substr(colon_pos + 1);
+        bool numeric = !maybe_line.empty();
+        for (char ch : maybe_line)
+        {
+            if (!std::isdigit(static_cast<unsigned char>(ch)))
+            {
+                numeric = false;
+                break;
+            }
+        }
+        if (!numeric)
+            continue;
+
+        path_out = file_part.substr(0, colon_pos);
+        line_out = std::stoi(maybe_line);
+        return !path_out.empty();
+    }
+    return false;
+}
+
+std::vector<std::string> extract_evidence_lines(const std::string &tool_output,
+                                                size_t limit = 4)
+{
+    std::vector<std::string> lines_out;
+    std::istringstream iss(tool_output);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (line.rfind("- file=", 0) == 0 || line.rfind("FILE ", 0) == 0)
+        {
+            lines_out.push_back(line);
+            if (lines_out.size() >= limit)
+                break;
+        }
+    }
+    return lines_out;
+}
+
+bool answer_mentions_repo_file(const std::string &answer)
+{
+    static const char *tokens[] = {".cc", ".cpp", ".h", ".hpp", ".md", "CMakeLists", "/"};
+    for (const auto *token : tokens)
+    {
+        if (answer.find(token) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+std::string append_evidence_if_needed(const std::string &answer,
+                                      const std::vector<std::string> &evidence_lines,
+                                      const std::vector<std::string> &tool_summaries)
+{
+    if (answer.empty() || answer_mentions_repo_file(answer))
+        return answer;
+
+    std::ostringstream oss;
+    oss << answer;
+    if (!evidence_lines.empty())
+    {
+        oss << "\n\nObserved code evidence:\n";
+        for (const auto &line : evidence_lines)
+            oss << line << "\n";
+        return oss.str();
+    }
+
+    if (!tool_summaries.empty())
+    {
+        oss << "\n\nObserved tool result:\n";
+        oss << tool_summaries.front() << "\n";
+    }
+    return oss.str();
+}
+
+void maybe_append_code_context(const ToolRegistry &registry,
+                               const std::string &agent_mode,
+                               const std::string &tool_name,
+                               std::string &tool_output)
+{
+    if (agent_mode != kCodeAnalysisMode || tool_name != "search_code")
+        return;
+
+    std::string path;
+    int line = 0;
+    if (!parse_first_search_code_match(tool_output, path, line))
+        return;
+
+    const int start_line = std::max(1, line - 20);
+    const int end_line = line + 20;
+    nlohmann::json read_input = {
+        {"path", path},
+        {"start_line", start_line},
+        {"end_line", end_line}};
+
+    const std::string read_output = registry.Execute("read_file", read_input);
+    if (read_output.empty())
+        return;
+
+    tool_output += "\n\nAUTO_READ_FILE_CONTEXT\n";
+    tool_output += read_output;
+}
 } // namespace
 
 AgentExecutor::AgentExecutor(EngineExecutor &executor, Options options)
@@ -132,7 +258,9 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         allowed_tools = sanitize_tools(tool_registry_, default_tools_for_mode(agent_mode));
     }
 
-    auto shadow_session = std::make_shared<Session>(ctx->session_id + "#agent#" + ctx->request_id, ctx->model);
+    auto shadow_session = std::make_shared<Session>(ctx->session_id + "#agent#" + ctx->request_id,
+                                                    ctx->model,
+                                                    ctx->inference_backend);
     {
         std::lock_guard<std::mutex> lk(ctx->session->mu);
         shadow_session->history = ctx->session->history;
@@ -143,6 +271,8 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
     step_messages.insert(step_messages.end(), ctx->messages.begin(), ctx->messages.end());
 
     std::string last_model_output;
+    std::vector<std::string> evidence_lines;
+    std::vector<std::string> tool_summaries;
 
     for (int step = 0; step < max_steps; ++step)
     {
@@ -156,6 +286,7 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         step_ctx->request_id = ctx->request_id + "-agent-" + std::to_string(step + 1);
         step_ctx->session_id = shadow_session->session_id;
         step_ctx->model = ctx->model;
+        step_ctx->inference_backend = ctx->inference_backend;
         step_ctx->is_chat = true;
         step_ctx->stream = false;
         step_ctx->session = shadow_session;
@@ -195,7 +326,9 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         const AgentAction action = ParseAgentAction(last_model_output);
         if (action.type == AgentAction::Type::final_answer)
         {
-            const std::string answer = action.answer.empty() ? last_model_output : action.answer;
+            std::string answer = action.answer.empty() ? last_model_output : action.answer;
+            if (agent_mode == kCodeAnalysisMode)
+                answer = append_evidence_if_needed(answer, evidence_lines, tool_summaries);
             if (!answer.empty())
                 ctx->EmitDelta(answer);
             ctx->EmitFinish(FinishReason::stop);
@@ -217,7 +350,12 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         else
         {
             tool_output = tool_registry_.Execute(action.tool_name, action.tool_input);
+            maybe_append_code_context(tool_registry_, agent_mode, action.tool_name, tool_output);
         }
+
+        const auto new_evidence = extract_evidence_lines(tool_output);
+        evidence_lines.insert(evidence_lines.end(), new_evidence.begin(), new_evidence.end());
+        tool_summaries.push_back(truncate_text(tool_output, 600));
 
         LOG(INFO) << "[agent] req=" << ctx->request_id
                   << " step=" << (step + 1)

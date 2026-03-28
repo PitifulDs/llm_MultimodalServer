@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <set>
 #include <sstream>
 #include <string>
@@ -69,12 +70,96 @@ std::vector<std::string> split_terms(const std::string &query)
     return terms;
 }
 
+std::string trim_token_edges(std::string token)
+{
+    auto is_token_char = [](unsigned char ch)
+    {
+        return std::isalnum(ch) != 0 || ch == '_' || ch == ':' || ch == '-';
+    };
+
+    while (!token.empty() && !is_token_char(static_cast<unsigned char>(token.front())))
+        token.erase(token.begin());
+    while (!token.empty() && !is_token_char(static_cast<unsigned char>(token.back())))
+        token.pop_back();
+    return token;
+}
+
+bool looks_like_code_symbol(const std::string &token)
+{
+    for (unsigned char ch : token)
+    {
+        if (std::isupper(ch) != 0 || ch == '_' || ch == ':')
+            return true;
+    }
+    return false;
+}
+
+std::vector<std::string> split_code_terms(const std::string &query)
+{
+    std::vector<std::string> generic = split_terms(query);
+    std::vector<std::string> preferred;
+    std::istringstream iss(query);
+    std::string token;
+    while (iss >> token)
+    {
+        token = trim_token_edges(token);
+        if (token.empty())
+            continue;
+        if (!looks_like_code_symbol(token))
+            continue;
+        preferred.push_back(to_lower_copy(token));
+    }
+
+    auto dedupe = [](std::vector<std::string> items)
+    {
+        std::vector<std::string> out;
+        std::set<std::string> seen;
+        for (const auto &item : items)
+        {
+            if (item.empty())
+                continue;
+            if (!seen.insert(item).second)
+                continue;
+            out.push_back(item);
+        }
+        return out;
+    };
+
+    preferred = dedupe(std::move(preferred));
+    if (!preferred.empty())
+        return preferred;
+    return dedupe(std::move(generic));
+}
+
 std::string get_string_value(const nlohmann::json &input, const char *key)
 {
     if (input.is_string())
         return input.get<std::string>();
     if (input.is_object() && input.contains(key) && input[key].is_string())
         return input[key].get<std::string>();
+    return "";
+}
+
+std::string get_first_string_value(const nlohmann::json &input,
+                                   std::initializer_list<const char *> keys,
+                                   bool fallback_to_any_string = false)
+{
+    for (const auto *key : keys)
+    {
+        const std::string value = get_string_value(input, key);
+        if (!value.empty())
+            return value;
+    }
+
+    if (fallback_to_any_string && input.is_object())
+    {
+        for (auto it = input.begin(); it != input.end(); ++it)
+        {
+            if (it.value().is_string())
+                return it.value().get<std::string>();
+        }
+    }
+
     return "";
 }
 
@@ -141,9 +226,40 @@ bool is_code_file(const std::filesystem::path &path)
     return exts.find(ext) != exts.end() || path.filename() == "CMakeLists.txt";
 }
 
+struct DocMatch
+{
+    std::filesystem::path path;
+    int score = 0;
+    std::string snippet;
+};
+
+bool compare_doc_match(const DocMatch &a, const DocMatch &b)
+{
+    if (a.score != b.score)
+        return a.score > b.score;
+    return a.path.string() < b.path.string();
+}
+
+struct CodeMatch
+{
+    std::string file;
+    int line = 0;
+    int score = 0;
+    std::string text;
+};
+
+bool compare_code_match(const CodeMatch &a, const CodeMatch &b)
+{
+    if (a.score != b.score)
+        return a.score > b.score;
+    if (a.file != b.file)
+        return a.file < b.file;
+    return a.line < b.line;
+}
+
 std::string search_docs_tool(const BuiltinToolsOptions &options, const nlohmann::json &input)
 {
-    const std::string query = trim_copy(get_string_value(input, "query"));
+    const std::string query = trim_copy(get_first_string_value(input, {"query", "search", "keyword", "text", "pattern"}, true));
     if (query.empty())
         return "search_docs requires a non-empty query.";
 
@@ -162,14 +278,7 @@ std::string search_docs_tool(const BuiltinToolsOptions &options, const nlohmann:
     if (terms.empty())
         return "search_docs query is empty after normalization.";
 
-    struct Match
-    {
-        std::filesystem::path path;
-        int score = 0;
-        std::string snippet;
-    };
-
-    std::vector<Match> matches;
+    std::vector<DocMatch> matches;
     for (const auto &path : files)
     {
         const std::string content = read_file(path);
@@ -203,12 +312,7 @@ std::string search_docs_tool(const BuiltinToolsOptions &options, const nlohmann:
     if (matches.empty())
         return "No documentation match was found for query: " + query;
 
-    std::sort(matches.begin(), matches.end(), [](const Match &a, const Match &b)
-              {
-                  if (a.score != b.score)
-                      return a.score > b.score;
-                  return a.path.string() < b.path.string();
-              });
+    std::sort(matches.begin(), matches.end(), compare_doc_match);
 
     std::ostringstream oss;
     oss << "Top documentation matches for query: " << query << "\n";
@@ -231,7 +335,7 @@ std::string get_config_tool(const BuiltinToolsOptions &options, const nlohmann::
     try
     {
         const nlohmann::json cfg = nlohmann::json::parse(raw);
-        const std::string key = trim_copy(get_string_value(input, "key"));
+        const std::string key = trim_copy(get_first_string_value(input, {"key", "name", "config", "field"}));
         if (!key.empty())
         {
             if (!cfg.contains(key))
@@ -249,7 +353,7 @@ std::string get_config_tool(const BuiltinToolsOptions &options, const nlohmann::
 
 std::string list_files_tool(const BuiltinToolsOptions &options, const nlohmann::json &input)
 {
-    const std::string rel_path = trim_copy(get_string_value(input, "path"));
+    const std::string rel_path = trim_copy(get_first_string_value(input, {"path", "dir", "directory", "folder"}));
     const int limit = std::max(1, std::min(get_int_value(input, "limit", 80), 200));
 
     bool ok = false;
@@ -287,7 +391,7 @@ std::string list_files_tool(const BuiltinToolsOptions &options, const nlohmann::
 
 std::string read_file_tool(const BuiltinToolsOptions &options, const nlohmann::json &input)
 {
-    const std::string rel_path = trim_copy(get_string_value(input, "path"));
+    const std::string rel_path = trim_copy(get_first_string_value(input, {"path", "file", "filepath", "filename"}));
     if (rel_path.empty())
         return "read_file requires path.";
 
@@ -326,12 +430,12 @@ std::string read_file_tool(const BuiltinToolsOptions &options, const nlohmann::j
 
 std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann::json &input)
 {
-    const std::string query = trim_copy(get_string_value(input, "query"));
+    const std::string query = trim_copy(get_first_string_value(input, {"query", "search", "keyword", "text", "pattern"}, true));
     if (query.empty())
         return "search_code requires a non-empty query.";
 
-    const std::string rel_path = trim_copy(get_string_value(input, "path"));
-    const int limit = std::max(1, std::min(get_int_value(input, "limit", 20), 100));
+    const std::string rel_path = trim_copy(get_first_string_value(input, {"path", "file", "filepath", "filename", "dir", "directory"}));
+    const int limit = std::max(1, std::min(get_int_value(input, "limit", 8), 50));
 
     bool ok = false;
     const auto root = normalize_existing_root(options.repo_root);
@@ -341,14 +445,11 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
     if (!std::filesystem::exists(target))
         return "search_code target does not exist: " + target.string();
 
-    const std::string lower_query = to_lower_copy(query);
-    struct Match
-    {
-        std::string file;
-        int line = 0;
-        std::string text;
-    };
-    std::vector<Match> matches;
+    const std::vector<std::string> terms = split_code_terms(query);
+    if (terms.empty())
+        return "search_code query is empty after normalization.";
+
+    std::vector<CodeMatch> matches;
 
     auto scan_file = [&](const std::filesystem::path &path)
     {
@@ -362,13 +463,18 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
         while (std::getline(in, line))
         {
             ++lineno;
-            if (to_lower_copy(line).find(lower_query) == std::string::npos)
+            const std::string lower_line = to_lower_copy(line);
+            int score = 0;
+            for (const auto &term : terms)
+            {
+                if (lower_line.find(term) != std::string::npos)
+                    ++score;
+            }
+            if (score == 0)
                 continue;
             std::error_code ec;
             auto rel = std::filesystem::relative(path, root, ec);
-            matches.push_back({ec ? path.string() : rel.string(), lineno, line});
-            if (static_cast<int>(matches.size()) >= limit)
-                return;
+            matches.push_back({ec ? path.string() : rel.string(), lineno, score, line});
         }
     };
 
@@ -391,10 +497,15 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
     if (matches.empty())
         return "No code match was found for query: " + query;
 
+    std::sort(matches.begin(), matches.end(), compare_code_match);
+
+    if (static_cast<int>(matches.size()) > limit)
+        matches.resize(limit);
+
     std::ostringstream oss;
     oss << "Code matches for query: " << query << "\n";
     for (const auto &m : matches)
-        oss << "- file=" << m.file << ":" << m.line << " text=" << m.text << "\n";
+        oss << "- file=" << m.file << ":" << m.line << " score=" << m.score << " text=" << m.text << "\n";
     return truncate_text(oss.str(), options.max_tool_output_chars);
 }
 } // namespace
