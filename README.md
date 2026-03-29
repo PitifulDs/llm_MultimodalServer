@@ -211,6 +211,16 @@ bash scripts/start_agent_demo.sh
 - 前端应通过 `inference_backend` 在同一个逻辑模型上切换后端
 - `stackflow` 远程模式下的 `usage` 目前是基于文本长度的近似统计，不是精确 tokenizer 结果
 
+`inference_backend=rpc` 解析规则（当前）：
+- 若模型在配置中显式声明了 rpc/stackflow 后端，则按该声明解析
+- 若模型未显式声明 rpc，当前仍会走全局 `STACKFLOW_*` / `config.json` 的 stackflow fallback
+- 因此 `backends` 是“模型声明能力”，`gateway_backends` 是“网关路由能力”
+
+`-remote` 兼容策略（当前决定）：
+- `config.json` 主配置不再推荐使用 `*-remote` 模型名
+- `ModelRegistry` 仍暂时保留 `*-remote` 的兼容解析分支，保证历史请求不立即中断
+- 后续会在一次单独迁移中移除这层兼容逻辑
+
 **流式请求兼容说明**
 
 - OpenAI 兼容方式：在 JSON body 里携带 `"stream": true`
