@@ -46,7 +46,8 @@ std::string BuildToolPrompt(const std::string &agent_mode,
         oss << "The answer field should be a plain string, not an array or nested object.\n";
         oss << "Final answer rules:\n";
         oss << "- Keep the answer concise.\n";
-        oss << "- Prefer 3 to 5 short bullets or a short paragraph.\n";
+        oss << "- Use at most 3 short bullets.\n";
+        oss << "- Keep total output under about 120 English words (or about 180 Chinese characters).\n";
         oss << "- Cite concrete file paths when relevant.\n";
         oss << "- If evidence is incomplete, say so explicitly.\n";
         oss << "Tool usage rules:\n";

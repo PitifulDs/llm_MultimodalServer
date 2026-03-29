@@ -18,9 +18,9 @@
 namespace
 {
 constexpr const char *kCodeAnalysisMode = "code_analysis";
-constexpr int kAgentStepDefaultMaxTokens = 64;
+constexpr int kAgentStepDefaultMaxTokens = 80;
 constexpr int kAgentStepMinMaxTokens = 32;
-constexpr int kAgentStepMaxTokensCap = 96;
+constexpr int kAgentStepMaxTokensCap = 128;
 constexpr size_t kAgentToolResultForModelMaxChars = 900;
 constexpr size_t kAgentAssistantStateMaxChars = 700;
 constexpr size_t kAgentModelInputMaxMessages = 14;
@@ -375,9 +375,18 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         {
             const std::string auto_query = fallback_search_query.empty() ? std::string("ThreadPool") : fallback_search_query;
             nlohmann::json auto_input = {
-                {"query", truncate_text(auto_query, 160)}};
+                {"query", truncate_text(auto_query, 160)},
+                {"limit", 8},
+                {"path", "serving"}};
 
             std::string tool_output = tool_registry_.Execute("search_code", auto_input);
+            if (tool_output.find("- file=") == std::string::npos)
+            {
+                nlohmann::json fallback_input = {
+                    {"query", truncate_text(auto_query, 160)},
+                    {"limit", 8}};
+                tool_output = tool_registry_.Execute("search_code", fallback_input);
+            }
             maybe_append_code_context(tool_registry_, agent_mode, "search_code", tool_output);
 
             const auto new_evidence = extract_evidence_lines(tool_output);
@@ -472,9 +481,18 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
                 {
                     const std::string auto_query = fallback_search_query.empty() ? std::string("ThreadPool") : fallback_search_query;
                     nlohmann::json auto_input = {
-                        {"query", truncate_text(auto_query, 160)}};
+                        {"query", truncate_text(auto_query, 160)},
+                        {"limit", 8},
+                        {"path", "serving"}};
 
                     std::string tool_output = tool_registry_.Execute("search_code", auto_input);
+                    if (tool_output.find("- file=") == std::string::npos)
+                    {
+                        nlohmann::json fallback_input = {
+                            {"query", truncate_text(auto_query, 160)},
+                            {"limit", 8}};
+                        tool_output = tool_registry_.Execute("search_code", fallback_input);
+                    }
                     maybe_append_code_context(tool_registry_, agent_mode, "search_code", tool_output);
 
                     const auto new_evidence = extract_evidence_lines(tool_output);

@@ -87,9 +87,10 @@ std::string json_to_string(const nlohmann::json &j)
     return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
-bool extract_relaxed_json_string_field(const std::string &raw,
-                                       const std::string &key,
-                                       std::string &out)
+bool extract_relaxed_json_string_field_impl(const std::string &raw,
+                                            const std::string &key,
+                                            std::string &out,
+                                            bool allow_unterminated)
 {
     const std::string marker = "\"" + key + "\"";
     const auto key_pos = raw.find(marker);
@@ -150,7 +151,26 @@ bool extract_relaxed_json_string_field(const std::string &raw,
         }
         value.push_back(ch);
     }
+    if (allow_unterminated && !value.empty())
+    {
+        out = value;
+        return true;
+    }
     return false;
+}
+
+bool extract_relaxed_json_string_field(const std::string &raw,
+                                       const std::string &key,
+                                       std::string &out)
+{
+    return extract_relaxed_json_string_field_impl(raw, key, out, false);
+}
+
+bool extract_relaxed_json_string_field_allow_unterminated(const std::string &raw,
+                                                          const std::string &key,
+                                                          std::string &out)
+{
+    return extract_relaxed_json_string_field_impl(raw, key, out, true);
 }
 
 bool extract_relaxed_json_int_field(const std::string &raw,
@@ -263,7 +283,13 @@ AgentAction ParseAgentAction(const std::string &raw_output)
     }
 
     std::string relaxed_answer;
-    if (extract_relaxed_json_string_field(normalized, "answer", relaxed_answer))
+    std::string relaxed_action_kind;
+    extract_relaxed_json_string_field(normalized, "action", relaxed_action_kind);
+    const bool expects_final_answer = trim_copy(relaxed_action_kind) == "final" || trim_copy(relaxed_action_kind) == "answer";
+
+    if (extract_relaxed_json_string_field(normalized, "answer", relaxed_answer) ||
+        (expects_final_answer &&
+         extract_relaxed_json_string_field_allow_unterminated(normalized, "answer", relaxed_answer)))
     {
         action.type = AgentAction::Type::final_answer;
         action.answer = trim_copy(std::move(relaxed_answer));
