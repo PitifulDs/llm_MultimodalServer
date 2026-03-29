@@ -1,6 +1,6 @@
 # EdgeLLM-Serving
 
-一个轻量的 LLM Serving 系统，覆盖 **本地 llama.cpp 推理** + **StackFlow 远程推理**，提供 OpenAI 兼容的 HTTP/SSE 接口。我主要完成了 serving/gateway/engine 接入与 worker 侧改造，并打通端到端演示链路。
+一个轻量的 LLM Serving 系统，覆盖 **本地 llama.cpp 推理** + **StackFlow 远程推理**，提供 OpenAI 兼容的 HTTP/SSE 接口。当前代码已经支持请求级后端切换、只读分析 agent、`/v1/models` 模型发现，以及 demo 前端的 finish reason 展示与自动续写。
 
 **项目展示点**
 - OpenAI 兼容 `/v1/chat/completions`（流式 / 非流式）
@@ -28,12 +28,19 @@ flowchart TB
 
   subgraph S[Serving 进程]
     N[NetworkHttpServer\nTCP/HTTP 解析]
-    G[HttpGateway\n协议校验/会话/SSE]
-    E[EngineExecutor\n队列调度/线程池]
+    G[HttpGateway\n路由/会话/SSE]
+    P[ChatRequestParser\n请求转 ServingContext]
+    SX[SessionExecutor\n同 session 串行]
+    AX[AgentExecutor\n只读分析 agent]
+    E[EngineExecutor\n按 model+backend 排队]
     L[LlamaEngine\n本地 llama.cpp]
     SF[StackFlowEngine\n远程 RPC 客户端]
 
-    N --> G --> E
+    N --> G --> P
+    G --> SX
+    SX --> AX
+    SX --> E
+    AX --> E
     E --> L
     E --> SF
   end
@@ -56,7 +63,7 @@ flowchart TB
 EdgeLLM-Serving/
 ├─ serving/
 │  ├─ http/              # OpenAI 协议接入、SSE 输出
-│  └─ core/              # ServingContext、EngineExecutor
+│  └─ core/              # session、调度、agent、ServingContext
 ├─ engine/               # LlamaEngine / StackFlowEngine / Factory
 ├─ network/              # Reactor 网络库（EventLoop/Poller/Channel）
 ├─ unit-manager/         # 远程调度与 worker 管理
@@ -66,14 +73,20 @@ EdgeLLM-Serving/
 └─ docs/                 # 架构、设计模式、面试问答
 ```
 
-Agent 架构文档:
+当前说明文档:
+- `docs/系统架构.md`
 - `docs/智能体使用说明.md`
+- `docs/本地推理与RPC推理.md`
+- `serving/http/使用说明.md`
 
 **一次请求链路**
-1. `NetworkHttpServer` 按 Content-Length 组包。
-2. `HttpGateway` 校验 JSON、解析参数、处理 session。
-3. `EngineExecutor` 分发到本地或远程引擎。
-4. `OpenAIStreamWriter` 输出 SSE 或普通 JSON。
+1. `NetworkHttpServer` 按 `Content-Length` 组包。
+2. `HttpGateway + ChatRequestParser` 构造 `ServingContext`。
+3. `SessionExecutor` 保证同一 `session_id` 串行。
+4. 普通 chat 直接进入 `EngineExecutor`；agent 请求先进入 `AgentExecutor` 再调用 `EngineExecutor`。
+5. `EngineExecutor` 按 `model + inference_backend` 维度排队并复用 engine。
+6. `LlamaEngine` 或 `StackFlowEngine` 执行推理。
+7. `OpenAIStreamWriter` 输出 SSE，或 `HttpGateway` 输出普通 JSON。
 
 ---
 
@@ -94,7 +107,7 @@ Test:
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"qwen2.5-1.5b\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}" | jq
+  -d "{\"model\":\"qwen3.5-2b\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}" | jq
 ```
 
 列出当前可用模型:
@@ -145,13 +158,12 @@ bash scripts/start_agent_demo.sh
 
 `config.json` 启动时加载，路径默认相对仓库根目录。
 
-推荐把请求里的 `model` 当成“逻辑模型名”，例如 `qwen2.5-1.5b`。  
+推荐把请求里的 `model` 当成“逻辑模型名”，例如 `qwen3.5-2b`。  
 服务端会根据 `config.json` 中的 `models` 注册表识别该模型支持哪些后端，再根据请求中的 `inference_backend` 决定走本地 `llama.cpp` 还是远程 `stackflow`。
 
 示例：
-- `model = qwen2.5-1.5b, inference_backend = local` -> 本地 `llama.cpp`
-- `model = qwen2.5-1.5b, inference_backend = rpc` -> 远程 `stackflow`
 - `model = qwen3.5-2b, inference_backend = local` -> 本地 `llama.cpp`
+- `model = qwen3.5-2b, inference_backend = rpc` -> 远程 `stackflow`
 
 常用配置:
 - `http_port`, `default_model`
@@ -168,31 +180,25 @@ bash scripts/start_agent_demo.sh
 模型注册表示例：
 ```json
 {
-  "default_model": "qwen2.5-1.5b",
+  "default_model": "qwen3.5-2b",
   "models": {
-    "qwen2.5-1.5b": {
+    "qwen3.5-2b": {
       "backend": "local",
       "engine": "llama",
-      "model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf"
-    },
-    "qwen2.5-1.5b-remote": {
-      "backend": "stackflow",
-      "engine": "stackflow",
-      "host": "127.0.0.1",
-      "port": 10001,
-      "unit": "llm"
+      "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf"
     }
   }
 }
 ```
 
 这样同一个 HTTP 服务里可以按“模型 + 后端开关”切换：
-- 请求 `"model":"qwen2.5-1.5b","inference_backend":"local"` 时走本地
-- 请求 `"model":"qwen2.5-1.5b","inference_backend":"rpc"` 时走远程
+- 请求 `"model":"qwen3.5-2b","inference_backend":"local"` 时走本地
+- 请求 `"model":"qwen3.5-2b","inference_backend":"rpc"` 时走远程
 - 如果请求里不带 `inference_backend`，则按模型注册表中的默认映射解析
 
 说明：
 - `/v1/models` 会返回当前模型注册表中的模型名，以及每个模型支持的 `backends`
+- 当前 serving 层支持请求级后端切换，因此 `/v1/models` 会把每个真实模型都标记为支持 `local` 和 `rpc`
 - `stackflow` 远程模式下的 `usage` 目前是基于文本长度的近似统计，不是精确 tokenizer 结果
 
 **Redis 会话持久化（可选）**
