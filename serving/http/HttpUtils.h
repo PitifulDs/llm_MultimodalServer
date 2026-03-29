@@ -90,4 +90,20 @@ namespace http_utils
         set_param_if_int(body, "repeat_last_n", params);
         set_param_if_int(body, "seed", params);
     }
+
+    inline json build_rag_references(const std::vector<RetrievalHit> &hits)
+    {
+        json refs = json::array();
+        for (const auto &hit : hits)
+        {
+            refs.push_back({
+                {"kb", hit.chunk.kb_name},
+                {"path", hit.chunk.path},
+                {"start_line", hit.chunk.start_line},
+                {"end_line", hit.chunk.end_line},
+                {"score", hit.final_score},
+            });
+        }
+        return refs;
+    }
 } // namespace http_utils

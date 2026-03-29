@@ -81,6 +81,91 @@ std::vector<std::string> get_agent_tools(const json &body)
     return tools;
 }
 
+bool parse_rag_options(const json &body, RagOptions &out, std::string &error_message, std::string &error_code)
+{
+    out = RagOptions{};
+    if (!body.contains("rag"))
+        return true;
+
+    if (!body["rag"].is_object())
+    {
+        error_message = "rag must be object";
+        error_code = "invalid_rag";
+        return false;
+    }
+
+    const auto &rag = body["rag"];
+    if (rag.contains("enabled"))
+    {
+        if (!rag["enabled"].is_boolean())
+        {
+            error_message = "rag.enabled must be boolean";
+            error_code = "invalid_rag_enabled";
+            return false;
+        }
+        out.enabled = rag["enabled"].get<bool>();
+    }
+
+    if (rag.contains("kb"))
+    {
+        if (!rag["kb"].is_string())
+        {
+            error_message = "rag.kb must be string";
+            error_code = "invalid_rag_kb";
+            return false;
+        }
+        out.kb = to_lower_copy(rag["kb"].get<std::string>());
+    }
+
+    if (rag.contains("top_k"))
+    {
+        if (!rag["top_k"].is_number_integer())
+        {
+            error_message = "rag.top_k must be integer";
+            error_code = "invalid_rag_top_k";
+            return false;
+        }
+        out.top_k = rag["top_k"].get<int>();
+        if (out.top_k < 0)
+        {
+            error_message = "rag.top_k must be >= 0";
+            error_code = "invalid_rag_top_k";
+            return false;
+        }
+    }
+
+    if (rag.contains("mode"))
+    {
+        if (!rag["mode"].is_string())
+        {
+            error_message = "rag.mode must be string";
+            error_code = "invalid_rag_mode";
+            return false;
+        }
+        out.mode = to_lower_copy(rag["mode"].get<std::string>());
+    }
+
+    if (rag.contains("return_references"))
+    {
+        if (!rag["return_references"].is_boolean())
+        {
+            error_message = "rag.return_references must be boolean";
+            error_code = "invalid_rag_return_references";
+            return false;
+        }
+        out.return_references = rag["return_references"].get<bool>();
+    }
+
+    if (out.enabled && out.kb.empty())
+    {
+        error_message = "rag.kb is required when rag.enabled=true";
+        error_code = "invalid_rag_kb";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
@@ -134,6 +219,15 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     ctx->agent_mode = ctx->use_agent ? get_agent_mode(body) : std::string();
     ctx->agent_max_steps = get_agent_max_steps(body);
     ctx->agent_tools = get_agent_tools(body);
+
+    std::string rag_error_message;
+    std::string rag_error_code;
+    if (!parse_rag_options(body, ctx->rag_options, rag_error_message, rag_error_code))
+    {
+        result.message = rag_error_message;
+        result.code = rag_error_code;
+        return result;
+    }
 
     if (body.contains("session_id") && body["session_id"].is_string())
         ctx->session_id = body["session_id"].get<std::string>();

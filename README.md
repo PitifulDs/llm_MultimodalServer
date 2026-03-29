@@ -178,6 +178,7 @@ bash scripts/start_agent_demo.sh
 - `models`（模型注册表，按模型名解析 backend / engine / model_path）
 - `llama_model_path`, `llama_n_ctx`, `llama_n_threads`, `llama_n_threads_batch`
 - `default_max_tokens`, `kv_reset_margin`
+- `rag_index_path`, `rag_default_top_k`, `rag_max_context_chars`
 - `serving_backend`（`local` 或 `stackflow`）
 - `stackflow_host`, `stackflow_port`, `stackflow_unit`
 - `stackflow_timeout_ms`, `stackflow_infer_timeout_ms`
@@ -220,6 +221,58 @@ bash scripts/start_agent_demo.sh
 - `config.json` 主配置不再推荐使用 `*-remote` 模型名
 - `ModelRegistry` 仍暂时保留 `*-remote` 的兼容解析分支，保证历史请求不立即中断
 - 后续会在一次单独迁移中移除这层兼容逻辑
+
+**RAG v1**
+
+当前 `POST /v1/chat/completions` 支持可选 RAG，v1 使用 SQLite FTS5 做 lexical retrieval，不引入 embedding / Faiss / reranker。
+
+配置项（`config.json`）:
+- `rag_index_path`：SQLite 索引路径，默认 `data/rag_index.sqlite`
+- `rag_default_top_k`：请求未指定 `rag.top_k` 时的默认值
+- `rag_max_context_chars`：检索片段注入 prompt 的总字符上限
+
+构建索引:
+```bash
+python3 tools/rag/build_index.py --rebuild
+```
+
+索引脚本会扫描两个知识库：
+- `docs`：`README.md`、`docs/**/*.md`、`serving/http/使用说明.md`
+- `repo_code`：`.h/.hpp/.cc/.cpp/.c/.py/.sh/.json/.md`，跳过 `.git/`、`build/`、二进制和超大文件
+
+RAG 请求示例:
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"qwen3.5-2b",
+    "messages":[{"role":"user","content":"references 字段是在什么地方拼出来的？"}],
+    "rag":{
+      "enabled":true,
+      "kb":"repo_code",
+      "top_k":6,
+      "mode":"lexical",
+      "return_references":true
+    }
+  }' | jq
+```
+
+非流式返回会在原有 OpenAI 响应上增加 `references`：
+```json
+{
+  "references": [
+    {
+      "kb": "repo_code",
+      "path": "serving/http/HttpGateway.cc",
+      "start_line": 1,
+      "end_line": 50,
+      "score": 12.3
+    }
+  ]
+}
+```
+
+若索引文件不存在，RAG 请求会返回明确错误，不会导致服务崩溃。
 
 **流式请求兼容说明**
 
@@ -354,12 +407,15 @@ rm -f /tmp/llm/*.sock*
 cmake -S tests/unit -B tests/unit/build
 cmake --build tests/unit/build -j
 ./tests/unit/build/http_utils_test
+./tests/unit/build/rag_test
+python3 tests/unit/rag_chunkers_test.py
 ```
 
 **Smoke 测试（服务自检）**
 
 ```bash
 BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test.sh
+BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag.sh
 ```
 
 可选参数：`BASE_URL` / `MODEL` / `TIMEOUT`。

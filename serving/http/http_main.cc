@@ -87,6 +87,9 @@ namespace
             set_env_from_json(cfg, "session_redis_prefix", "SESSION_REDIS_PREFIX");
             set_env_from_json(cfg, "session_redis_ttl_seconds", "SESSION_REDIS_TTL_SECONDS");
             set_env_from_json(cfg, "redis_timeout_ms", "REDIS_TIMEOUT_MS");
+            set_env_from_json(cfg, "rag_index_path", "RAG_INDEX_PATH");
+            set_env_from_json(cfg, "rag_default_top_k", "RAG_DEFAULT_TOP_K");
+            set_env_from_json(cfg, "rag_max_context_chars", "RAG_MAX_CONTEXT_CHARS");
             std::cerr << "[serving-http] config loaded: " << cfg_path << std::endl;
         }
         catch (const std::exception &e)

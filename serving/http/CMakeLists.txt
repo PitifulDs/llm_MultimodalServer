@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 
+find_path(SQLITE3_INCLUDE_DIR sqlite3.h)
+find_library(SQLITE3_LIBRARY sqlite3)
+
+if(NOT SQLITE3_INCLUDE_DIR OR NOT SQLITE3_LIBRARY)
+    message(FATAL_ERROR "sqlite3 development files not found. Please install libsqlite3-dev.")
+endif()
+
 # =====================================
 # 1.serving_core：ServingContext / Engine
 # =====================================
@@ -22,17 +29,24 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/serving/core/agent/BuiltinTools.cc
     ${CMAKE_SOURCE_DIR}/serving/core/ThreadPool.cc
     ${CMAKE_SOURCE_DIR}/serving/core/SessionExecutor.cc
+    ${CMAKE_SOURCE_DIR}/serving/rag/SqliteIndexStore.cc
+    ${CMAKE_SOURCE_DIR}/serving/rag/Retriever.cc
+    ${CMAKE_SOURCE_DIR}/serving/rag/PromptAssembler.cc
+    ${CMAKE_SOURCE_DIR}/serving/rag/RAGExecutor.cc
 )
 
 target_include_directories(serving_core
     PUBLIC
         ${CMAKE_SOURCE_DIR}
+        ${SQLITE3_INCLUDE_DIR}
         ${CMAKE_SOURCE_DIR}/thirds/llama.cpp/include
         ${CMAKE_SOURCE_DIR}/thirds/llama.cpp/ggml/include
 )
 
 target_link_libraries(serving_core
-    PRIVATE llama
+    PRIVATE
+        llama
+        ${SQLITE3_LIBRARY}
 )
 
 target_compile_features(serving_core

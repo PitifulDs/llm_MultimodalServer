@@ -30,6 +30,7 @@ cmake-build-*/
 
 models/qwen2.5-1.5b/
 models/qwen3.5/
+data/*.sqlite
 
 # local editor + logs
 .vscode/

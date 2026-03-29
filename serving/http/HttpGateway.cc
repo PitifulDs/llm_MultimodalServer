@@ -65,6 +65,30 @@ namespace
         }
     }
 
+    std::string get_env_string(const char *name, const char *def_val = "")
+    {
+        const char *env = std::getenv(name);
+        if (!env || !*env)
+            return std::string(def_val);
+        return std::string(env);
+    }
+
+    int get_env_int(const char *name, int def)
+    {
+        const char *env = std::getenv(name);
+        if (!env || !*env)
+            return def;
+        try
+        {
+            const int v = std::stoi(env);
+            return v > 0 ? v : def;
+        }
+        catch (...)
+        {
+            return def;
+        }
+    }
+
     std::string gen_request_id()
     {
         static std::atomic<uint64_t> seq{0};
@@ -169,6 +193,12 @@ HttpGateway::HttpGateway()
             {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)}};
         return out.dump();
     });
+
+    RAGExecutor::Options rag_opt;
+    rag_opt.index_path = get_env_string("RAG_INDEX_PATH", (repo_root / "data/rag_index.sqlite").string().c_str());
+    rag_opt.default_top_k = get_env_int("RAG_DEFAULT_TOP_K", 6);
+    rag_opt.max_context_chars = static_cast<size_t>(get_env_int("RAG_MAX_CONTEXT_CHARS", 6000));
+    rag_executor_ = std::make_unique<RAGExecutor>(std::move(rag_opt));
 
     // Session GC 后台线程（可停止，避免悬空指针）
     gc_thread_ = std::thread([this]()
@@ -412,6 +442,11 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     bool accepted = session_executor_.Submit(ctx->session, [this, ctx, client_messages]
                                              {
                                                  prepare_session_delta(ctx, client_messages);
+                                                 if (ctx->rag_options.enabled && rag_executor_ && !rag_executor_->Apply(ctx))
+                                                 {
+                                                     ctx->EmitFinish(FinishReason::error);
+                                                     return;
+                                                 }
                                                  if (ctx->use_agent && agent_executor_)
                                                  {
                                                      agent_executor_->Run(ctx);
@@ -442,9 +477,30 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     // 错误返回（包含 overloaded）
     if (!ctx->error_message.empty() || final_reason == FinishReason::error)
     {
+        const std::string error_code = ctx->params.count("error_code") ? ctx->params["error_code"] : std::string();
         const bool overloaded =
-            (ctx->params.count("error_code") && ctx->params["error_code"] == "overloaded") ||
+            error_code == "overloaded" ||
             (ctx->error_message.find("queue full") != std::string::npos);
+
+        if (error_code == "rag_invalid_request" || error_code == "rag_no_user_query")
+        {
+            WriteError(res,
+                       400,
+                       ctx->error_message.empty() ? "invalid rag request" : ctx->error_message,
+                       "invalid_request_error",
+                       error_code);
+            return;
+        }
+
+        if (error_code == "rag_index_missing")
+        {
+            WriteError(res,
+                       503,
+                       ctx->error_message.empty() ? "rag index missing" : ctx->error_message,
+                       "service_unavailable_error",
+                       error_code);
+            return;
+        }
 
         WriteError(res,
                    overloaded ? 429 : 500,
@@ -472,6 +528,10 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
          }
         }
     };
+    if (ctx->rag_options.enabled && ctx->rag_options.return_references)
+    {
+        out["references"] = http_utils::build_rag_references(ctx->rag_hits);
+    }
 
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
@@ -591,6 +651,11 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     bool accepted  = session_executor_.Submit(session, [this, ctx, client_messages]
     {
         prepare_session_delta(ctx, client_messages);
+        if (ctx->rag_options.enabled && rag_executor_ && !rag_executor_->Apply(ctx))
+        {
+            ctx->EmitFinish(FinishReason::error);
+            return;
+        }
         if (ctx->use_agent && agent_executor_)
         {
             agent_executor_->Run(ctx);

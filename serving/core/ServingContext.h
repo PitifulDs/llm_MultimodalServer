@@ -9,6 +9,7 @@
 #include <condition_variable>
 
 #include "glog/logging.h"
+#include "serving/rag/Chunk.h"
 struct Session;
 class ModelEngine;
 
@@ -58,6 +59,8 @@ struct ServingContext
     std::string agent_mode;
     int agent_max_steps = 0;
     std::vector<std::string> agent_tools;
+    RagOptions rag_options;
+    std::vector<RetrievalHit> rag_hits;
 
     // ChatCompletion
     std::vector<Message> messages;
