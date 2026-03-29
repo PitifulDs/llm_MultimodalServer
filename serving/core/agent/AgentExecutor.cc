@@ -18,7 +18,9 @@
 namespace
 {
 constexpr const char *kCodeAnalysisMode = "code_analysis";
-constexpr int kAgentMinStepMaxTokens = 384;
+constexpr int kAgentStepDefaultMaxTokens = 64;
+constexpr int kAgentStepMinMaxTokens = 32;
+constexpr int kAgentStepMaxTokensCap = 96;
 
 std::string normalize_agent_mode(const std::string &mode)
 {
@@ -81,6 +83,33 @@ std::string truncate_text(const std::string &text, size_t max_chars)
         return text.substr(0, max_chars);
 
     return text.substr(0, max_chars) + "\n...[truncated]";
+}
+
+std::string trim_copy(std::string s)
+{
+    auto is_space = [](unsigned char ch)
+    {
+        return std::isspace(ch) != 0;
+    };
+
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.front())))
+        s.erase(s.begin());
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.back())))
+        s.pop_back();
+    return s;
+}
+
+std::string extract_last_user_query(const std::vector<Message> &messages)
+{
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it)
+    {
+        if (it->role != "user")
+            continue;
+        std::string q = trim_copy(it->content);
+        if (!q.empty())
+            return q;
+    }
+    return {};
 }
 
 bool parse_first_search_code_match(const std::string &tool_output,
@@ -275,6 +304,18 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
     std::vector<std::string> evidence_lines;
     std::vector<std::string> tool_summaries;
     bool has_observed_tool = false;
+    const std::string fallback_search_query = extract_last_user_query(ctx->messages);
+    auto emit_progress = [&](const std::string &text)
+    {
+        if (!ctx->stream || !ctx->on_chunk || text.empty())
+            return;
+        if (ctx->finished.load(std::memory_order_acquire))
+            return;
+        StreamChunk chunk;
+        chunk.delta = text;
+        chunk.is_finished = false;
+        ctx->on_chunk(chunk);
+    };
 
     for (int step = 0; step < max_steps; ++step)
     {
@@ -282,6 +323,36 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         {
             ctx->EmitFinish(FinishReason::cancelled);
             return;
+        }
+
+        // Bootstrap for code-analysis mode: run one deterministic search first to
+        // avoid spending the first model turn on tool-selection chatter.
+        if (step == 0 &&
+            agent_mode == kCodeAnalysisMode &&
+            !has_observed_tool &&
+            is_tool_allowed(allowed_tools, "search_code"))
+        {
+            const std::string auto_query = fallback_search_query.empty() ? std::string("ThreadPool") : fallback_search_query;
+            nlohmann::json auto_input = {
+                {"query", truncate_text(auto_query, 160)}};
+
+            std::string tool_output = tool_registry_.Execute("search_code", auto_input);
+            maybe_append_code_context(tool_registry_, agent_mode, "search_code", tool_output);
+
+            const auto new_evidence = extract_evidence_lines(tool_output);
+            evidence_lines.insert(evidence_lines.end(), new_evidence.begin(), new_evidence.end());
+            tool_summaries.push_back(truncate_text(tool_output, 600));
+            has_observed_tool = true;
+
+            LOG(INFO) << "[agent] req=" << ctx->request_id
+                      << " step=" << (step + 1)
+                      << " tool=search_code(bootstrap)";
+            emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
+                          ": search_code (bootstrap)\n");
+
+            step_messages.clear();
+            step_messages.push_back({"user", BuildToolResultMessage("search_code", tool_output)});
+            continue;
         }
 
         auto step_ctx = std::make_shared<ServingContext>();
@@ -295,24 +366,23 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         step_ctx->messages = step_messages;
         step_ctx->params = ctx->params;
 
+        int step_max_tokens = kAgentStepDefaultMaxTokens;
         auto max_it = step_ctx->params.find("max_tokens");
-        if (max_it == step_ctx->params.end())
-        {
-            step_ctx->params["max_tokens"] = std::to_string(kAgentMinStepMaxTokens);
-        }
-        else
+        if (max_it != step_ctx->params.end())
         {
             try
             {
-                const int current = std::stoi(max_it->second);
-                if (current < kAgentMinStepMaxTokens)
-                    step_ctx->params["max_tokens"] = std::to_string(kAgentMinStepMaxTokens);
+                step_max_tokens = std::stoi(max_it->second);
             }
             catch (...)
             {
-                step_ctx->params["max_tokens"] = std::to_string(kAgentMinStepMaxTokens);
+                step_max_tokens = kAgentStepDefaultMaxTokens;
             }
         }
+        step_max_tokens = std::clamp(step_max_tokens, kAgentStepMinMaxTokens, kAgentStepMaxTokensCap);
+        step_ctx->params["max_tokens"] = std::to_string(step_max_tokens);
+        emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
+                      ": model reasoning\n");
 
         executor_.ExecuteAndWait(step_ctx);
 
@@ -328,7 +398,15 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
 
         if (step_ctx->finish_reason == FinishReason::error || !step_ctx->error_message.empty())
         {
-            ctx->error_message = step_ctx->error_message.empty() ? "agent model step failed" : step_ctx->error_message;
+            if (step_ctx->error_message.empty())
+            {
+                ctx->error_message = "agent model step failed at step " + std::to_string(step + 1) +
+                                     ", backend=" + (ctx->inference_backend.empty() ? "auto" : ctx->inference_backend);
+            }
+            else
+            {
+                ctx->error_message = step_ctx->error_message;
+            }
             ctx->EmitFinish(FinishReason::error);
             return;
         }
@@ -343,6 +421,31 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         {
             if (agent_mode == kCodeAnalysisMode && !has_observed_tool)
             {
+                if (is_tool_allowed(allowed_tools, "search_code"))
+                {
+                    const std::string auto_query = fallback_search_query.empty() ? std::string("ThreadPool") : fallback_search_query;
+                    nlohmann::json auto_input = {
+                        {"query", truncate_text(auto_query, 160)}};
+
+                    std::string tool_output = tool_registry_.Execute("search_code", auto_input);
+                    maybe_append_code_context(tool_registry_, agent_mode, "search_code", tool_output);
+
+                    const auto new_evidence = extract_evidence_lines(tool_output);
+                    evidence_lines.insert(evidence_lines.end(), new_evidence.begin(), new_evidence.end());
+                    tool_summaries.push_back(truncate_text(tool_output, 600));
+                    has_observed_tool = true;
+
+                    LOG(INFO) << "[agent] req=" << ctx->request_id
+                              << " step=" << (step + 1)
+                              << " tool=search_code(auto)";
+                    emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
+                                  ": search_code (auto-recover)\n");
+
+                    step_messages.clear();
+                    step_messages.push_back({"user", BuildToolResultMessage("search_code", tool_output)});
+                    continue;
+                }
+
                 step_messages.clear();
                 step_messages.push_back({"user",
                                          "For repository-specific or code-analysis questions, you must call a tool before giving the final answer. "
@@ -385,6 +488,8 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         LOG(INFO) << "[agent] req=" << ctx->request_id
                   << " step=" << (step + 1)
                   << " tool=" << action.tool_name;
+        emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
+                      ": tool " + action.tool_name + "\n");
 
         step_messages.clear();
         step_messages.push_back({"user", BuildToolResultMessage(action.tool_name, tool_output)});
