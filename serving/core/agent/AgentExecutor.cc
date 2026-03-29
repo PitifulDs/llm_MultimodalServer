@@ -21,6 +21,10 @@ constexpr const char *kCodeAnalysisMode = "code_analysis";
 constexpr int kAgentStepDefaultMaxTokens = 64;
 constexpr int kAgentStepMinMaxTokens = 32;
 constexpr int kAgentStepMaxTokensCap = 96;
+constexpr size_t kAgentToolResultForModelMaxChars = 900;
+constexpr size_t kAgentAssistantStateMaxChars = 700;
+constexpr size_t kAgentModelInputMaxMessages = 14;
+constexpr size_t kAgentModelInputMaxChars = 6000;
 
 std::string normalize_agent_mode(const std::string &mode)
 {
@@ -183,6 +187,50 @@ bool answer_mentions_repo_file(const std::string &answer)
     return false;
 }
 
+size_t estimate_messages_chars(const std::vector<Message> &messages)
+{
+    size_t total = 0;
+    for (const auto &m : messages)
+    {
+        total += m.role.size();
+        total += m.content.size();
+    }
+    return total;
+}
+
+void trim_agent_messages(std::vector<Message> &messages,
+                         size_t keep_prefix_count,
+                         size_t max_messages,
+                         size_t max_chars)
+{
+    if (messages.empty())
+        return;
+
+    keep_prefix_count = std::min(keep_prefix_count, messages.size());
+    const size_t hard_max_messages = std::max(max_messages, keep_prefix_count);
+    const size_t hard_max_chars = std::max(max_chars, estimate_messages_chars(std::vector<Message>(messages.begin(), messages.begin() + keep_prefix_count)));
+
+    auto erase_one_dynamic = [&]() -> bool
+    {
+        if (messages.size() <= keep_prefix_count)
+            return false;
+        messages.erase(messages.begin() + static_cast<std::ptrdiff_t>(keep_prefix_count));
+        return true;
+    };
+
+    while (messages.size() > hard_max_messages)
+    {
+        if (!erase_one_dynamic())
+            break;
+    }
+
+    while (estimate_messages_chars(messages) > hard_max_chars)
+    {
+        if (!erase_one_dynamic())
+            break;
+    }
+}
+
 std::string append_evidence_if_needed(const std::string &answer,
                                       const std::vector<std::string> &evidence_lines,
                                       const std::vector<std::string> &tool_summaries)
@@ -288,17 +336,10 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         allowed_tools = sanitize_tools(tool_registry_, default_tools_for_mode(agent_mode));
     }
 
-    auto shadow_session = std::make_shared<Session>(ctx->session_id + "#agent#" + ctx->request_id,
-                                                    ctx->model,
-                                                    ctx->inference_backend);
-    {
-        std::lock_guard<std::mutex> lk(ctx->session->mu);
-        shadow_session->history = ctx->session->history;
-    }
-
     std::vector<Message> step_messages;
     step_messages.push_back({"system", BuildToolPrompt(agent_mode, allowed_tools)});
     step_messages.insert(step_messages.end(), ctx->messages.begin(), ctx->messages.end());
+    const size_t fixed_prefix_count = step_messages.size();
 
     std::string last_model_output;
     std::vector<std::string> evidence_lines;
@@ -350,19 +391,28 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
             emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
                           ": search_code (bootstrap)\n");
 
-            step_messages.clear();
-            step_messages.push_back({"user", BuildToolResultMessage("search_code", tool_output)});
+            step_messages.push_back({"user",
+                                     BuildToolResultMessage("search_code",
+                                                            truncate_text(tool_output, kAgentToolResultForModelMaxChars))});
+            trim_agent_messages(step_messages,
+                                fixed_prefix_count,
+                                kAgentModelInputMaxMessages,
+                                kAgentModelInputMaxChars);
             continue;
         }
 
         auto step_ctx = std::make_shared<ServingContext>();
         step_ctx->request_id = ctx->request_id + "-agent-" + std::to_string(step + 1);
-        step_ctx->session_id = shadow_session->session_id;
+        step_ctx->session_id = ctx->session_id + "#agent#" + ctx->request_id;
         step_ctx->model = ctx->model;
         step_ctx->inference_backend = ctx->inference_backend;
         step_ctx->is_chat = true;
         step_ctx->stream = false;
-        step_ctx->session = shadow_session;
+        step_ctx->session = nullptr;
+        trim_agent_messages(step_messages,
+                            fixed_prefix_count,
+                            kAgentModelInputMaxMessages,
+                            kAgentModelInputMaxChars);
         step_ctx->messages = step_messages;
         step_ctx->params = ctx->params;
 
@@ -412,9 +462,6 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         }
 
         last_model_output = step_ctx->final_text;
-        shadow_session->history.insert(shadow_session->history.end(), step_messages.begin(), step_messages.end());
-        shadow_session->history.push_back({"assistant", last_model_output});
-        shadow_session->touch();
 
         const AgentAction action = ParseAgentAction(last_model_output);
         if (action.type == AgentAction::Type::final_answer)
@@ -441,15 +488,24 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
                     emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
                                   ": search_code (auto-recover)\n");
 
-                    step_messages.clear();
-                    step_messages.push_back({"user", BuildToolResultMessage("search_code", tool_output)});
+                    step_messages.push_back({"assistant", truncate_text(last_model_output, kAgentAssistantStateMaxChars)});
+                    step_messages.push_back({"user",
+                                             BuildToolResultMessage("search_code",
+                                                                    truncate_text(tool_output, kAgentToolResultForModelMaxChars))});
+                    trim_agent_messages(step_messages,
+                                        fixed_prefix_count,
+                                        kAgentModelInputMaxMessages,
+                                        kAgentModelInputMaxChars);
                     continue;
                 }
 
-                step_messages.clear();
                 step_messages.push_back({"user",
                                          "For repository-specific or code-analysis questions, you must call a tool before giving the final answer. "
                                          "Call the most relevant tool now, usually search_code first and then read_file if needed. Return JSON only."});
+                trim_agent_messages(step_messages,
+                                    fixed_prefix_count,
+                                    kAgentModelInputMaxMessages,
+                                    kAgentModelInputMaxChars);
                 continue;
             }
 
@@ -491,8 +547,14 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         emit_progress("[agent] step " + std::to_string(step + 1) + "/" + std::to_string(max_steps) +
                       ": tool " + action.tool_name + "\n");
 
-        step_messages.clear();
-        step_messages.push_back({"user", BuildToolResultMessage(action.tool_name, tool_output)});
+        step_messages.push_back({"assistant", truncate_text(last_model_output, kAgentAssistantStateMaxChars)});
+        step_messages.push_back({"user",
+                                 BuildToolResultMessage(action.tool_name,
+                                                        truncate_text(tool_output, kAgentToolResultForModelMaxChars))});
+        trim_agent_messages(step_messages,
+                            fixed_prefix_count,
+                            kAgentModelInputMaxMessages,
+                            kAgentModelInputMaxChars);
     }
 
     ctx->error_message = "AgentExecutor: max_steps reached without final answer";

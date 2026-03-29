@@ -505,6 +505,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
             {
                 if (!ctx->finished.load(std::memory_order_acquire))
                 {
+                    if (!ctx->cancelled.load(std::memory_order_acquire) && ctx->error_message.empty())
+                    {
+                        ctx->error_message = "StackFlowEngine: stream inference timeout or connection closed";
+                    }
                     ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
                 }
                 break;
@@ -619,6 +623,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         }
         else
         {
+            if (!ctx->cancelled.load(std::memory_order_acquire) && ctx->error_message.empty())
+            {
+                ctx->error_message = "StackFlowEngine: inference timeout or connection closed";
+            }
             ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
         }
     }
