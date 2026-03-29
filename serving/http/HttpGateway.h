@@ -1,8 +1,11 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include "protocol/Protocol.h"
 #include "engine/ModelRegistry.h"
 #include "serving/core/agent/AgentExecutor.h"
@@ -31,7 +34,7 @@ class HttpGateway
 {
 public:
     HttpGateway();
-    ~HttpGateway() = default;
+    ~HttpGateway();
 
     // 非流式 completion
     void HandleCompletion(const HttpRequest &req, HttpResponse &res);
@@ -68,4 +71,9 @@ private:
     std::atomic<int64_t> cancelled_requests_{0};
     std::atomic<int64_t> in_flight_{0};
     std::atomic<int64_t> total_latency_ms_{0};
+
+    std::mutex gc_mu_;
+    std::condition_variable gc_cv_;
+    bool stop_gc_{false};
+    std::thread gc_thread_;
 };

@@ -385,10 +385,6 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         {
             work_id = is_stream ? cached_work_id_stream_ : cached_work_id_nostream_;
         }
-        if (work_id.empty() && !cached_setup_key_stream_.empty() && cached_setup_key_stream_ == setup_key)
-        {
-            work_id = cached_work_id_stream_;
-        }
     }
 
     if (work_id.empty())
@@ -449,10 +445,16 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         if (reuse_work_id_)
         {
             std::lock_guard<std::mutex> lk(work_mu_);
-            cached_work_id_stream_ = work_id;
-            cached_work_id_nostream_ = work_id;
-            cached_setup_key_stream_ = setup_key;
-            cached_setup_key_nostream_ = setup_key;
+            if (ctx->stream)
+            {
+                cached_work_id_stream_ = work_id;
+                cached_setup_key_stream_ = setup_key;
+            }
+            else
+            {
+                cached_work_id_nostream_ = work_id;
+                cached_setup_key_nostream_ = setup_key;
+            }
         }
     }
 

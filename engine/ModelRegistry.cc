@@ -312,9 +312,8 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
             if (backend == "dummy" || engine == "dummy")
                 continue;
 
-            // The serving layer supports request-level backend switching via
-            // `inference_backend`, so every configured real model should be
-            // discoverable as both local and RPC-capable.
+            // 语义：model 是逻辑模型名，backend 是请求级推理后端开关。
+            // /v1/models 的 backends 表示“网关支持的调用模式”，不作为模型级硬限制。
             info.has_local = true;
             info.has_rpc = true;
         }

@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -82,21 +81,10 @@ std::vector<std::string> get_agent_tools(const json &body)
     return tools;
 }
 
-bool is_prefix(const std::vector<Message> &history,
-               const std::vector<Message> &incoming)
-{
-    return http_utils::is_prefix(history, incoming);
-}
-
-std::vector<Message> diff_messages(const std::vector<Message> &history,
-                                   const std::vector<Message> &incoming)
-{
-    return http_utils::diff_messages(history, incoming);
-}
 } // namespace
 
 ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
-                                           bool stream,
+                                           bool stream_fallback,
                                            SessionManager &session_mgr,
                                            const std::string &default_model,
                                            int default_max_tokens,
@@ -129,6 +117,17 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     ctx->request_id = request_id;
     ctx->model = body.value("model", default_model);
     ctx->inference_backend = get_inference_backend(body);
+    bool stream = stream_fallback;
+    if (body.contains("stream"))
+    {
+        if (!body["stream"].is_boolean())
+        {
+            result.message = "stream must be boolean";
+            result.code = "invalid_stream";
+            return result;
+        }
+        stream = body["stream"].get<bool>();
+    }
     ctx->stream = stream;
     ctx->is_chat = true;
     ctx->use_agent = get_agent_enabled(body);
@@ -161,29 +160,6 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     http_utils::set_sampling_params(body, ctx->params);
 
     result.request.client_messages = ctx->messages;
-
-    auto session = ctx->session;
-    {
-        std::lock_guard<std::mutex> lk(session->mu);
-        const std::vector<Message> &incoming = ctx->messages;
-        if (!session->history.empty())
-        {
-            if (is_prefix(session->history, incoming))
-            {
-                ctx->messages = diff_messages(session->history, incoming);
-            }
-            else
-            {
-                session->history.clear();
-                session->model_ctx.reset();
-                ctx->messages = incoming;
-            }
-        }
-        else
-        {
-            ctx->messages = incoming;
-        }
-    }
 
     result.ok = true;
     result.request.ctx = std::move(ctx);

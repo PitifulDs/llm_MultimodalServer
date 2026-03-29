@@ -9,10 +9,34 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <mutex>
 #include <unordered_map>
 
 namespace
 {
+std::mutex g_llama_backend_mu;
+int g_llama_backend_refcount = 0;
+
+void acquire_llama_backend()
+{
+    std::lock_guard<std::mutex> lk(g_llama_backend_mu);
+    if (g_llama_backend_refcount++ == 0)
+    {
+        llama_backend_init();
+    }
+}
+
+void release_llama_backend()
+{
+    std::lock_guard<std::mutex> lk(g_llama_backend_mu);
+    if (g_llama_backend_refcount <= 0)
+        return;
+    if (--g_llama_backend_refcount == 0)
+    {
+        llama_backend_free();
+    }
+}
+
 int get_env_int(const char *name, int def)
 {
     const char *v = std::getenv(name);
@@ -165,22 +189,36 @@ static bool tokenize_text(const llama_vocab *vocab, const std::string &text, std
 {
     if (!vocab)
         return false;
+
     out.clear();
-    out.resize(text.size() + 16);
+    size_t cap = text.size() + 16;
+    if (cap < 32)
+        cap = 32;
+    out.resize(cap);
 
-    int n = llama_tokenize(
-        vocab,
-        text.c_str(),
-        (int)text.size(),
-        out.data(),
-        (int)out.size(),
-        add_special,
-        true);
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        int n = llama_tokenize(
+            vocab,
+            text.c_str(),
+            (int)text.size(),
+            out.data(),
+            (int)out.size(),
+            add_special,
+            true);
 
-    if (n < 0)
-        return false;
-    out.resize(n);
-    return true;
+        if (n >= 0)
+        {
+            out.resize(static_cast<size_t>(n));
+            return true;
+        }
+
+        const size_t required = static_cast<size_t>(-n);
+        if (required <= out.size())
+            return false;
+        out.resize(required);
+    }
+    return false;
 }
 
 // 使用 llama_chat_apply_template 生成“本轮增量 prompt”
@@ -301,7 +339,7 @@ static bool decode_tokens(llama_context *lctx,
 
 LlamaEngine::LlamaEngine(const std::string &model_path): model_path_(model_path)
 {
-    llama_backend_init();
+    acquire_llama_backend();
 
     llama_model_params mparams = llama_model_default_params();
     model_ = llama_model_load_from_file(model_path.c_str(), mparams);
@@ -315,7 +353,7 @@ LlamaEngine::~LlamaEngine()
 {
     if (model_)
         llama_model_free(model_);
-    llama_backend_free();
+    release_llama_backend();
 }
 
 bool LlamaEngine::IsReady() const

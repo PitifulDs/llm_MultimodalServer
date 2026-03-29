@@ -299,7 +299,7 @@
         <h1 class="title">LLM Multimodal Server — Chat Demo</h1>
         <p class="subtitle">
           Stream or fetch responses from your local server. This page can switch between
-          <code>/v1/chat/completions?stream=true</code> and the non-streaming endpoint.
+          <code>/v1/chat/completions</code> (with JSON <code>"stream": true</code>) and the non-streaming endpoint.
         </p>
       </div>
       <div class="card">
@@ -868,8 +868,9 @@
 
     function getSupportedBackends(modelId) {
       const info = getModelInfo(modelId);
-      const backends = Array.isArray(info?.backends) ? info.backends.filter(Boolean) : [];
-      return backends.length ? backends : ['local'];
+      const backends = Array.isArray(info?.backends) ? info.backends.filter((v) => v === 'local' || v === 'rpc') : [];
+      if (!backends.length) return ['local', 'rpc'];
+      return Array.from(new Set(backends));
     }
 
     function syncBackendOptions() {
@@ -877,26 +878,22 @@
       let nextValue = backendEl.value;
 
       Array.from(backendEl.options).forEach((option) => {
-        const enabled = supported.includes(option.value);
-        option.disabled = !enabled;
-        option.hidden = !enabled;
+        option.disabled = false;
+        option.hidden = false;
       });
 
-      if (!supported.includes(nextValue)) {
-        nextValue = supported.includes('local') ? 'local' : supported[0];
+      if (nextValue !== 'local' && nextValue !== 'rpc') {
+        nextValue = 'local';
       }
       if (nextValue) {
         backendEl.value = nextValue;
       }
 
-      if (supported.includes('rpc')) {
-        if (backendEl.value === 'rpc') {
-          backendSupportHintEl.textContent = 'This model supports local and RPC. RPC also requires both unit-manager and the node/test worker to be running.';
-        } else {
-          backendSupportHintEl.textContent = 'This model supports local and RPC.';
-        }
+      const reported = supported.join(', ');
+      if (backendEl.value === 'rpc') {
+        backendSupportHintEl.textContent = `Backend is a request-level switch on the same logical model. Reported by /v1/models: [${reported}]. RPC requires unit-manager and node/test worker.`;
       } else {
-        backendSupportHintEl.textContent = 'This model supports only local inference. RPC is not available for this model.';
+        backendSupportHintEl.textContent = `Backend is a request-level switch on the same logical model. Reported by /v1/models: [${reported}].`;
       }
     }
 
@@ -1078,9 +1075,10 @@
       stopBtn.disabled = false;
 
       const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
+      payload.stream = true;
       renderDebugPanel({
         baseUrl,
-        endpoint: '/v1/chat/completions?stream=true',
+        endpoint: '/v1/chat/completions',
         payload,
       });
 
@@ -1089,7 +1087,7 @@
       let firstByteAt = null;
 
       try {
-        const resp = await fetch(`${baseUrl}/v1/chat/completions?stream=true`, {
+        const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),

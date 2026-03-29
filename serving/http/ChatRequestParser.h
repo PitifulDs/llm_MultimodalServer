@@ -25,7 +25,7 @@ struct ChatRequestParseResult
 };
 
 ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
-                                           bool stream,
+                                           bool stream_fallback,
                                            SessionManager &session_mgr,
                                            const std::string &default_model,
                                            int default_max_tokens,

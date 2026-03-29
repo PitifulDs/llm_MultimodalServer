@@ -97,6 +97,7 @@ def worker(idx, args, results, lock):
 
     payload = {
         "model": args.model,
+        "stream": True,
         "max_tokens": args.max_tokens,
         "messages": [{"role": "user", "content": "Output many short tokens/words continuously. Keep going."}],
     }
@@ -116,7 +117,7 @@ def worker(idx, args, results, lock):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:8080/v1/chat/completions?stream=true")
+    ap.add_argument("--url", default="http://127.0.0.1:8080/v1/chat/completions")
     ap.add_argument("--model", default="llama")
     ap.add_argument("--concurrency", type=int, default=20)
     ap.add_argument("--rounds", type=int, default=200)

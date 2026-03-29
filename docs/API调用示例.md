@@ -26,9 +26,9 @@ curl -s "http://127.0.0.1:8080/v1/models" | jq
 
 ## 4. 流式 SSE chat
 ```bash
-curl -N -X POST "http://127.0.0.1:8080/v1/chat/completions?stream=true" \
+curl -N -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen2.5-1.5b","messages":[{"role":"user","content":"介绍下华为"}],"max_tokens":128}'
+  -d '{"model":"qwen2.5-1.5b","stream":true,"messages":[{"role":"user","content":"介绍下华为"}],"max_tokens":128}'
 ```
 
 ## 5. 带采样参数

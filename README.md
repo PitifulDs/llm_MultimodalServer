@@ -50,7 +50,8 @@ flowchart TB
     W[node/test worker\n模型执行]
     H[hybrid-comm]
     U --> W
-    W <--> H
+    W --> H
+    H --> W
   end
 
   C -->|HTTP/SSE| N
@@ -80,7 +81,7 @@ EdgeLLM-Serving/
 - `serving/http/使用说明.md`
 
 **一次请求链路**
-1. `NetworkHttpServer` 按 `Content-Length` 组包。
+1. `NetworkHttpServer` 严格按 `Content-Length` 组包（不猜测 body 长度，不支持 `Transfer-Encoding: chunked`）。
 2. `HttpGateway + ChatRequestParser` 构造 `ServingContext`。
 3. `SessionExecutor` 保证同一 `session_id` 串行。
 4. 普通 chat 直接进入 `EngineExecutor`；agent 请求先进入 `AgentExecutor` 再调用 `EngineExecutor`。
@@ -108,6 +109,13 @@ Test:
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d "{\"model\":\"qwen3.5-2b\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}" | jq
+```
+
+流式（OpenAI 兼容写法，body 带 `"stream": true`）:
+```bash
+curl -sS -N -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"qwen3.5-2b\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
 ```
 
 列出当前可用模型:
@@ -159,7 +167,7 @@ bash scripts/start_agent_demo.sh
 `config.json` 启动时加载，路径默认相对仓库根目录。
 
 推荐把请求里的 `model` 当成“逻辑模型名”，例如 `qwen3.5-2b`。  
-服务端会根据 `config.json` 中的 `models` 注册表识别该模型支持哪些后端，再根据请求中的 `inference_backend` 决定走本地 `llama.cpp` 还是远程 `stackflow`。
+服务端会根据 `config.json` 中的 `models` 注册表解析后端能力，再根据请求中的 `inference_backend` 决定走本地 `llama.cpp` 还是远程 `stackflow`。
 
 示例：
 - `model = qwen3.5-2b, inference_backend = local` -> 本地 `llama.cpp`
@@ -198,8 +206,15 @@ bash scripts/start_agent_demo.sh
 
 说明：
 - `/v1/models` 会返回当前模型注册表中的模型名，以及每个模型支持的 `backends`
-- 当前 serving 层支持请求级后端切换，因此 `/v1/models` 会把每个真实模型都标记为支持 `local` 和 `rpc`
+- `backends` 表示网关支持的请求级后端切换模式（`local` / `rpc`），不是模型级硬限制
+- 前端应通过 `inference_backend` 在同一个逻辑模型上切换后端
 - `stackflow` 远程模式下的 `usage` 目前是基于文本长度的近似统计，不是精确 tokenizer 结果
+
+**流式请求兼容说明**
+
+- OpenAI 兼容方式：在 JSON body 里携带 `"stream": true`
+- 兼容兜底：也接受 query `?stream=true`
+- 若 body 里显式给出 `stream`，以 body 为准（覆盖 query）
 
 **Redis 会话持久化（可选）**
 

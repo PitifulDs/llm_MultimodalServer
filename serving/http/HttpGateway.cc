@@ -46,10 +46,7 @@ namespace
 
     std::string get_default_model()
     {
-        const char *env = std::getenv("DEFAULT_MODEL");
-        if (env && *env)
-            return std::string(env);
-        return "llama";
+        return ModelRegistry::GetDefaultModel();
     }
 
     int get_default_max_tokens()
@@ -97,6 +94,38 @@ namespace
         return http_utils::finish_reason_to_str(r);
     }
 
+    void prepare_session_delta(const std::shared_ptr<ServingContext> &ctx,
+                               const std::vector<Message> &incoming)
+    {
+        if (!ctx || !ctx->session)
+            return;
+
+        auto session = ctx->session;
+        std::lock_guard<std::mutex> lk(session->mu);
+        if (!session->history.empty())
+        {
+            if (http_utils::is_prefix(session->history, incoming))
+            {
+                ctx->messages = http_utils::diff_messages(session->history, incoming);
+            }
+            else
+            {
+                session->history.clear();
+                session->model_ctx.reset();
+                ctx->messages = incoming;
+            }
+        }
+        else
+        {
+            ctx->messages = incoming;
+        }
+
+        LOG(INFO) << "[auto-diff] session=" << session->session_id
+                  << " incoming=" << incoming.size()
+                  << " delta=" << ctx->messages.size()
+                  << " hist=" << session->history.size();
+    }
+
 } // namespace
 
 HttpGateway::HttpGateway()
@@ -141,20 +170,39 @@ HttpGateway::HttpGateway()
         return out.dump();
     });
 
-    // Session GC 后台线程
-    std::thread([mgr = session_mgr_.get()]()
+    // Session GC 后台线程（可停止，避免悬空指针）
+    gc_thread_ = std::thread([this]()
     {
-        while (true)
+        std::unique_lock<std::mutex> lk(gc_mu_);
+        while (!stop_gc_)
         {
-            std::this_thread::sleep_for(std::chrono::seconds(60));
-            const size_t removed = mgr->gc();
-            if (removed > 0)
+            if (gc_cv_.wait_for(lk, std::chrono::seconds(60), [this]
+                                { return stop_gc_; }))
+            {
+                break;
+            }
+
+            lk.unlock();
+            const size_t removed = session_mgr_ ? session_mgr_->gc() : 0;
+            if (removed > 0 && session_mgr_)
             {
                 LOG(INFO) << "[session-gc] removed=" << removed
-                            << " remaining=" << mgr->size();
+                          << " remaining=" << session_mgr_->size();
             }
-        } 
-    }).detach();
+            lk.lock();
+        }
+    });
+}
+
+HttpGateway::~HttpGateway()
+{
+    {
+        std::lock_guard<std::mutex> lk(gc_mu_);
+        stop_gc_ = true;
+    }
+    gc_cv_.notify_all();
+    if (gc_thread_.joinable())
+        gc_thread_.join();
 }
 
 void HttpGateway::WriteError(HttpResponse &res, int status, const std::string &message,
@@ -319,13 +367,6 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     const std::vector<Message> client_messages = parsed.request.client_messages;
 
     auto session = ctx->session;
-    {
-        std::lock_guard<std::mutex> lk(session->mu);
-        LOG(INFO) << "[auto-diff] session=" << session->session_id
-                  << " incoming=" << client_messages.size()
-                  << " delta=" << ctx->messages.size()
-                  << " hist=" << session->history.size();
-    }
 
     // on_finish：仅 stop/length 更新 history，避免 cancelled/error 污染 session
     ctx->on_finish = [this, session, ctx, client_messages, start_time, mgr = session_mgr_.get()](FinishReason r)
@@ -365,8 +406,9 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
                        ctx->EmitFinish(FinishReason::cancelled); });
 
     // 同 session 串行执行（只 Execute 一次）
-    bool accepted = session_executor_.Submit(ctx->session, [this, ctx]
+    bool accepted = session_executor_.Submit(ctx->session, [this, ctx, client_messages]
                                              {
+                                                 prepare_session_delta(ctx, client_messages);
                                                  if (ctx->use_agent && agent_executor_)
                                                  {
                                                      agent_executor_->Run(ctx);
@@ -473,13 +515,6 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     const std::vector<Message> client_messages = parsed.request.client_messages;
 
     auto session = ctx->session;
-    {
-        std::lock_guard<std::mutex> lk(session->mu);
-        LOG(INFO) << "[auto-diff] session=" << session->session_id
-                  << " incoming=" << client_messages.size()
-                  << " delta=" << ctx->messages.size()
-                  << " hist=" << session->history.size();
-    }
 
     // 绑定 HttpStreamSession 生命周期（先不 Start）
     auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);
@@ -550,8 +585,9 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     http_session->Start();
 
     // 同 session 串行执行（只 Execute 一次）
-    bool accepted  = session_executor_.Submit(session, [this, ctx]
+    bool accepted  = session_executor_.Submit(session, [this, ctx, client_messages]
     {
+        prepare_session_delta(ctx, client_messages);
         if (ctx->use_agent && agent_executor_)
         {
             agent_executor_->Run(ctx);
