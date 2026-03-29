@@ -137,6 +137,17 @@ struct ServingContext
         // stream：发最后一个 chunk
         if (stream && on_chunk)
         {
+            if (reason == FinishReason::error)
+            {
+                StreamChunk err_chunk;
+                err_chunk.is_finished = false;
+                if (!error_message.empty())
+                    err_chunk.delta = "[error] " + error_message;
+                else
+                    err_chunk.delta = "[error] request failed";
+                on_chunk(err_chunk);
+            }
+
             StreamChunk c;
             c.is_finished = true;
             c.finish_reason = reason;
@@ -179,4 +190,3 @@ struct ServingContext
         }
     }
 };
-
