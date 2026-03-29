@@ -1,6 +1,7 @@
 #include "serving/core/agent/AgentParser.h"
 
 #include <cctype>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -22,6 +23,24 @@ std::string trim_copy(std::string s)
 
 std::string normalize_model_json(std::string raw)
 {
+    const std::string think_start = "<think>";
+    const std::string think_end = "</think>";
+    while (true)
+    {
+        const auto start = raw.find(think_start);
+        if (start == std::string::npos)
+            break;
+
+        const auto end = raw.find(think_end, start + think_start.size());
+        if (end == std::string::npos)
+        {
+            raw.erase(start);
+            break;
+        }
+
+        raw.erase(start, end + think_end.size() - start);
+    }
+
     raw = trim_copy(std::move(raw));
 
     const std::string fence = "```";
@@ -49,6 +68,22 @@ std::string json_to_string(const nlohmann::json &j)
 {
     if (j.is_string())
         return j.get<std::string>();
+    if (j.is_array())
+    {
+        std::ostringstream oss;
+        bool first = true;
+        for (const auto &item : j)
+        {
+            const std::string piece = json_to_string(item);
+            if (piece.empty())
+                continue;
+            if (!first)
+                oss << "\n";
+            oss << piece;
+            first = false;
+        }
+        return oss.str();
+    }
     return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 

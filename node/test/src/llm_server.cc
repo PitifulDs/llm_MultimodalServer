@@ -9,6 +9,41 @@
 using namespace StackFlows;
 using json = nlohmann::json;
 
+namespace
+{
+bool decode_stream_payload(const std::string &in,
+                           std::string &out,
+                           std::unordered_map<int, std::string> &stream_buff)
+{
+    json body = json::parse(in);
+    const int index = body.value("index", 0);
+    const bool finish = body.value("finish", false);
+
+    std::string delta;
+    if (body.contains("delta"))
+    {
+        const auto &raw_delta = body["delta"];
+        if (raw_delta.is_string())
+            delta = raw_delta.get<std::string>();
+        else
+            delta = raw_delta.dump();
+    }
+
+    stream_buff[index] = delta;
+    if (!finish)
+        return true;
+
+    for (size_t i = 0; i < stream_buff.size(); ++i)
+    {
+        auto it = stream_buff.find(static_cast<int>(i));
+        if (it != stream_buff.end())
+            out += it->second;
+    }
+    stream_buff.clear();
+    return false;
+}
+} // namespace
+
 llm_llm::llm_llm() : StackFlow("llm")
 {
     task_count_ = 3;
@@ -111,7 +146,7 @@ void llm_llm::task_user_data(const std::weak_ptr<llm_task> llm_task_obj_weak,
         {
             std::lock_guard<std::mutex> lk(llm_task::s_stream_mu_);
             auto &stream_buff = llm_task::s_stream_buffs_[llm_channel->request_id_];
-            if (decode_stream(data, tmp_msg, stream_buff)) {
+            if (decode_stream_payload(data, tmp_msg, stream_buff)) {
                 return;
             };
             llm_task::s_stream_buffs_.erase(llm_channel->request_id_);

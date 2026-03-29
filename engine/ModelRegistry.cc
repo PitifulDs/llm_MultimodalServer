@@ -309,10 +309,14 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
             const std::string backend = normalize_backend_name(json_or_default(*it, "backend", std::string("")));
             const std::string engine = normalize_backend_name(json_or_default(*it, "engine", std::string("")));
 
-            if (backend == "stackflow" || engine == "stackflow")
-                info.has_rpc = true;
-            else
-                info.has_local = true;
+            if (backend == "dummy" || engine == "dummy")
+                continue;
+
+            // The serving layer supports request-level backend switching via
+            // `inference_backend`, so every configured real model should be
+            // discoverable as both local and RPC-capable.
+            info.has_local = true;
+            info.has_rpc = true;
         }
     }
 
@@ -322,10 +326,11 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
         info.id = default_model;
         info.is_default = true;
         const ModelSpec spec = Resolve(default_model);
-        if (spec.engine == "stackflow")
-            info.has_rpc = true;
-        else if (spec.engine == "llama")
+        if (spec.valid && spec.engine != "dummy")
+        {
             info.has_local = true;
+            info.has_rpc = true;
+        }
     }
 
     std::vector<ModelInfo> out;

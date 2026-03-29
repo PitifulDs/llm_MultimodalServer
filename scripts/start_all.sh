@@ -53,16 +53,8 @@ fi
 # runtime shared libraries
 export LD_LIBRARY_PATH="${ROOT}/build/bin:${ROOT}/build/network:${ROOT}/node/test/build/bin:${LD_LIBRARY_PATH:-}"
 
-# stop any previous processes if pid files exist
-if [ -f "${LOG_DIR}/serving_http.pid" ]; then
-  kill "$(cat "${LOG_DIR}/serving_http.pid")" 2>/dev/null || true
-fi
-if [ -f "${LOG_DIR}/node_test.pid" ]; then
-  kill "$(cat "${LOG_DIR}/node_test.pid")" 2>/dev/null || true
-fi
-if [ -f "${LOG_DIR}/unit_manager.pid" ]; then
-  kill "$(cat "${LOG_DIR}/unit_manager.pid")" 2>/dev/null || true
-fi
+# stop any previous processes, including stale residual ones
+sh "${ROOT}/scripts/stop_all.sh"
 
 # clear old IPC sockets
 rm -f /tmp/llm/*.sock* /tmp/rpc.* || true

@@ -302,7 +302,7 @@
       <div class="card">
         <div><strong>Request</strong></div>
         <label>Base URL</label>
-        <input id="baseUrl" value="http://127.0.0.1:8080" />
+        <input id="baseUrl" value="" placeholder="http://127.0.0.1:8080" />
 
         <div class="row">
           <div>
@@ -323,11 +323,12 @@
         <div class="hint">
           `Local` means this Linux server loads the GGUF directly. `RPC / Worker` means the HTTP server forwards the request to a remote StackFlow worker.
         </div>
+        <div id="backendSupportHint" class="hint"></div>
 
         <div class="row">
           <div>
             <label>Max Tokens</label>
-            <input id="maxTokens" type="number" min="1" max="4096" value="128" />
+            <input id="maxTokens" type="number" min="1" max="4096" value="512" />
           </div>
           <div>
             <label>Mode</label>
@@ -431,6 +432,7 @@
         <div class="meta">
           <div>TTFB: <span id="ttfb">-</span></div>
           <div>Tokens (approx): <span id="tokCount">0</span></div>
+          <div>Finish: <span id="finishReason">-</span></div>
           <div>Duration: <span id="dur">-</span></div>
         </div>
       </div>
@@ -468,11 +470,15 @@
     const statusEl = document.getElementById('status');
     const ttfbEl = document.getElementById('ttfb');
     const tokEl = document.getElementById('tokCount');
+    const finishReasonEl = document.getElementById('finishReason');
     const durEl = document.getElementById('dur');
     const debugModeEl = document.getElementById('debugMode');
     const debugTargetEl = document.getElementById('debugTarget');
     const agentHintEl = document.getElementById('agentHint');
     const payloadPreviewEl = document.getElementById('payloadPreview');
+    const baseUrlEl = document.getElementById('baseUrl');
+    const backendSupportHintEl = document.getElementById('backendSupportHint');
+    const maxTokensEl = document.getElementById('maxTokens');
     const sendBtn = document.getElementById('sendBtn');
     const stopBtn = document.getElementById('stopBtn');
     const modeEl = document.getElementById('streamMode');
@@ -492,6 +498,7 @@
     const AGENT_PRESETS = {
       analysis: {
         enableAgent: true,
+        maxTokens: 768,
         maxSteps: 4,
         tools: ['search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
         system: 'You are a concise read-only code analysis agent for EdgeLLM-Serving.',
@@ -499,6 +506,7 @@
       },
       status: {
         enableAgent: true,
+        maxTokens: 384,
         maxSteps: 3,
         tools: ['get_server_status'],
         system: 'You are a concise operations assistant for EdgeLLM-Serving.',
@@ -506,6 +514,7 @@
       },
       config: {
         enableAgent: true,
+        maxTokens: 384,
         maxSteps: 4,
         tools: ['get_config'],
         system: 'You are a concise configuration assistant for EdgeLLM-Serving.',
@@ -513,6 +522,7 @@
       },
       docs: {
         enableAgent: true,
+        maxTokens: 512,
         maxSteps: 4,
         tools: ['search_docs'],
         system: 'You are a concise documentation assistant for EdgeLLM-Serving.',
@@ -522,6 +532,13 @@
 
     let aborter = null;
     let modelCatalog = [];
+    let rawResponseText = '';
+    let lastPresetSystemPrompt = '';
+    let lastFinishReason = '-';
+
+    const MIN_CHAT_MAX_TOKENS = 512;
+    const MIN_AGENT_MAX_TOKENS = 768;
+    const MAX_AUTO_CONTINUES = 2;
 
     function setStatus(text) {
       statusEl.textContent = text;
@@ -538,8 +555,296 @@
       return Math.max(0, Math.round(text.length / 4));
     }
 
+    function stripThinkBlocks(text) {
+      let remaining = text || '';
+      let out = '';
+
+      while (remaining) {
+        const start = remaining.indexOf('<think>');
+        if (start === -1) {
+          out += remaining;
+          break;
+        }
+
+        out += remaining.slice(0, start);
+        const afterStart = remaining.slice(start + '<think>'.length);
+        const end = afterStart.indexOf('</think>');
+        if (end === -1) {
+          out += afterStart;
+          break;
+        }
+        remaining = afterStart.slice(end + '</think>'.length);
+      }
+
+      return out.replace(/<\/?think>/g, '');
+    }
+
+    function decodeJsonStringFragment(value) {
+      try {
+        return JSON.parse(`"${value}"`);
+      } catch (err) {
+        return value
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\r/g, '\r')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\');
+      }
+    }
+
+    function formatAnswerValue(value) {
+      if (typeof value === 'string') return value;
+      if (Array.isArray(value)) {
+        return value
+          .map((item) => formatAnswerValue(item))
+          .filter(Boolean)
+          .join('\n');
+      }
+      if (value && typeof value === 'object') {
+        if (typeof value.answer === 'string') return value.answer;
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch (err) {
+          return String(value);
+        }
+      }
+      if (value == null) return '';
+      return String(value);
+    }
+
+    function extractJsonObject(text) {
+      const first = text.indexOf('{');
+      const last = text.lastIndexOf('}');
+      if (first === -1 || last === -1 || first >= last) {
+        return '';
+      }
+      return text.slice(first, last + 1);
+    }
+
+    function extractWrappedAnswer(text) {
+      const candidate = extractJsonObject(text.trim());
+      if (candidate) {
+        try {
+          const parsed = JSON.parse(candidate);
+          if (Object.prototype.hasOwnProperty.call(parsed, 'answer')) {
+            return formatAnswerValue(parsed.answer);
+          }
+        } catch (err) {
+        }
+      }
+
+      const match = text.match(/"answer"\s*:\s*"((?:\\.|[^"\\])*)"/s);
+      if (match) {
+        return decodeJsonStringFragment(match[1]);
+      }
+
+      return null;
+    }
+
+    function sanitizeAssistantText(rawText) {
+      const withoutThink = stripThinkBlocks(rawText || '').trim();
+      if (!withoutThink) {
+        return '';
+      }
+
+      const wrappedAnswer = extractWrappedAnswer(withoutThink);
+      if (wrappedAnswer !== null) {
+        return wrappedAnswer.trim();
+      }
+
+      return withoutThink;
+    }
+
+    function renderAssistantText() {
+      let cleaned = sanitizeAssistantText(rawResponseText);
+      if (lastFinishReason === 'length' && cleaned) {
+        cleaned += '\n\n[truncated: reached max_tokens]';
+      }
+      output.textContent = cleaned;
+      tokEl.textContent = String(approxTokens(cleaned));
+      finishReasonEl.textContent = lastFinishReason;
+    }
+
+    function countMatches(text, pattern) {
+      const matches = text.match(pattern);
+      return matches ? matches.length : 0;
+    }
+
+    function looksIncompleteAnswer(text) {
+      const value = (text || '').trimEnd();
+      if (!value) return false;
+
+      const fenceCount = countMatches(value, /```/g);
+      if (fenceCount % 2 === 1) {
+        return true;
+      }
+
+      const hasCodeSignals = /#include|class\s+\w+|int\s+\w+\s*\(|using namespace|vector<|```(?:cpp|c\+\+)?/i.test(value);
+      if (!hasCodeSignals) {
+        return false;
+      }
+
+      const braceBalance = countMatches(value, /\{/g) - countMatches(value, /\}/g);
+      if (braceBalance > 0) {
+        return true;
+      }
+
+      const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
+      const lastLine = lines.length ? lines[lines.length - 1] : '';
+      if (!lastLine) {
+        return false;
+      }
+
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(lastLine)) {
+        return true;
+      }
+
+      if (/[=,+\-*/(]$/.test(lastLine)) {
+        return true;
+      }
+
+      return false;
+    }
+
+    function buildContinuationPayload({ model, maxTokens, system, prompt, currentAnswer }) {
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: prompt });
+      messages.push({ role: 'assistant', content: currentAnswer });
+      messages.push({
+        role: 'user',
+        content: 'Continue exactly from where you stopped. Do not repeat previous content. Finish the remaining answer only.',
+      });
+
+      return {
+        model,
+        inference_backend: backendEl.value,
+        max_tokens: maxTokens,
+        messages,
+        session_id: genId('sess-continue'),
+        request_id: genId('req'),
+      };
+    }
+
+    async function autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt }) {
+      let attempts = 0;
+
+      while (attempts < MAX_AUTO_CONTINUES) {
+        const currentAnswer = sanitizeAssistantText(rawResponseText);
+        if (lastFinishReason !== 'stop' || !looksIncompleteAnswer(currentAnswer)) {
+          return;
+        }
+
+        attempts += 1;
+        setStatus(`CONTINUING ${attempts}/${MAX_AUTO_CONTINUES}`);
+
+        const payload = buildContinuationPayload({
+          model,
+          maxTokens,
+          system,
+          prompt,
+          currentAnswer,
+        });
+
+        const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          cache: 'no-store',
+          signal: aborter?.signal,
+        });
+
+        if (!resp.ok) {
+          return;
+        }
+
+        const json = await resp.json();
+        const content = json.choices?.[0]?.message?.content || '';
+        if (!content) {
+          return;
+        }
+
+        lastFinishReason = json.choices?.[0]?.finish_reason || lastFinishReason;
+        rawResponseText += content;
+        renderAssistantText();
+      }
+    }
+
     function backendLabel(value) {
       return value === 'rpc' ? 'RPC / Worker' : 'Local llama.cpp';
+    }
+
+    function getSuggestedBaseUrl() {
+      const defaultUrl = 'http://127.0.0.1:8080';
+      if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') {
+        return defaultUrl;
+      }
+
+      const host = window.location.hostname;
+      if (!host) {
+        return defaultUrl;
+      }
+
+      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+      return `${protocol}//${host}:8080`;
+    }
+
+    function ensureBaseUrlDefault() {
+      const current = baseUrlEl.value.trim();
+      if (!current || current === 'http://127.0.0.1:8080') {
+        baseUrlEl.value = getSuggestedBaseUrl();
+      }
+    }
+
+    function formatFetchError(baseUrl, err) {
+      const raw = err && err.message ? err.message : String(err);
+      if (raw.includes('Failed to fetch')) {
+        return [
+          `[network error] ${raw}`,
+          `Request target: ${baseUrl}`,
+          'If this page is opened from another machine, do not use 127.0.0.1 unless the API server is also running on that same machine.',
+          'Use the Linux server IP or hostname instead, for example: http://<server-ip>:8080',
+        ].join('\n');
+      }
+      return `[error] ${raw}`;
+    }
+
+    function getModelInfo(modelId) {
+      return modelCatalog.find((item) => item?.id === modelId) || null;
+    }
+
+    function getSupportedBackends(modelId) {
+      const info = getModelInfo(modelId);
+      const backends = Array.isArray(info?.backends) ? info.backends.filter(Boolean) : [];
+      return backends.length ? backends : ['local'];
+    }
+
+    function syncBackendOptions() {
+      const supported = getSupportedBackends(modelEl.value);
+      let nextValue = backendEl.value;
+
+      Array.from(backendEl.options).forEach((option) => {
+        const enabled = supported.includes(option.value);
+        option.disabled = !enabled;
+        option.hidden = !enabled;
+      });
+
+      if (!supported.includes(nextValue)) {
+        nextValue = supported.includes('local') ? 'local' : supported[0];
+      }
+      if (nextValue) {
+        backendEl.value = nextValue;
+      }
+
+      if (supported.includes('rpc')) {
+        if (backendEl.value === 'rpc') {
+          backendSupportHintEl.textContent = 'This model supports local and RPC. RPC also requires both unit-manager and the node/test worker to be running.';
+        } else {
+          backendSupportHintEl.textContent = 'This model supports local and RPC.';
+        }
+      } else {
+        backendSupportHintEl.textContent = 'This model supports only local inference. RPC is not available for this model.';
+      }
     }
 
     function setButtonLabel() {
@@ -551,6 +856,9 @@
     function updateAgentUI() {
       const enabled = enableAgentEl.checked;
       agentPanelEl.hidden = !enabled;
+      if (!enabled && systemEl.value.trim() && systemEl.value.trim() === lastPresetSystemPrompt) {
+        systemEl.value = '';
+      }
       requestModeHintEl.textContent = enabled
         ? 'Agent is on. The model may call tools before answering.'
         : 'Agent is off. The model will answer directly.';
@@ -563,6 +871,14 @@
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
+    }
+
+    function getEffectiveMaxTokens(rawValue) {
+      const parsed = parseInt(rawValue, 10) || 0;
+      if (enableAgentEl.checked) {
+        return Math.max(parsed || MIN_AGENT_MAX_TOKENS, MIN_AGENT_MAX_TOKENS);
+      }
+      return Math.max(parsed || MIN_CHAT_MAX_TOKENS, MIN_CHAT_MAX_TOKENS);
     }
 
     function buildPayload({ model, maxTokens, system, prompt, sessionId }) {
@@ -622,7 +938,7 @@
     }
 
     async function loadModels() {
-      const baseUrl = document.getElementById('baseUrl').value.trim();
+      const baseUrl = baseUrlEl.value.trim();
       if (!baseUrl) return;
 
       try {
@@ -653,27 +969,36 @@
           selectedValue = currentValue;
         }
         modelEl.value = selectedValue;
+        syncBackendOptions();
       } catch (err) {
         // ignore and keep fallback option
+        syncBackendOptions();
       }
     }
 
     function applyPreset(name) {
       const preset = AGENT_PRESETS[name];
-      if (!preset) return;
+      if (!preset) {
+        lastPresetSystemPrompt = '';
+        return;
+      }
 
       enableAgentEl.checked = !!preset.enableAgent;
+      if (preset.maxTokens) {
+        maxTokensEl.value = String(preset.maxTokens);
+      }
       agentMaxStepsEl.value = String(preset.maxSteps || 4);
       agentToolsEl.value = (preset.tools || []).join(',');
       systemEl.value = preset.system || '';
+      lastPresetSystemPrompt = preset.system || '';
       promptEl.value = preset.prompt || '';
       updateAgentUI();
     }
 
     async function streamChat() {
-      const baseUrl = document.getElementById('baseUrl').value.trim();
+      const baseUrl = baseUrlEl.value.trim();
       const model = document.getElementById('model').value.trim();
-      const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
+      const maxTokens = getEffectiveMaxTokens(maxTokensEl.value);
       const system = systemEl.value.trim();
       const prompt = promptEl.value.trim();
       let sessionId = sessionIdEl.value.trim();
@@ -686,8 +1011,11 @@
       }
 
       output.textContent = '';
+      rawResponseText = '';
+      lastFinishReason = '-';
       ttfbEl.textContent = '-';
       tokEl.textContent = '0';
+      finishReasonEl.textContent = '-';
       durEl.textContent = '-';
       setStatus('STREAMING');
 
@@ -742,6 +1070,7 @@
               if (!line.startsWith('data:')) continue;
               const data = line.slice(5).trim();
               if (data === '[DONE]') {
+                finishReasonEl.textContent = lastFinishReason;
                 setStatus('DONE');
                 stopBtn.disabled = true;
                 sendBtn.disabled = false;
@@ -751,9 +1080,15 @@
               try {
                 const json = JSON.parse(data);
                 const delta = json.choices?.[0]?.delta?.content || '';
+                const finishReason = json.choices?.[0]?.finish_reason;
+                if (finishReason) {
+                  lastFinishReason = finishReason;
+                  finishReasonEl.textContent = lastFinishReason;
+                  renderAssistantText();
+                }
                 if (delta) {
-                  output.textContent += delta;
-                  tokEl.textContent = String(approxTokens(output.textContent));
+                  rawResponseText += delta;
+                  renderAssistantText();
                 }
               } catch (e) {
                 // ignore partial JSON
@@ -762,11 +1097,12 @@
           }
         }
 
+        await autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt });
         setStatus('DONE');
         durEl.textContent = `${Math.round(performance.now() - start)} ms`;
       } catch (err) {
         setStatus('STOPPED');
-        output.textContent += `\n[stopped] ${err}`;
+        output.textContent += `\n${formatFetchError(baseUrl, err)}`;
       } finally {
         sendBtn.disabled = false;
         stopBtn.disabled = true;
@@ -774,9 +1110,9 @@
     }
 
     async function nonStreamChat() {
-      const baseUrl = document.getElementById('baseUrl').value.trim();
+      const baseUrl = baseUrlEl.value.trim();
       const model = document.getElementById('model').value.trim();
-      const maxTokens = parseInt(document.getElementById('maxTokens').value, 10) || 128;
+      const maxTokens = getEffectiveMaxTokens(maxTokensEl.value);
       const system = systemEl.value.trim();
       const prompt = promptEl.value.trim();
       let sessionId = sessionIdEl.value.trim();
@@ -789,8 +1125,11 @@
       }
 
       output.textContent = '';
+      rawResponseText = '';
+      lastFinishReason = '-';
       ttfbEl.textContent = '-';
       tokEl.textContent = '0';
+      finishReasonEl.textContent = '-';
       durEl.textContent = '-';
       setStatus('SENDING');
 
@@ -827,12 +1166,14 @@
 
         const json = await resp.json();
         const content = json.choices?.[0]?.message?.content || '';
-        output.textContent = content;
-        tokEl.textContent = String(approxTokens(output.textContent));
+        lastFinishReason = json.choices?.[0]?.finish_reason || '-';
+        rawResponseText = content;
+        renderAssistantText();
+        await autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt });
         setStatus('DONE');
       } catch (err) {
         setStatus('STOPPED');
-        output.textContent += `\n[stopped] ${err}`;
+        output.textContent += `\n${formatFetchError(baseUrl, err)}`;
       } finally {
         sendBtn.disabled = false;
         stopBtn.disabled = true;
@@ -851,19 +1192,28 @@
     });
 
     modeEl.addEventListener('change', setButtonLabel);
+    modelEl.addEventListener('change', () => {
+      syncBackendOptions();
+      renderDebugPanel();
+    });
     enableAgentEl.addEventListener('change', () => {
       updateAgentUI();
     });
-    document.getElementById('baseUrl').addEventListener('change', loadModels);
+    baseUrlEl.addEventListener('change', loadModels);
     agentPresetEl.addEventListener('change', () => {
       applyPreset(agentPresetEl.value);
     });
     agentMaxStepsEl.addEventListener('input', () => renderDebugPanel());
     agentToolsEl.addEventListener('input', () => renderDebugPanel());
-    backendEl.addEventListener('change', () => renderDebugPanel());
+    backendEl.addEventListener('change', () => {
+      syncBackendOptions();
+      renderDebugPanel();
+    });
     systemEl.addEventListener('input', () => renderDebugPanel());
     promptEl.addEventListener('input', () => renderDebugPanel());
     modeEl.addEventListener('change', () => renderDebugPanel());
+    ensureBaseUrlDefault();
+    syncBackendOptions();
     updateAgentUI();
     loadModels();
   </script>

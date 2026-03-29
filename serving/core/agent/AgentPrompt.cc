@@ -38,10 +38,12 @@ std::string BuildToolPrompt(const std::string &agent_mode,
         oss << "Never mention function names, methods, classes, or call chains that were not present in tool output.\n";
         oss << "Never request file writes, patches, or shell execution.\n";
         oss << "Return JSON only.\n";
+        oss << "Do not output <think>, </think>, chain-of-thought, or any hidden reasoning.\n";
         oss << "If a tool is needed, return:\n";
         oss << "{\"action\":\"tool\",\"tool\":\"tool_name\",\"input\":{...}}\n";
         oss << "If you can answer now, return:\n";
         oss << "{\"action\":\"final\",\"answer\":\"...\"}\n";
+        oss << "The answer field should be a plain string, not an array or nested object.\n";
         oss << "Final answer rules:\n";
         oss << "- Keep the answer concise.\n";
         oss << "- Prefer 3 to 5 short bullets or a short paragraph.\n";
@@ -64,6 +66,7 @@ std::string BuildToolPrompt(const std::string &agent_mode,
     oss << "If the user asks about server status, metrics, configuration, defaults, models, APIs, docs, architecture, files, or any repository-specific fact, you must call a tool before answering.\n";
     oss << "Do not guess repository facts from memory.\n";
     oss << "Return JSON only.\n";
+    oss << "Do not output <think>, </think>, chain-of-thought, or any hidden reasoning.\n";
     oss << "If a tool is needed, return:\n";
     oss << "{\"action\":\"tool\",\"tool\":\"tool_name\",\"input\":{\"query\":\"...\"}}\n";
     oss << "If you can answer now, return:\n";

@@ -18,6 +18,7 @@
 namespace
 {
 constexpr const char *kCodeAnalysisMode = "code_analysis";
+constexpr int kAgentMinStepMaxTokens = 384;
 
 std::string normalize_agent_mode(const std::string &mode)
 {
@@ -273,6 +274,7 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
     std::string last_model_output;
     std::vector<std::string> evidence_lines;
     std::vector<std::string> tool_summaries;
+    bool has_observed_tool = false;
 
     for (int step = 0; step < max_steps; ++step)
     {
@@ -296,7 +298,20 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         auto max_it = step_ctx->params.find("max_tokens");
         if (max_it == step_ctx->params.end())
         {
-            step_ctx->params["max_tokens"] = "256";
+            step_ctx->params["max_tokens"] = std::to_string(kAgentMinStepMaxTokens);
+        }
+        else
+        {
+            try
+            {
+                const int current = std::stoi(max_it->second);
+                if (current < kAgentMinStepMaxTokens)
+                    step_ctx->params["max_tokens"] = std::to_string(kAgentMinStepMaxTokens);
+            }
+            catch (...)
+            {
+                step_ctx->params["max_tokens"] = std::to_string(kAgentMinStepMaxTokens);
+            }
         }
 
         executor_.ExecuteAndWait(step_ctx);
@@ -326,6 +341,15 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         const AgentAction action = ParseAgentAction(last_model_output);
         if (action.type == AgentAction::Type::final_answer)
         {
+            if (agent_mode == kCodeAnalysisMode && !has_observed_tool)
+            {
+                step_messages.clear();
+                step_messages.push_back({"user",
+                                         "For repository-specific or code-analysis questions, you must call a tool before giving the final answer. "
+                                         "Call the most relevant tool now, usually search_code first and then read_file if needed. Return JSON only."});
+                continue;
+            }
+
             std::string answer = action.answer.empty() ? last_model_output : action.answer;
             if (agent_mode == kCodeAnalysisMode)
                 answer = append_evidence_if_needed(answer, evidence_lines, tool_summaries);
@@ -356,6 +380,7 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         const auto new_evidence = extract_evidence_lines(tool_output);
         evidence_lines.insert(evidence_lines.end(), new_evidence.begin(), new_evidence.end());
         tool_summaries.push_back(truncate_text(tool_output, 600));
+        has_observed_tool = true;
 
         LOG(INFO) << "[agent] req=" << ctx->request_id
                   << " step=" << (step + 1)

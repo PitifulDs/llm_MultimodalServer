@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <unistd.h>
 
 using json = nlohmann::json;
@@ -77,6 +78,59 @@ static std::string resolve_model_path(const std::string &raw_path)
         }
     }
     return (fs::current_path() / p).string();
+}
+
+static nlohmann::json load_worker_config()
+{
+    const char *cfg_path = std::getenv("CONFIG_PATH");
+    if (!cfg_path || !*cfg_path)
+        cfg_path = std::getenv("CFG_PATH");
+    const std::string path = (cfg_path && *cfg_path) ? std::string(cfg_path) : std::string("config.json");
+
+    std::ifstream in(path);
+    if (!in.is_open())
+        return nlohmann::json::object();
+
+    try
+    {
+        return nlohmann::json::parse(in);
+    }
+    catch (...)
+    {
+        return nlohmann::json::object();
+    }
+}
+
+static std::string strip_remote_suffix(const std::string &model_name)
+{
+    static const std::string suffix = "-remote";
+    if (model_name.size() >= suffix.size() &&
+        model_name.compare(model_name.size() - suffix.size(), suffix.size(), suffix) == 0)
+    {
+        return model_name.substr(0, model_name.size() - suffix.size());
+    }
+    return model_name;
+}
+
+static std::string resolve_model_path_from_config(const std::string &model_name)
+{
+    const auto cfg = load_worker_config();
+    if (cfg.contains("models") && cfg["models"].is_object())
+    {
+        const auto &models = cfg["models"];
+        const std::string requested = strip_remote_suffix(model_name);
+        const auto it = models.find(requested);
+        if (it != models.end() && it->is_object() &&
+            it->contains("model_path") && (*it)["model_path"].is_string())
+        {
+            return (*it)["model_path"].get<std::string>();
+        }
+    }
+
+    if (cfg.contains("llama_model_path") && cfg["llama_model_path"].is_string())
+        return cfg["llama_model_path"].get<std::string>();
+
+    return "";
 }
 
 static const char *kDefaultModelPath =
@@ -268,6 +322,10 @@ int llm_task::load_model(const nlohmann::json &config_body)
     if (config_body.contains("model_path") && config_body["model_path"].is_string())
     {
         model_path_ = config_body["model_path"].get<std::string>();
+    }
+    if (model_path_.empty())
+    {
+        model_path_ = resolve_model_path_from_config(model_);
     }
     if (model_path_.empty())
     {

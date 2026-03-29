@@ -12,11 +12,6 @@
       "engine": "llama",
       "model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf"
     },
-    "qwen3.5-35b-a3b": {
-      "backend": "local",
-      "engine": "llama",
-      "model_path": "models/qwen3.5/Qwen3.5-35B-A3B-Q4_K_M.gguf"
-    },
     "qwen3.5-2b": {
       "backend": "local",
       "engine": "llama",
@@ -44,8 +39,8 @@
   "stackflow_host": "127.0.0.1",
   "stackflow_port": 10001,
   "stackflow_unit": "llm",
-  "stackflow_timeout_ms": 60000,
-  "stackflow_infer_timeout_ms": 0,
+  "stackflow_timeout_ms": 180000,
+  "stackflow_infer_timeout_ms": 180000,
   "stackflow_reuse_work_id": 1,
   "stackflow_serialize_reuse": 1,
   "stackflow_max_concurrency": 2,
