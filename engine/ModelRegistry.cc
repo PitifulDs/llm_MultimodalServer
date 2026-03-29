@@ -312,10 +312,17 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
             if (backend == "dummy" || engine == "dummy")
                 continue;
 
-            // 语义：model 是逻辑模型名，backend 是请求级推理后端开关。
-            // /v1/models 的 backends 表示“网关支持的调用模式”，不作为模型级硬限制。
-            info.has_local = true;
-            info.has_rpc = true;
+            // /v1/models.backends：反映配置中该逻辑模型“真实声明”的后端能力。
+            const bool is_remote_alias = ends_with(it.key(), "-remote");
+            const bool is_rpc_capable =
+                backend == "stackflow" ||
+                engine == "stackflow" ||
+                (backend.empty() && engine.empty() && is_remote_alias);
+
+            if (is_rpc_capable)
+                info.has_rpc = true;
+            else
+                info.has_local = true;
         }
     }
 
@@ -327,8 +334,10 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
         const ModelSpec spec = Resolve(default_model);
         if (spec.valid && spec.engine != "dummy")
         {
-            info.has_local = true;
-            info.has_rpc = true;
+            if (spec.engine == "stackflow")
+                info.has_rpc = true;
+            else
+                info.has_local = true;
         }
     }
 

@@ -76,11 +76,11 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 bash scripts/smoke_test_analysis_agent.sh
 ```
 
-## 8. 远程模型示例（通过模型名路由到 stackflow）
+## 8. 远程后端示例（同一逻辑模型切到 rpc）
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen2.5-1.5b-remote","messages":[{"role":"user","content":"hello from remote"}]}' | jq
+  -d '{"model":"qwen3.5-2b","inference_backend":"rpc","messages":[{"role":"user","content":"hello from remote"}]}' | jq
 ```
 
 备注：

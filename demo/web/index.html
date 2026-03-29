@@ -869,12 +869,22 @@
     function getSupportedBackends(modelId) {
       const info = getModelInfo(modelId);
       const backends = Array.isArray(info?.backends) ? info.backends.filter((v) => v === 'local' || v === 'rpc') : [];
+      if (!backends.length) return [];
+      return Array.from(new Set(backends));
+    }
+
+    function getGatewayBackends(modelId) {
+      const info = getModelInfo(modelId);
+      const backends = Array.isArray(info?.gateway_backends)
+        ? info.gateway_backends.filter((v) => v === 'local' || v === 'rpc')
+        : [];
       if (!backends.length) return ['local', 'rpc'];
       return Array.from(new Set(backends));
     }
 
     function syncBackendOptions() {
-      const supported = getSupportedBackends(modelEl.value);
+      const configured = getSupportedBackends(modelEl.value);
+      const gateway = getGatewayBackends(modelEl.value);
       let nextValue = backendEl.value;
 
       Array.from(backendEl.options).forEach((option) => {
@@ -889,11 +899,12 @@
         backendEl.value = nextValue;
       }
 
-      const reported = supported.join(', ');
+      const configuredText = configured.length ? configured.join(', ') : '(none)';
+      const gatewayText = gateway.join(', ');
       if (backendEl.value === 'rpc') {
-        backendSupportHintEl.textContent = `Backend is a request-level switch on the same logical model. Reported by /v1/models: [${reported}]. RPC requires unit-manager and node/test worker.`;
+        backendSupportHintEl.textContent = `Backend is request-level on the same logical model. configured_backends=[${configuredText}], gateway_backends=[${gatewayText}]. RPC requires unit-manager and node/test worker.`;
       } else {
-        backendSupportHintEl.textContent = `Backend is a request-level switch on the same logical model. Reported by /v1/models: [${reported}].`;
+        backendSupportHintEl.textContent = `Backend is request-level on the same logical model. configured_backends=[${configuredText}], gateway_backends=[${gatewayText}].`;
       }
     }
 

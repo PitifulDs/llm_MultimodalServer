@@ -205,8 +205,9 @@ bash scripts/start_agent_demo.sh
 - 如果请求里不带 `inference_backend`，则按模型注册表中的默认映射解析
 
 说明：
-- `/v1/models` 会返回当前模型注册表中的模型名，以及每个模型支持的 `backends`
-- `backends` 表示网关支持的请求级后端切换模式（`local` / `rpc`），不是模型级硬限制
+- `/v1/models` 会返回当前模型注册表中的模型名
+- `backends` 表示该逻辑模型在配置里的已声明后端能力（模型级）
+- `gateway_backends` 表示网关支持的请求级后端切换模式（路由级）
 - 前端应通过 `inference_backend` 在同一个逻辑模型上切换后端
 - `stackflow` 远程模式下的 `usage` 目前是基于文本长度的近似统计，不是精确 tokenizer 结果
 

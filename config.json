@@ -17,13 +17,6 @@
       "engine": "llama",
       "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf"
     },
-    "qwen2.5-1.5b-remote": {
-      "backend": "stackflow",
-      "engine": "stackflow",
-      "host": "127.0.0.1",
-      "port": 10001,
-      "unit": "llm"
-    },
     "llama": {
       "backend": "local",
       "engine": "llama",

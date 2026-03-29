@@ -287,18 +287,21 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
 
     for (const auto &model : models)
     {
-        json backends = json::array();
+        json configured_backends = json::array();
         if (model.has_local)
-            backends.push_back("local");
+            configured_backends.push_back("local");
         if (model.has_rpc)
-            backends.push_back("rpc");
+            configured_backends.push_back("rpc");
 
         items.push_back({
             {"id", model.id},
             {"object", "model"},
             {"owned_by", "edge-llm-serving"},
             {"default", model.is_default},
-            {"backends", backends}
+            // 真实配置能力（模型级）
+            {"backends", configured_backends},
+            // 网关支持的请求级后端切换能力（路由级）
+            {"gateway_backends", json::array({"local", "rpc"})}
         });
     }
 
