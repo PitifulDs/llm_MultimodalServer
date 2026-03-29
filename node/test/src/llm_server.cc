@@ -52,7 +52,8 @@ llm_llm::llm_llm() : StackFlow("llm")
 void llm_llm::task_output(const std::weak_ptr<llm_task> llm_task_obj_weak,
                           const std::weak_ptr<llm_channel_obj> llm_channel_weak,
                           const std::string &data,
-                          bool finish)
+                          bool finish,
+                          const std::string &finish_reason)
 {
     static std::mutex s_idx_mu;
     static std::unordered_map<std::string, int> s_idx;
@@ -84,6 +85,8 @@ void llm_llm::task_output(const std::weak_ptr<llm_task> llm_task_obj_weak,
         else
             data_body["delta"] = std::string("");
         data_body["finish"] = finish;
+        if (finish && !finish_reason.empty())
+            data_body["finish_reason"] = finish_reason;
         if (finish)
         {
             std::lock_guard<std::mutex> lk(s_idx_mu);
@@ -100,7 +103,12 @@ void llm_llm::task_output(const std::weak_ptr<llm_task> llm_task_obj_weak,
     }
     else if (finish)
     {
-        llm_channel->send(llm_task_obj->response_format_, data, LLM_NO_ERROR);
+        json data_body;
+        data_body["delta"] = data;
+        data_body["finish"] = true;
+        if (!finish_reason.empty())
+            data_body["finish_reason"] = finish_reason;
+        llm_channel->send(llm_task_obj->response_format_, data_body, LLM_NO_ERROR);
         std::lock_guard<std::mutex> lk(llm_task_obj->req_mu_);
         if (!llm_task_obj->current_req_id_.empty())
             llm_channel->clear_request_url(llm_task_obj->current_req_id_);
@@ -214,7 +222,7 @@ int llm_llm::setup(const std::string &work_id, const std::string &object, const 
         llm_channel->set_stream(llm_task_obj->enstream_);
         llm_task_obj->set_output(std::bind(&llm_llm::task_output, this, std::weak_ptr<llm_task>(llm_task_obj),
                                            std::weak_ptr<llm_channel_obj>(llm_channel), std::placeholders::_1,
-                                           std::placeholders::_2));
+                                           std::placeholders::_2, std::placeholders::_3));
         llm_channel->subscriber_work_id(
             "",
             std::bind(&llm_llm::task_user_data, this, std::weak_ptr<llm_task>(llm_task_obj),

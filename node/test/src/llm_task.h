@@ -14,7 +14,7 @@
 
 class LlamaEngine;
 
-using task_callback_t = std::function<void(const std::string &data, bool finish)>;
+using task_callback_t = std::function<void(const std::string &data, bool finish, const std::string &finish_reason)>;
 
 class llm_task
 {

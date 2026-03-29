@@ -74,6 +74,7 @@
     .grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
+      align-items: start;
       gap: 20px;
       margin-top: 28px;
     }
@@ -85,6 +86,14 @@
       padding: 18px;
       box-shadow: var(--shadow);
       backdrop-filter: blur(8px);
+    }
+
+    .response-card {
+      position: sticky;
+      top: 24px;
+      display: flex;
+      flex-direction: column;
+      align-self: start;
     }
 
     label {
@@ -206,7 +215,11 @@
       font-size: 13px;
       line-height: 1.6;
       white-space: pre-wrap;
-      min-height: 240px;
+      min-height: 320px;
+      max-height: min(70vh, 960px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding-right: 8px;
     }
 
     .meta {
@@ -270,6 +283,8 @@
       .hero { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .row { grid-template-columns: 1fr; }
+      .response-card { position: static; }
+      .output { max-height: 55vh; }
     }
   </style>
 </head>
@@ -423,7 +438,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card response-card">
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <strong>Response</strong>
           <span id="status" class="badge">IDLE</span>
@@ -535,10 +550,13 @@
     let rawResponseText = '';
     let lastPresetSystemPrompt = '';
     let lastFinishReason = '-';
+    let shouldStickOutputToBottom = true;
+    let isAutoContinuing = false;
 
     const MIN_CHAT_MAX_TOKENS = 512;
     const MIN_AGENT_MAX_TOKENS = 768;
-    const MAX_AUTO_CONTINUES = 2;
+    const MAX_AUTO_CONTINUES = 4;
+    const MAX_CONTINUATION_TOKENS = 2048;
 
     function setStatus(text) {
       statusEl.textContent = text;
@@ -655,14 +673,28 @@
       return withoutThink;
     }
 
+    function isOutputNearBottom() {
+      const remaining = output.scrollHeight - output.scrollTop - output.clientHeight;
+      return remaining < 32;
+    }
+
+    function scrollOutputToBottom() {
+      output.scrollTop = output.scrollHeight;
+      shouldStickOutputToBottom = true;
+    }
+
     function renderAssistantText() {
+      const keepBottom = shouldStickOutputToBottom || isOutputNearBottom();
       let cleaned = sanitizeAssistantText(rawResponseText);
-      if (lastFinishReason === 'length' && cleaned) {
+      if (lastFinishReason === 'length' && cleaned && !isAutoContinuing) {
         cleaned += '\n\n[truncated: reached max_tokens]';
       }
       output.textContent = cleaned;
       tokEl.textContent = String(approxTokens(cleaned));
       finishReasonEl.textContent = lastFinishReason;
+      if (keepBottom) {
+        scrollOutputToBottom();
+      }
     }
 
     function countMatches(text, pattern) {
@@ -706,7 +738,18 @@
       return false;
     }
 
+    function shouldAutoContinue(reason, text) {
+      if (!text) return false;
+      if (reason === 'length') return true;
+      if (reason === 'stop') return looksIncompleteAnswer(text);
+      return false;
+    }
+
     function buildContinuationPayload({ model, maxTokens, system, prompt, currentAnswer }) {
+      const continuationMaxTokens = Math.max(
+        Math.min(maxTokens * 2, MAX_CONTINUATION_TOKENS),
+        maxTokens
+      );
       const messages = [];
       if (system) messages.push({ role: 'system', content: system });
       messages.push({ role: 'user', content: prompt });
@@ -719,7 +762,7 @@
       return {
         model,
         inference_backend: backendEl.value,
-        max_tokens: maxTokens,
+        max_tokens: continuationMaxTokens,
         messages,
         session_id: genId('sess-continue'),
         request_id: genId('req'),
@@ -729,44 +772,54 @@
     async function autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt }) {
       let attempts = 0;
 
-      while (attempts < MAX_AUTO_CONTINUES) {
-        const currentAnswer = sanitizeAssistantText(rawResponseText);
-        if (lastFinishReason !== 'stop' || !looksIncompleteAnswer(currentAnswer)) {
-          return;
+      try {
+        while (attempts < MAX_AUTO_CONTINUES) {
+          const currentAnswer = sanitizeAssistantText(rawResponseText);
+          if (!shouldAutoContinue(lastFinishReason, currentAnswer)) {
+            return;
+          }
+
+          attempts += 1;
+          isAutoContinuing = true;
+          setStatus(`CONTINUING ${attempts}/${MAX_AUTO_CONTINUES}`);
+          renderAssistantText();
+
+          const payload = buildContinuationPayload({
+            model,
+            maxTokens,
+            system,
+            prompt,
+            currentAnswer,
+          });
+
+          const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            cache: 'no-store',
+            signal: aborter?.signal,
+          });
+
+          if (!resp.ok) {
+            return;
+          }
+
+          const json = await resp.json();
+          const content = json.choices?.[0]?.message?.content || '';
+          if (!content) {
+            return;
+          }
+
+          lastFinishReason = json.choices?.[0]?.finish_reason || lastFinishReason;
+          rawResponseText += content;
+          isAutoContinuing = false;
+          renderAssistantText();
         }
-
-        attempts += 1;
-        setStatus(`CONTINUING ${attempts}/${MAX_AUTO_CONTINUES}`);
-
-        const payload = buildContinuationPayload({
-          model,
-          maxTokens,
-          system,
-          prompt,
-          currentAnswer,
-        });
-
-        const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          cache: 'no-store',
-          signal: aborter?.signal,
-        });
-
-        if (!resp.ok) {
-          return;
+      } finally {
+        if (isAutoContinuing) {
+          isAutoContinuing = false;
+          renderAssistantText();
         }
-
-        const json = await resp.json();
-        const content = json.choices?.[0]?.message?.content || '';
-        if (!content) {
-          return;
-        }
-
-        lastFinishReason = json.choices?.[0]?.finish_reason || lastFinishReason;
-        rawResponseText += content;
-        renderAssistantText();
       }
     }
 
@@ -1013,6 +1066,8 @@
       output.textContent = '';
       rawResponseText = '';
       lastFinishReason = '-';
+      shouldStickOutputToBottom = true;
+      output.scrollTop = 0;
       ttfbEl.textContent = '-';
       tokEl.textContent = '0';
       finishReasonEl.textContent = '-';
@@ -1051,6 +1106,7 @@
         const reader = resp.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
+        let sawDone = false;
 
         while (true) {
           const { value, done } = await reader.read();
@@ -1071,11 +1127,8 @@
               const data = line.slice(5).trim();
               if (data === '[DONE]') {
                 finishReasonEl.textContent = lastFinishReason;
-                setStatus('DONE');
-                stopBtn.disabled = true;
-                sendBtn.disabled = false;
-                durEl.textContent = `${Math.round(performance.now() - start)} ms`;
-                return;
+                sawDone = true;
+                break;
               }
               try {
                 const json = JSON.parse(data);
@@ -1094,7 +1147,9 @@
                 // ignore partial JSON
               }
             }
+            if (sawDone) break;
           }
+          if (sawDone) break;
         }
 
         await autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt });
@@ -1127,6 +1182,8 @@
       output.textContent = '';
       rawResponseText = '';
       lastFinishReason = '-';
+      shouldStickOutputToBottom = true;
+      output.scrollTop = 0;
       ttfbEl.textContent = '-';
       tokEl.textContent = '0';
       finishReasonEl.textContent = '-';
@@ -1189,6 +1246,9 @@
     });
     stopBtn.addEventListener('click', () => {
       if (aborter) aborter.abort();
+    });
+    output.addEventListener('scroll', () => {
+      shouldStickOutputToBottom = isOutputNearBottom();
     });
 
     modeEl.addEventListener('change', setButtonLabel);

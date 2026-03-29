@@ -15,7 +15,8 @@ public:
     void task_output(const std::weak_ptr<llm_task> llm_task_obj_weak,
                      const std::weak_ptr<StackFlows::llm_channel_obj> llm_channel_weak,
                      const std::string &data,
-                     bool finish);
+                     bool finish,
+                     const std::string &finish_reason);
     void task_user_data(const std::weak_ptr<llm_task> llm_task_obj_weak,
                         const std::weak_ptr<StackFlows::llm_channel_obj> llm_channel_weak,
                         const std::string &object,

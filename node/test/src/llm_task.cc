@@ -35,6 +35,22 @@ static int get_env_int(const char *name, int def_val)
     }
 }
 
+static std::string finish_reason_to_string(FinishReason reason)
+{
+    switch (reason)
+    {
+    case FinishReason::stop:
+        return "stop";
+    case FinishReason::length:
+        return "length";
+    case FinishReason::cancelled:
+        return "cancelled";
+    case FinishReason::error:
+    default:
+        return "error";
+    }
+}
+
 static std::string get_exe_dir()
 {
     char buf[4096];
@@ -412,7 +428,7 @@ void llm_task::inference(const std::string &msg, const std::string &req_id, cons
     }
     if (!engine)
     {
-        out_callback_(std::string(""), true);
+        out_callback_(std::string(""), true, "error");
         return;
     }
 
@@ -524,9 +540,9 @@ void llm_task::inference(const std::string &msg, const std::string &req_id, cons
                     std::string flush = utf8_sanitize(utf8_pending_);
                     utf8_pending_.clear();
                     if (!flush.empty())
-                        out_callback_(flush, false);
+                        out_callback_(flush, false, "");
                 }
-                out_callback_(std::string(""), true);
+                out_callback_(std::string(""), true, finish_reason_to_string(c.finish_reason));
             }
             else if (!c.delta.empty())
             {
@@ -534,7 +550,7 @@ void llm_task::inference(const std::string &msg, const std::string &req_id, cons
                 const size_t n = utf8_valid_prefix_len(utf8_pending_);
                 if (n > 0)
                 {
-                    out_callback_(utf8_pending_.substr(0, n), false);
+                    out_callback_(utf8_pending_.substr(0, n), false, "");
                     utf8_pending_.erase(0, n);
                 }
             }
@@ -550,10 +566,10 @@ void llm_task::inference(const std::string &msg, const std::string &req_id, cons
         }
         if (!ctx->error_message.empty())
         {
-            out_callback_(std::string(""), true);
+            out_callback_(std::string(""), true, "error");
             return;
         }
-        out_callback_(utf8_sanitize(ctx->final_text), true);
+        out_callback_(utf8_sanitize(ctx->final_text), true, finish_reason_to_string(ctx->finish_reason));
         return;
     }
 }

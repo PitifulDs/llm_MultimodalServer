@@ -46,6 +46,22 @@ namespace
             return 0;
         return std::max(1, static_cast<int>((text.size() + 3) / 4));
     }
+
+    FinishReason parse_finish_reason(const json &data, FinishReason fallback = FinishReason::stop)
+    {
+        if (!data.is_object())
+            return fallback;
+        const std::string reason = data.value("finish_reason", "");
+        if (reason == "length")
+            return FinishReason::length;
+        if (reason == "cancelled")
+            return FinishReason::cancelled;
+        if (reason == "error")
+            return FinishReason::error;
+        if (reason == "stop")
+            return FinishReason::stop;
+        return fallback;
+    }
 } // namespace
 
 StackFlowEngine::StackFlowEngine()
@@ -517,6 +533,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                 {
                     const std::string delta = data.value("delta", "");
                     const bool finish = data.value("finish", false);
+                    const FinishReason finish_reason = parse_finish_reason(data);
                     if (!delta.empty())
                     {
                         ctx->EmitDelta(delta);
@@ -527,7 +544,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     {
                         ctx->usage.completion_tokens = estimate_tokens_from_text(ctx->final_text);
                         ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
-                        ctx->EmitFinish(FinishReason::stop);
+                        ctx->EmitFinish(finish_reason);
                         break;
                     }
                 }
@@ -572,14 +589,25 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                 {
                     const auto &data = resp["data"];
                     if (data.is_string())
+                    {
                         ctx->final_text = data.get<std::string>();
+                    }
                     else if (data.is_object())
+                    {
                         ctx->final_text = data.value("delta", "");
+                    }
                 }
                 ctx->usage.completion_tokens = estimate_tokens_from_text(ctx->final_text);
                 ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
                 if (!ctx->finished.load(std::memory_order_acquire))
-                    ctx->EmitFinish(FinishReason::stop);
+                {
+                    FinishReason finish_reason = FinishReason::stop;
+                    if (resp.contains("data"))
+                    {
+                        finish_reason = parse_finish_reason(resp["data"]);
+                    }
+                    ctx->EmitFinish(finish_reason);
+                }
             }
             catch (...)
             {
