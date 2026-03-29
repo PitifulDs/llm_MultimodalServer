@@ -439,11 +439,18 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
 
     bool ok = false;
     const auto root = normalize_existing_root(options.repo_root);
-    const auto target = resolve_repo_path(options, rel_path, &ok);
+    auto target = resolve_repo_path(options, rel_path, &ok);
     if (!ok)
         return "search_code path is outside repository root.";
+
+    bool fallback_to_root = false;
     if (!std::filesystem::exists(target))
-        return "search_code target does not exist: " + target.string();
+    {
+        if (rel_path.empty())
+            return "search_code target does not exist: " + target.string();
+        target = root;
+        fallback_to_root = true;
+    }
 
     const std::vector<std::string> terms = split_code_terms(query);
     if (terms.empty())
@@ -495,7 +502,12 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
     }
 
     if (matches.empty())
+    {
+        if (fallback_to_root)
+            return "search_code warning: path '" + rel_path + "' does not exist; searched repository root instead.\n"
+                   "No code match was found for query: " + query;
         return "No code match was found for query: " + query;
+    }
 
     std::sort(matches.begin(), matches.end(), compare_code_match);
 
@@ -503,6 +515,11 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
         matches.resize(limit);
 
     std::ostringstream oss;
+    if (fallback_to_root)
+    {
+        oss << "search_code warning: path '" << rel_path
+            << "' does not exist; searched repository root instead.\n";
+    }
     oss << "Code matches for query: " << query << "\n";
     for (const auto &m : matches)
         oss << "- file=" << m.file << ":" << m.line << " score=" << m.score << " text=" << m.text << "\n";
