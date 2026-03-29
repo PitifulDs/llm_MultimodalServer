@@ -35,3 +35,5 @@ data/*.sqlite
 # local editor + logs
 .vscode/
 server.log
+__pycache__/
+*.pyc
