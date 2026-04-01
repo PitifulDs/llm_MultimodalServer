@@ -178,7 +178,10 @@ bash scripts/start_agent_demo.sh
 - `models`（模型注册表，按模型名解析 backend / engine / model_path）
 - `llama_model_path`, `llama_n_ctx`, `llama_n_threads`, `llama_n_threads_batch`
 - `default_max_tokens`, `kv_reset_margin`
-- `rag_index_path`, `rag_default_top_k`, `rag_max_context_chars`
+- `rag_index_path`, `rag_vector_index_path`, `rag_chunk_metadata_path`
+- `rag_embeddings_path`, `rag_id_map_path`
+- `rag_default_top_k`, `rag_default_mode`, `rag_default_fusion`, `rag_max_context_chars`
+- `rag_enable_neighbor_expand`, `rag_max_neighbor_count`, `rag_enable_retrieval_debug_api`
 - `serving_backend`（`local` 或 `stackflow`）
 - `stackflow_host`, `stackflow_port`, `stackflow_unit`
 - `stackflow_timeout_ms`, `stackflow_infer_timeout_ms`
@@ -222,25 +225,47 @@ bash scripts/start_agent_demo.sh
 - `ModelRegistry` 仍暂时保留 `*-remote` 的兼容解析分支，保证历史请求不立即中断
 - 后续会在一次单独迁移中移除这层兼容逻辑
 
-**RAG v1**
+**RAG v2**
 
-当前 `POST /v1/chat/completions` 支持可选 RAG，v1 使用 SQLite FTS5 做 lexical retrieval，不引入 embedding / Faiss / reranker。
+当前 `POST /v1/chat/completions` 支持三种模式，且保持 v1 `mode=lexical` 兼容：
+- `lexical`：沿用 SQLite FTS5
+- `vector`：在线 query embedding + 离线向量索引
+- `hybrid`：lexical + vector 检索后做融合，默认 `fusion=rrf`
 
-配置项（`config.json`）:
-- `rag_index_path`：SQLite 索引路径，默认 `data/rag_index.sqlite`
-- `rag_default_top_k`：请求未指定 `rag.top_k` 时的默认值
-- `rag_max_context_chars`：检索片段注入 prompt 的总字符上限
+RAG v2 额外接入了：
+- `/v1/retrieval/search`：只做检索、不调模型，便于前端和调试
+- Agent 工具：`search_kb`、`open_chunk`
+- 流式 metadata：stream 结束前返回 references / retrieval summary
+- 检索增强：exact symbol/path boost、same-file dedup、same-symbol dedup、neighbor expansion
 
-构建索引:
+配置项（`config.json`）：
+- `rag_index_path`：SQLite lexical 索引
+- `rag_vector_index_path`：向量索引清单路径，默认 `data/rag_faiss.index`
+- `rag_chunk_metadata_path`：chunk metadata jsonl
+- `rag_embeddings_path`：离线 embedding 矩阵
+- `rag_id_map_path`：chunk id 映射
+- `rag_default_top_k` / `rag_default_mode` / `rag_default_fusion`
+- `rag_enable_neighbor_expand` / `rag_max_neighbor_count`
+- `rag_enable_retrieval_debug_api`
+- `rag_max_context_chars`
+
+构建 lexical + vector 索引：
 ```bash
 python3 tools/rag/build_index.py --rebuild
+python3 tools/rag/build_vector_index.py --rebuild
 ```
 
-索引脚本会扫描两个知识库：
-- `docs`：`README.md`、`docs/**/*.md`、`serving/http/使用说明.md`
-- `repo_code`：`.h/.hpp/.cc/.cpp/.c/.py/.sh/.json/.md`，跳过 `.git/`、`build/`、二进制和超大文件
+只重建单个知识库也支持：
+```bash
+python3 tools/rag/build_index.py --kb repo_code
+python3 tools/rag/build_vector_index.py --kb docs --rebuild
+```
 
-RAG 请求示例:
+知识库仍为两个：
+- `docs`：`README.md`、`docs/**/*.md`、`serving/http/使用说明.md`
+- `repo_code`：`.h/.hpp/.cc/.cpp/.c/.py/.sh/.json/.md`
+
+RAG 请求示例：
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -H "Content-Type: application/json" \
@@ -251,28 +276,54 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
       "enabled":true,
       "kb":"repo_code",
       "top_k":6,
-      "mode":"lexical",
+      "mode":"hybrid",
+      "lexical_top_k":8,
+      "vector_top_k":8,
+      "fusion":"rrf",
+      "debug":true,
       "return_references":true
     }
   }' | jq
 ```
 
-非流式返回会在原有 OpenAI 响应上增加 `references`：
-```json
-{
-  "references": [
-    {
-      "kb": "repo_code",
-      "path": "serving/http/HttpGateway.cc",
-      "start_line": 1,
-      "end_line": 50,
-      "score": 12.3
-    }
-  ]
-}
+检索调试接口：
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/retrieval/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "kb":"repo_code",
+    "query":"stream metadata references",
+    "mode":"hybrid",
+    "top_k":4,
+    "debug":true
+  }' | jq
 ```
 
-若索引文件不存在，RAG 请求会返回明确错误，不会导致服务崩溃。
+Agent 可显式只开检索工具：
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"qwen3.5-2b",
+    "agent":true,
+    "tools":["search_kb","open_chunk"],
+    "messages":[{"role":"user","content":"先检索知识库，说明 stream metadata references 在哪里。"}]
+  }' | jq
+```
+
+非流式返回会继续携带 `references`，并在 `rag.debug=true` 时增加 `retrieval` summary。流式请求会在 `[DONE]` 前多发一个带 `metadata.references` 和 `metadata.retrieval` 的 chunk。
+
+管理接口：
+- `GET /admin/rag/status`
+- `POST /admin/rag/reload-index`
+
+评测脚本：
+```bash
+python3 tools/rag/eval_retrieval.py --base-url http://127.0.0.1:8080
+python3 tools/rag/eval_answer.py --base-url http://127.0.0.1:8080 --model llama
+```
+
+若索引文件缺失，请求会返回明确错误，不会导致服务崩溃；`mode=lexical` 的旧请求格式仍可直接复用。
 
 **流式请求兼容说明**
 
@@ -404,10 +455,10 @@ rm -f /tmp/llm/*.sock*
 当前提供最小单元测试（不依赖模型文件），用于验证 HTTP 工具函数与参数解析逻辑。
 
 ```bash
-cmake -S tests/unit -B tests/unit/build
-cmake --build tests/unit/build -j
-./tests/unit/build/http_utils_test
-./tests/unit/build/rag_test
+cmake -S . -B build
+cmake --build build --target http_utils_test rag_test -j
+./build/tests/unit/http_utils_test
+./build/tests/unit/rag_test
 python3 tests/unit/rag_chunkers_test.py
 ```
 
@@ -416,6 +467,7 @@ python3 tests/unit/rag_chunkers_test.py
 ```bash
 BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test.sh
 BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag.sh
+BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag_v2.sh
 ```
 
 可选参数：`BASE_URL` / `MODEL` / `TIMEOUT`。

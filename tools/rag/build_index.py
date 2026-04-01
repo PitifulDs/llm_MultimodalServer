@@ -6,7 +6,7 @@ import os
 import sqlite3
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Counter as CounterType, Dict, Iterable, List, Sequence, Tuple
 
 from chunk_code import chunk_code_file
 from chunk_docs import chunk_markdown_file
@@ -20,6 +20,21 @@ DOC_GLOB = "docs/**/*.md"
 CODE_EXTS = {".h", ".hpp", ".cc", ".cpp", ".c", ".py", ".sh", ".json", ".md"}
 EXCLUDED_DIRS = {".git", "build"}
 MAX_FILE_SIZE = 512 * 1024
+VALID_KBS = ("docs", "repo_code")
+
+
+def parse_kbs(values: Sequence[str]) -> Tuple[str, ...]:
+    if not values:
+        return VALID_KBS
+    out: List[str] = []
+    for value in values:
+        if value == "all":
+            return VALID_KBS
+        if value not in VALID_KBS:
+            raise SystemExit(f"unsupported kb: {value}")
+        if value not in out:
+            out.append(value)
+    return tuple(out)
 
 
 def iter_docs_files(repo_root: Path) -> List[Path]:
@@ -56,34 +71,55 @@ def read_text_file(path: Path) -> str | None:
         return None
 
 
-def build_chunks(repo_root: Path) -> Tuple[List[Dict], Counter, Counter]:
-    chunk_counts = Counter()
-    file_counts = Counter()
+def assign_neighbors(chunks: List[Dict]) -> List[Dict]:
+    for idx, chunk in enumerate(chunks):
+        chunk["prev_chunk_id"] = chunks[idx - 1]["chunk_id"] if idx > 0 else ""
+        chunk["next_chunk_id"] = chunks[idx + 1]["chunk_id"] if idx + 1 < len(chunks) else ""
+    return chunks
+
+
+def normalize_file_chunks(chunks: List[Dict]) -> List[Dict]:
+    deduped: List[Dict] = []
+    seen = set()
+    for chunk in chunks:
+        chunk_id = chunk.get("chunk_id", "")
+        if not chunk_id or chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        deduped.append(chunk)
+    return assign_neighbors(deduped)
+
+
+def build_chunks(repo_root: Path, selected_kbs: Sequence[str]) -> Tuple[List[Dict], CounterType[str], CounterType[str]]:
+    chunk_counts: CounterType[str] = Counter()
+    file_counts: CounterType[str] = Counter()
     all_chunks: List[Dict] = []
 
-    for path in iter_docs_files(repo_root):
-        text = read_text_file(path)
-        if text is None:
-            continue
-        rel = path.relative_to(repo_root).as_posix()
-        chunks = chunk_markdown_file(rel, text, kb_name="docs")
-        if not chunks:
-            continue
-        file_counts["docs"] += 1
-        chunk_counts["docs"] += len(chunks)
-        all_chunks.extend(chunks)
+    if "docs" in selected_kbs:
+        for path in iter_docs_files(repo_root):
+            text = read_text_file(path)
+            if text is None:
+                continue
+            rel = path.relative_to(repo_root).as_posix()
+            chunks = normalize_file_chunks(chunk_markdown_file(rel, text, kb_name="docs"))
+            if not chunks:
+                continue
+            file_counts["docs"] += 1
+            chunk_counts["docs"] += len(chunks)
+            all_chunks.extend(chunks)
 
-    for path in iter_repo_code_files(repo_root):
-        text = read_text_file(path)
-        if text is None:
-            continue
-        rel = path.relative_to(repo_root).as_posix()
-        chunks = chunk_code_file(rel, text, kb_name="repo_code")
-        if not chunks:
-            continue
-        file_counts["repo_code"] += 1
-        chunk_counts["repo_code"] += len(chunks)
-        all_chunks.extend(chunks)
+    if "repo_code" in selected_kbs:
+        for path in iter_repo_code_files(repo_root):
+            text = read_text_file(path)
+            if text is None:
+                continue
+            rel = path.relative_to(repo_root).as_posix()
+            chunks = normalize_file_chunks(chunk_code_file(rel, text, kb_name="repo_code"))
+            if not chunks:
+                continue
+            file_counts["repo_code"] += 1
+            chunk_counts["repo_code"] += len(chunks)
+            all_chunks.extend(chunks)
 
     return all_chunks, file_counts, chunk_counts
 
@@ -102,7 +138,9 @@ def create_schema(conn: sqlite3.Connection) -> None:
             end_line INTEGER,
             language TEXT,
             text TEXT NOT NULL,
-            token_estimate INTEGER
+            token_estimate INTEGER,
+            prev_chunk_id TEXT,
+            next_chunk_id TEXT
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -117,17 +155,29 @@ def create_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def write_index(conn: sqlite3.Connection, chunks: Sequence[Dict]) -> None:
-    conn.execute("DELETE FROM chunks")
-    conn.execute("DELETE FROM chunks_fts")
+def delete_existing_kbs(conn: sqlite3.Connection, selected_kbs: Sequence[str]) -> None:
+    for kb_name in selected_kbs:
+        conn.execute("DELETE FROM chunks WHERE kb_name = ?", (kb_name,))
+        conn.execute("DELETE FROM chunks_fts WHERE kb_name = ?", (kb_name,))
+
+
+def write_index(conn: sqlite3.Connection, chunks: Sequence[Dict], selected_kbs: Sequence[str], rebuild: bool) -> None:
+    if rebuild:
+        conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM chunks_fts")
+    else:
+        delete_existing_kbs(conn, selected_kbs)
+
     conn.executemany(
         """
         INSERT INTO chunks (
             chunk_id, kb_name, doc_id, path, title, symbol,
-            start_line, end_line, language, text, token_estimate
+            start_line, end_line, language, text, token_estimate,
+            prev_chunk_id, next_chunk_id
         ) VALUES (
             :chunk_id, :kb_name, :doc_id, :path, :title, :symbol,
-            :start_line, :end_line, :language, :text, :token_estimate
+            :start_line, :end_line, :language, :text, :token_estimate,
+            :prev_chunk_id, :next_chunk_id
         )
         """,
         chunks,
@@ -147,33 +197,36 @@ def main() -> int:
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--output", default="data/rag_index.sqlite")
     parser.add_argument("--rebuild", action="store_true")
+    parser.add_argument("--kb", action="append", choices=(*VALID_KBS, "all"))
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
     output_path = Path(args.output)
     if not output_path.is_absolute():
         output_path = repo_root / output_path
+    selected_kbs = parse_kbs(args.kb or [])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        if not args.rebuild:
-            raise SystemExit(f"index already exists: {output_path} (use --rebuild)")
+    existed_before = output_path.exists()
+    if args.rebuild and existed_before:
         output_path.unlink()
+        existed_before = False
+    chunks, file_counts, chunk_counts = build_chunks(repo_root, selected_kbs)
 
-    chunks, file_counts, chunk_counts = build_chunks(repo_root)
     conn = sqlite3.connect(output_path)
     try:
         create_schema(conn)
-        write_index(conn, chunks)
+        write_index(conn, chunks, selected_kbs, rebuild=args.rebuild or not existed_before)
     finally:
         conn.close()
 
     total_files = sum(file_counts.values())
     total_chunks = len(chunks)
     print(f"index_path={output_path}")
+    print(f"selected_kbs={','.join(selected_kbs)}")
     print(f"total_files={total_files}")
     print(f"total_chunks={total_chunks}")
-    for kb_name in ("docs", "repo_code"):
+    for kb_name in VALID_KBS:
         print(f"{kb_name}_files={file_counts[kb_name]}")
         print(f"{kb_name}_chunks={chunk_counts[kb_name]}")
     return 0

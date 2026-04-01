@@ -88,8 +88,17 @@ namespace
             set_env_from_json(cfg, "session_redis_ttl_seconds", "SESSION_REDIS_TTL_SECONDS");
             set_env_from_json(cfg, "redis_timeout_ms", "REDIS_TIMEOUT_MS");
             set_env_from_json(cfg, "rag_index_path", "RAG_INDEX_PATH");
+            set_env_from_json(cfg, "rag_vector_index_path", "RAG_VECTOR_INDEX_PATH");
+            set_env_from_json(cfg, "rag_chunk_metadata_path", "RAG_CHUNK_METADATA_PATH");
+            set_env_from_json(cfg, "rag_embeddings_path", "RAG_EMBEDDINGS_PATH");
+            set_env_from_json(cfg, "rag_id_map_path", "RAG_ID_MAP_PATH");
             set_env_from_json(cfg, "rag_default_top_k", "RAG_DEFAULT_TOP_K");
             set_env_from_json(cfg, "rag_max_context_chars", "RAG_MAX_CONTEXT_CHARS");
+            set_env_from_json(cfg, "rag_default_mode", "RAG_DEFAULT_MODE");
+            set_env_from_json(cfg, "rag_default_fusion", "RAG_DEFAULT_FUSION");
+            set_env_from_json(cfg, "rag_enable_neighbor_expand", "RAG_ENABLE_NEIGHBOR_EXPAND");
+            set_env_from_json(cfg, "rag_max_neighbor_count", "RAG_MAX_NEIGHBOR_COUNT");
+            set_env_from_json(cfg, "rag_enable_retrieval_debug_api", "RAG_ENABLE_RETRIEVAL_DEBUG_API");
             std::cerr << "[serving-http] config loaded: " << cfg_path << std::endl;
         }
         catch (const std::exception &e)

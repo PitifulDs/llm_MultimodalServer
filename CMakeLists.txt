@@ -9,3 +9,4 @@ project(EdgeLLMInfra LANGUAGES CXX)
 
 add_subdirectory(thirds/llama.cpp)
 add_subdirectory(serving)
+add_subdirectory(tests/unit)

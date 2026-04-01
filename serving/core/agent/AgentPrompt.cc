@@ -51,6 +51,8 @@ std::string BuildToolPrompt(const std::string &agent_mode,
         oss << "- Cite concrete file paths when relevant.\n";
         oss << "- If evidence is incomplete, say so explicitly.\n";
         oss << "Tool usage rules:\n";
+        oss << "- search_kb: use first for repository questions that may benefit from RAG over docs/repo_code. Input should contain kb, query, and may contain top_k or mode.\n";
+        oss << "- open_chunk: use after search_kb when you need the full retrieved chunk. Input should contain chunk_id.\n";
         oss << "- search_code: use for symbols, functions, strings, or call sites. Input should contain query and may contain path or limit.\n";
         oss << "- read_file: use for exact file inspection. Input should contain path and may contain start_line/end_line.\n";
         oss << "- list_files: use for directory structure. Input may contain path or limit.\n";
@@ -74,6 +76,8 @@ std::string BuildToolPrompt(const std::string &agent_mode,
     oss << "{\"action\":\"final\",\"answer\":\"...\"}\n";
     oss << "Never wrap JSON in markdown.\n";
     oss << "Tool usage rules:\n";
+    oss << "- search_kb: input should contain kb and query.\n";
+    oss << "- open_chunk: input should contain chunk_id.\n";
     oss << "- search_docs: input should contain query.\n";
     oss << "- get_server_status: input can be empty.\n";
     oss << "- get_config: input can contain key.\n";

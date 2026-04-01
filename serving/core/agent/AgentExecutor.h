@@ -5,6 +5,7 @@
 #include <string>
 
 #include "serving/core/agent/ToolRegistry.h"
+#include "utils/json.hpp"
 
 struct ServingContext;
 class EngineExecutor;
@@ -19,6 +20,8 @@ public:
         std::string repo_root = ".";
         std::string docs_root = ".";
         std::string config_path = "config.json";
+        std::function<std::string(const nlohmann::json &)> search_kb_handler;
+        std::function<std::string(const nlohmann::json &)> open_chunk_handler;
     };
 
     AgentExecutor(EngineExecutor &executor, Options options);

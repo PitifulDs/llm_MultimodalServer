@@ -98,9 +98,13 @@ namespace http_utils
         {
             refs.push_back({
                 {"kb", hit.chunk.kb_name},
+                {"chunk_id", hit.chunk.chunk_id},
                 {"path", hit.chunk.path},
+                {"symbol", hit.chunk.symbol},
                 {"start_line", hit.chunk.start_line},
                 {"end_line", hit.chunk.end_line},
+                {"lexical_score", hit.lexical_score},
+                {"vector_score", hit.vector_score},
                 {"score", hit.final_score},
             });
         }

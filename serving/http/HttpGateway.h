@@ -51,12 +51,16 @@ public:
     void HandleHealth(const HttpRequest &req, HttpResponse &res);
     void HandleMetrics(const HttpRequest &req, HttpResponse &res);
     void HandleModels(const HttpRequest &req, HttpResponse &res);
+    void HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res);
+    void HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse &res);
+    void HandleAdminRagStatus(const HttpRequest &req, HttpResponse &res);
 
 private:
     void WriteError(HttpResponse &res, int status, const std::string &message,
                     const std::string &type, const std::string &code = "",
                     const std::string &param = "");
     void RecordFinish(FinishReason reason, int64_t dur_ms);
+    void RecordRagMetrics(const ServingContext &ctx);
 
     ThreadPool pool_;                        // 线程池
     StackFlowsClient *sf_client_{nullptr};   // 不持有所有权
@@ -73,6 +77,19 @@ private:
     std::atomic<int64_t> cancelled_requests_{0};
     std::atomic<int64_t> in_flight_{0};
     std::atomic<int64_t> total_latency_ms_{0};
+    std::atomic<int64_t> rag_requests_total_{0};
+    std::atomic<int64_t> rag_requests_docs_total_{0};
+    std::atomic<int64_t> rag_requests_repo_code_total_{0};
+    std::atomic<int64_t> rag_mode_lexical_total_{0};
+    std::atomic<int64_t> rag_mode_vector_total_{0};
+    std::atomic<int64_t> rag_mode_hybrid_total_{0};
+    std::atomic<int64_t> rag_retrieval_latency_ms_total_{0};
+    std::atomic<int64_t> rag_hit_count_total_{0};
+    std::atomic<int64_t> rag_empty_hit_total_{0};
+    std::atomic<int64_t> rag_injected_chars_total_{0};
+    std::atomic<int64_t> rag_vector_search_latency_ms_total_{0};
+    std::atomic<int64_t> rag_lexical_search_latency_ms_total_{0};
+    bool rag_retrieval_debug_api_enabled_{true};
 
     std::mutex gc_mu_;
     std::condition_variable gc_cv_;

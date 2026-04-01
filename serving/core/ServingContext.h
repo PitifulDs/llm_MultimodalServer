@@ -30,6 +30,7 @@ struct Message
 struct StreamChunk
 {
     std::string delta;
+    std::string metadata_json;
     bool is_finished = false; // 是否为“最后一个 chunk”
     FinishReason finish_reason = FinishReason::stop;
 };
@@ -61,6 +62,8 @@ struct ServingContext
     std::vector<std::string> agent_tools;
     RagOptions rag_options;
     std::vector<RetrievalHit> rag_hits;
+    RagRetrievalSummary rag_summary;
+    std::string stream_metadata_json;
 
     // ChatCompletion
     std::vector<Message> messages;
@@ -140,6 +143,14 @@ struct ServingContext
         // stream：发最后一个 chunk
         if (stream && on_chunk)
         {
+            if (!stream_metadata_json.empty())
+            {
+                StreamChunk meta_chunk;
+                meta_chunk.metadata_json = stream_metadata_json;
+                meta_chunk.is_finished = false;
+                on_chunk(meta_chunk);
+            }
+
             if (reason == FinishReason::error)
             {
                 StreamChunk err_chunk;

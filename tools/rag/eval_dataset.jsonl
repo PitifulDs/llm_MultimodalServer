@@ -1,0 +1,4 @@
+{"id":"q1","kb":"repo_code","query":"stream 是在哪里从 body 读取的","expected_paths":["serving/http/NetworkHttpServer.cc"],"expected_symbols":["parse_body_stream_hint"]}
+{"id":"q2","kb":"repo_code","query":"references 字段在哪里拼出来","expected_paths":["serving/http/HttpGateway.cc","serving/http/HttpUtils.h"],"expected_symbols":["HandleChatCompletion","build_rag_references"]}
+{"id":"q3","kb":"repo_code","query":"SessionExecutor 为什么要串行","expected_paths":["serving/core/SessionExecutor.cc","docs/系统架构.md"],"expected_symbols":["Submit"]}
+{"id":"q4","kb":"repo_code","query":"gateway_backends 和 backends 的区别","expected_paths":["serving/http/HttpGateway.cc"],"expected_symbols":["HandleModels"]}

@@ -531,6 +531,18 @@ void RegisterBuiltinTools(ToolRegistry &registry,
                           const BuiltinToolsOptions &options,
                           std::function<std::string()> status_provider)
 {
+    if (options.search_kb_handler)
+    {
+        registry.Register("search_kb", [options](const nlohmann::json &input)
+                          { return truncate_text(options.search_kb_handler(input), options.max_tool_output_chars); });
+    }
+
+    if (options.open_chunk_handler)
+    {
+        registry.Register("open_chunk", [options](const nlohmann::json &input)
+                          { return truncate_text(options.open_chunk_handler(input), options.max_tool_output_chars); });
+    }
+
     registry.Register("search_docs", [options](const nlohmann::json &input)
                       { return search_docs_tool(options, input); });
 

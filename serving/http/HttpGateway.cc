@@ -89,6 +89,21 @@ namespace
         }
     }
 
+    bool get_env_bool(const char *name, bool def)
+    {
+        const char *env = std::getenv(name);
+        if (!env || !*env)
+            return def;
+        std::string value(env);
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch)
+                       { return static_cast<char>(std::tolower(ch)); });
+        if (value == "1" || value == "true" || value == "yes")
+            return true;
+        if (value == "0" || value == "false" || value == "no")
+            return false;
+        return def;
+    }
+
     std::string gen_request_id()
     {
         static std::atomic<uint64_t> seq{0};
@@ -165,8 +180,24 @@ HttpGateway::HttpGateway()
 
     session_mgr_ = std::make_unique<SessionManager>(opt);
 
-    AgentExecutor::Options agent_opt;
     const auto repo_root = detect_repo_root();
+
+    RAGExecutor::Options rag_opt;
+    rag_opt.index_path = get_env_string("RAG_INDEX_PATH", (repo_root / "data/rag_index.sqlite").string().c_str());
+    rag_opt.vector_index_path = get_env_string("RAG_VECTOR_INDEX_PATH", (repo_root / "data/rag_faiss.index").string().c_str());
+    rag_opt.chunk_metadata_path = get_env_string("RAG_CHUNK_METADATA_PATH", (repo_root / "data/rag_chunks.jsonl").string().c_str());
+    rag_opt.vector_embeddings_path = get_env_string("RAG_EMBEDDINGS_PATH", (repo_root / "data/rag_embeddings.npy").string().c_str());
+    rag_opt.vector_id_map_path = get_env_string("RAG_ID_MAP_PATH", (repo_root / "data/rag_id_map.json").string().c_str());
+    rag_opt.default_top_k = get_env_int("RAG_DEFAULT_TOP_K", 6);
+    rag_opt.max_context_chars = static_cast<size_t>(get_env_int("RAG_MAX_CONTEXT_CHARS", 6000));
+    rag_opt.default_mode = get_env_string("RAG_DEFAULT_MODE", "lexical");
+    rag_opt.default_fusion = get_env_string("RAG_DEFAULT_FUSION", "rrf");
+    rag_opt.enable_neighbor_expand = get_env_bool("RAG_ENABLE_NEIGHBOR_EXPAND", true);
+    rag_opt.max_neighbor_count = get_env_int("RAG_MAX_NEIGHBOR_COUNT", 1);
+    rag_executor_ = std::make_unique<RAGExecutor>(std::move(rag_opt));
+    rag_retrieval_debug_api_enabled_ = get_env_bool("RAG_ENABLE_RETRIEVAL_DEBUG_API", true);
+
+    AgentExecutor::Options agent_opt;
     agent_opt.repo_root = repo_root.string();
     agent_opt.docs_root = repo_root.string();
     agent_opt.config_path = (repo_root / "config.json").string();
@@ -174,6 +205,64 @@ HttpGateway::HttpGateway()
     {
         if (*cfg)
             agent_opt.config_path = cfg;
+    }
+    if (rag_executor_)
+    {
+        agent_opt.search_kb_handler = [this](const json &input)
+        {
+            if (!rag_executor_)
+                return std::string("rag executor unavailable.");
+
+            RetrievalRequest request;
+            request.kb = input.value("kb", "repo_code");
+            request.query = input.value("query", "");
+            request.top_k = input.value("top_k", 5);
+            request.mode = input.value("mode", "hybrid");
+            request.debug = true;
+
+            RetrievalResponse response;
+            std::string error;
+            if (!rag_executor_->Search(request, response, error))
+                return error.empty() ? std::string("search_kb failed.") : error;
+
+            std::ostringstream oss;
+            oss << "KB search hits for query: " << request.query << "\n";
+            for (const auto &hit : response.hits)
+            {
+                oss << "- chunk_id=" << hit.chunk.chunk_id
+                    << " path=" << hit.chunk.path
+                    << ":" << hit.chunk.start_line << "-" << hit.chunk.end_line
+                    << " symbol=" << hit.chunk.symbol
+                    << " score=" << hit.final_score << "\n";
+                std::string snippet = hit.chunk.text;
+                std::replace(snippet.begin(), snippet.end(), '\n', ' ');
+                if (snippet.size() > 180)
+                    snippet = snippet.substr(0, 180) + "...";
+                oss << "  snippet=" << snippet << "\n";
+            }
+            return oss.str();
+        };
+        agent_opt.open_chunk_handler = [this](const json &input)
+        {
+            if (!rag_executor_)
+                return std::string("rag executor unavailable.");
+            const std::string chunk_id = input.value("chunk_id", "");
+            if (chunk_id.empty())
+                return std::string("open_chunk requires chunk_id.");
+
+            RagChunk chunk;
+            std::string error;
+            if (!rag_executor_->OpenChunk(chunk_id, chunk, error))
+                return error.empty() ? std::string("chunk not found.") : error;
+
+            std::ostringstream oss;
+            oss << "CHUNK " << chunk.chunk_id << "\n"
+                << "kb=" << chunk.kb_name << " path=" << chunk.path
+                << " lines " << chunk.start_line << "-" << chunk.end_line
+                << " symbol=" << chunk.symbol << "\n"
+                << chunk.text << "\n";
+            return oss.str();
+        };
     }
     agent_executor_ = std::make_unique<AgentExecutor>(executor_, agent_opt);
     agent_executor_->SetStatusProvider([this]()
@@ -193,12 +282,6 @@ HttpGateway::HttpGateway()
             {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)}};
         return out.dump();
     });
-
-    RAGExecutor::Options rag_opt;
-    rag_opt.index_path = get_env_string("RAG_INDEX_PATH", (repo_root / "data/rag_index.sqlite").string().c_str());
-    rag_opt.default_top_k = get_env_int("RAG_DEFAULT_TOP_K", 6);
-    rag_opt.max_context_chars = static_cast<size_t>(get_env_int("RAG_MAX_CONTEXT_CHARS", 6000));
-    rag_executor_ = std::make_unique<RAGExecutor>(std::move(rag_opt));
 
     // Session GC 后台线程（可停止，避免悬空指针）
     gc_thread_ = std::thread([this]()
@@ -268,6 +351,30 @@ void HttpGateway::RecordFinish(FinishReason reason, int64_t dur_ms)
         cancelled_requests_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void HttpGateway::RecordRagMetrics(const ServingContext &ctx)
+{
+    rag_requests_total_.fetch_add(1, std::memory_order_relaxed);
+    if (ctx.rag_options.kb == "docs")
+        rag_requests_docs_total_.fetch_add(1, std::memory_order_relaxed);
+    else if (ctx.rag_options.kb == "repo_code")
+        rag_requests_repo_code_total_.fetch_add(1, std::memory_order_relaxed);
+
+    if (ctx.rag_summary.mode == "lexical")
+        rag_mode_lexical_total_.fetch_add(1, std::memory_order_relaxed);
+    else if (ctx.rag_summary.mode == "vector")
+        rag_mode_vector_total_.fetch_add(1, std::memory_order_relaxed);
+    else if (ctx.rag_summary.mode == "hybrid")
+        rag_mode_hybrid_total_.fetch_add(1, std::memory_order_relaxed);
+
+    rag_retrieval_latency_ms_total_.fetch_add(ctx.rag_summary.retrieval_latency_ms, std::memory_order_relaxed);
+    rag_hit_count_total_.fetch_add(static_cast<int64_t>(ctx.rag_hits.size()), std::memory_order_relaxed);
+    rag_injected_chars_total_.fetch_add(ctx.rag_summary.injected_chars, std::memory_order_relaxed);
+    rag_vector_search_latency_ms_total_.fetch_add(ctx.rag_summary.vector_search_latency_ms, std::memory_order_relaxed);
+    rag_lexical_search_latency_ms_total_.fetch_add(ctx.rag_summary.lexical_search_latency_ms, std::memory_order_relaxed);
+    if (ctx.rag_hits.empty())
+        rag_empty_hit_total_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
@@ -300,7 +407,25 @@ void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
         {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
         {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
         {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)},
-        {"avg_latency_ms", avg_latency_ms}};
+        {"avg_latency_ms", avg_latency_ms},
+        {"rag_requests_total", rag_requests_total_.load(std::memory_order_relaxed)},
+        {"rag_requests_total_by_kb",
+         {
+             {"docs", rag_requests_docs_total_.load(std::memory_order_relaxed)},
+             {"repo_code", rag_requests_repo_code_total_.load(std::memory_order_relaxed)},
+         }},
+        {"rag_mode_total",
+         {
+             {"lexical", rag_mode_lexical_total_.load(std::memory_order_relaxed)},
+             {"vector", rag_mode_vector_total_.load(std::memory_order_relaxed)},
+             {"hybrid", rag_mode_hybrid_total_.load(std::memory_order_relaxed)},
+         }},
+        {"rag_retrieval_latency_ms", rag_retrieval_latency_ms_total_.load(std::memory_order_relaxed)},
+        {"rag_hit_count", rag_hit_count_total_.load(std::memory_order_relaxed)},
+        {"rag_empty_hit_total", rag_empty_hit_total_.load(std::memory_order_relaxed)},
+        {"rag_injected_chars", rag_injected_chars_total_.load(std::memory_order_relaxed)},
+        {"rag_vector_search_latency_ms", rag_vector_search_latency_ms_total_.load(std::memory_order_relaxed)},
+        {"rag_lexical_search_latency_ms", rag_lexical_search_latency_ms_total_.load(std::memory_order_relaxed)}};
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
@@ -340,6 +465,159 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
         {"data", items}
     };
 
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
+void HttpGateway::HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    if (!rag_retrieval_debug_api_enabled_)
+    {
+        WriteError(res, 404, "retrieval debug api disabled", "invalid_request_error", "retrieval_debug_api_disabled");
+        return;
+    }
+    if (!rag_executor_)
+    {
+        WriteError(res, 503, "rag executor unavailable", "service_unavailable_error", "rag_unavailable");
+        return;
+    }
+
+    json body;
+    try
+    {
+        body = json::parse(req.body.empty() ? "{}" : req.body);
+    }
+    catch (...)
+    {
+        WriteError(res, 400, "invalid json", "invalid_request_error", "invalid_json");
+        return;
+    }
+
+    RetrievalRequest request;
+    request.kb = body.value("kb", "repo_code");
+    request.query = body.value("query", "");
+    request.mode = body.value("mode", "lexical");
+    request.top_k = body.value("top_k", 6);
+    request.lexical_top_k = body.value("lexical_top_k", 0);
+    request.vector_top_k = body.value("vector_top_k", 0);
+    request.fusion = body.value("fusion", "rrf");
+    request.debug = body.value("debug", true);
+    if (request.query.empty())
+    {
+        WriteError(res, 400, "query is required", "invalid_request_error", "invalid_query");
+        return;
+    }
+
+    RetrievalResponse response;
+    std::string error;
+    if (!rag_executor_->Search(request, response, error))
+    {
+        const int status = (error.find("not found") != std::string::npos || error.find("not loaded") != std::string::npos) ? 503 : 400;
+        WriteError(res,
+                   status,
+                   error.empty() ? "retrieval search failed" : error,
+                   status == 503 ? "service_unavailable_error" : "invalid_request_error",
+                   "retrieval_search_failed");
+        return;
+    }
+
+    json hits = json::array();
+    for (const auto &hit : response.hits)
+    {
+        hits.push_back({
+            {"chunk_id", hit.chunk.chunk_id},
+            {"path", hit.chunk.path},
+            {"start_line", hit.chunk.start_line},
+            {"end_line", hit.chunk.end_line},
+            {"symbol", hit.chunk.symbol},
+            {"text", hit.chunk.text},
+            {"lexical_score", hit.lexical_score},
+            {"vector_score", hit.vector_score},
+            {"final_score", hit.final_score},
+            {"from_neighbor", hit.from_neighbor},
+        });
+    }
+
+    json out = {
+        {"normalized_query", response.normalized_query},
+        {"mode", response.summary.mode},
+        {"fusion", response.summary.fusion},
+        {"hits", hits},
+    };
+    if (request.debug)
+    {
+        out["summary"] = {
+            {"lexical_hit_count", response.summary.lexical_hit_count},
+            {"vector_hit_count", response.summary.vector_hit_count},
+            {"final_hit_count", response.summary.final_hit_count},
+            {"retrieval_latency_ms", response.summary.retrieval_latency_ms},
+            {"lexical_search_latency_ms", response.summary.lexical_search_latency_ms},
+            {"vector_search_latency_ms", response.summary.vector_search_latency_ms},
+        };
+    }
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));
+    res.End();
+}
+
+void HttpGateway::HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    if (!rag_executor_)
+    {
+        WriteError(res, 503, "rag executor unavailable", "service_unavailable_error", "rag_unavailable");
+        return;
+    }
+
+    std::string error;
+    if (!rag_executor_->Reload(error))
+    {
+        WriteError(res, 500, error.empty() ? "rag reload failed" : error, "internal_error", "rag_reload_failed");
+        return;
+    }
+
+    const auto status = rag_executor_->GetStatus();
+    json out = {
+        {"ok", true},
+        {"index_path", status.index_path},
+        {"docs_chunk_count", status.docs_chunk_count},
+        {"repo_code_chunk_count", status.repo_code_chunk_count},
+        {"vector_index_loaded", status.vector_index_loaded},
+        {"last_loaded_at", status.last_loaded_at},
+    };
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
+void HttpGateway::HandleAdminRagStatus(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    if (!rag_executor_)
+    {
+        WriteError(res, 503, "rag executor unavailable", "service_unavailable_error", "rag_unavailable");
+        return;
+    }
+
+    const auto status = rag_executor_->GetStatus();
+    json out = {
+        {"index_path", status.index_path},
+        {"docs_chunk_count", status.docs_chunk_count},
+        {"repo_code_chunk_count", status.repo_code_chunk_count},
+        {"vector_index_loaded", status.vector_index_loaded},
+        {"last_loaded_at", status.last_loaded_at},
+        {"vector_index_path", status.vector_index_path},
+        {"chunk_metadata_path", status.chunk_metadata_path},
+    };
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
@@ -447,6 +725,8 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
                                                      ctx->EmitFinish(FinishReason::error);
                                                      return;
                                                  }
+                                                 if (ctx->rag_options.enabled)
+                                                     RecordRagMetrics(*ctx);
                                                  if (ctx->use_agent && agent_executor_)
                                                  {
                                                      agent_executor_->Run(ctx);
@@ -531,6 +811,19 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     if (ctx->rag_options.enabled && ctx->rag_options.return_references)
     {
         out["references"] = http_utils::build_rag_references(ctx->rag_hits);
+    }
+    if (ctx->rag_options.enabled && ctx->rag_options.debug)
+    {
+        out["retrieval"] = {
+            {"normalized_query", ctx->rag_summary.normalized_query},
+            {"mode", ctx->rag_summary.mode},
+            {"fusion", ctx->rag_summary.fusion},
+            {"lexical_hit_count", ctx->rag_summary.lexical_hit_count},
+            {"vector_hit_count", ctx->rag_summary.vector_hit_count},
+            {"final_hit_count", ctx->rag_summary.final_hit_count},
+            {"injected_chars", ctx->rag_summary.injected_chars},
+            {"retrieval_latency_ms", ctx->rag_summary.retrieval_latency_ms},
+        };
     }
 
     res.SetHeader("Content-Type", "application/json");
@@ -656,6 +949,8 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
             ctx->EmitFinish(FinishReason::error);
             return;
         }
+        if (ctx->rag_options.enabled)
+            RecordRagMetrics(*ctx);
         if (ctx->use_agent && agent_executor_)
         {
             agent_executor_->Run(ctx);

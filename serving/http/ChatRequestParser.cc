@@ -145,6 +145,62 @@ bool parse_rag_options(const json &body, RagOptions &out, std::string &error_mes
         out.mode = to_lower_copy(rag["mode"].get<std::string>());
     }
 
+    if (rag.contains("lexical_top_k"))
+    {
+        if (!rag["lexical_top_k"].is_number_integer())
+        {
+            error_message = "rag.lexical_top_k must be integer";
+            error_code = "invalid_rag_lexical_top_k";
+            return false;
+        }
+        out.lexical_top_k = rag["lexical_top_k"].get<int>();
+        if (out.lexical_top_k < 0)
+        {
+            error_message = "rag.lexical_top_k must be >= 0";
+            error_code = "invalid_rag_lexical_top_k";
+            return false;
+        }
+    }
+
+    if (rag.contains("vector_top_k"))
+    {
+        if (!rag["vector_top_k"].is_number_integer())
+        {
+            error_message = "rag.vector_top_k must be integer";
+            error_code = "invalid_rag_vector_top_k";
+            return false;
+        }
+        out.vector_top_k = rag["vector_top_k"].get<int>();
+        if (out.vector_top_k < 0)
+        {
+            error_message = "rag.vector_top_k must be >= 0";
+            error_code = "invalid_rag_vector_top_k";
+            return false;
+        }
+    }
+
+    if (rag.contains("fusion"))
+    {
+        if (!rag["fusion"].is_string())
+        {
+            error_message = "rag.fusion must be string";
+            error_code = "invalid_rag_fusion";
+            return false;
+        }
+        out.fusion = to_lower_copy(rag["fusion"].get<std::string>());
+    }
+
+    if (rag.contains("debug"))
+    {
+        if (!rag["debug"].is_boolean())
+        {
+            error_message = "rag.debug must be boolean";
+            error_code = "invalid_rag_debug";
+            return false;
+        }
+        out.debug = rag["debug"].get<bool>();
+    }
+
     if (rag.contains("return_references"))
     {
         if (!rag["return_references"].is_boolean())

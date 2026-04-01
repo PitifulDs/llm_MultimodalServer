@@ -5,6 +5,7 @@
 #include <string>
 
 #include "serving/core/agent/ToolRegistry.h"
+#include "utils/json.hpp"
 
 struct BuiltinToolsOptions
 {
@@ -12,6 +13,8 @@ struct BuiltinToolsOptions
     std::string docs_root = ".";
     std::string config_path = "config.json";
     size_t max_tool_output_chars = 4000;
+    std::function<std::string(const nlohmann::json &)> search_kb_handler;
+    std::function<std::string(const nlohmann::json &)> open_chunk_handler;
 };
 
 void RegisterBuiltinTools(ToolRegistry &registry,

@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 project(unit_tests)
 
 add_executable(http_utils_test http_utils_test.cpp)
-
 target_include_directories(http_utils_test PRIVATE ../../)
 
 find_path(SQLITE3_INCLUDE_DIR sqlite3.h)
@@ -19,14 +18,6 @@ endif()
 
 add_executable(rag_test
     rag_test.cpp
-    ../../serving/http/ChatRequestParser.cc
-    ../../serving/core/SessionManager.cc
-    ../../serving/core/RedisSessionStore.cc
-    ../../serving/rag/SqliteIndexStore.cc
-    ../../serving/rag/Retriever.cc
-    ../../serving/rag/PromptAssembler.cc
-    ../../serving/rag/RAGExecutor.cc
 )
-
 target_include_directories(rag_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
-target_link_libraries(rag_test PRIVATE ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
+target_link_libraries(rag_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})

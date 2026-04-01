@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 
-PY_SYMBOL_RE = re.compile(r"^\s*(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+PY_SYMBOL_RE = re.compile(r"^\s*(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
 SH_SYMBOL_RE = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{")
 CXX_TYPE_RE = re.compile(r"^\s*(class|struct|enum|namespace)\s+([A-Za-z_][A-Za-z0-9_]*)")
 CXX_FUNC_RE = re.compile(r"([A-Za-z_~][A-Za-z0-9_:~]*)\s*\(")
@@ -43,6 +43,10 @@ def language_for_path(path: str) -> str:
     }.get(suffix, suffix.lstrip(".") or "text")
 
 
+def indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
 def detect_symbol_starts(lines: Sequence[str], suffix: str) -> List[Tuple[int, str]]:
     symbols: List[Tuple[int, str]] = []
     for idx, line in enumerate(lines):
@@ -50,7 +54,7 @@ def detect_symbol_starts(lines: Sequence[str], suffix: str) -> List[Tuple[int, s
         if suffix == ".py":
             match = PY_SYMBOL_RE.match(line)
             if match:
-                symbols.append((lineno, match.group(2)))
+                symbols.append((lineno, match.group(1)))
             continue
 
         if suffix == ".sh":
@@ -84,20 +88,22 @@ def detect_symbol_starts(lines: Sequence[str], suffix: str) -> List[Tuple[int, s
     return symbols
 
 
-def fixed_line_chunks(rel_path: str,
-                      lines: Sequence[str],
-                      kb_name: str,
-                      symbol: str = "",
-                      start_line: int = 1,
-                      max_lines: int = 80,
-                      overlap: int = 10) -> List[dict]:
+def fixed_line_chunks(
+    rel_path: str,
+    lines: Sequence[str],
+    kb_name: str,
+    symbol: str = "",
+    start_line: int = 1,
+    max_lines: int = 80,
+    overlap: int = 10,
+) -> List[dict]:
     chunks: List[dict] = []
     if not lines:
         return chunks
 
     step = max(1, max_lines - overlap)
     for offset in range(0, len(lines), step):
-        block = list(lines[offset:offset + max_lines])
+        block = list(lines[offset : offset + max_lines])
         if not block:
             continue
         chunk_start = start_line + offset
@@ -105,41 +111,109 @@ def fixed_line_chunks(rel_path: str,
         text = "\n".join(block).strip()
         if not text:
             continue
-        chunks.append({
-            "chunk_id": make_chunk_id(kb_name, rel_path, chunk_start, chunk_end, symbol),
-            "kb_name": kb_name,
-            "doc_id": rel_path,
-            "path": rel_path,
-            "title": Path(rel_path).name,
-            "symbol": symbol,
-            "start_line": chunk_start,
-            "end_line": chunk_end,
-            "language": language_for_path(rel_path),
-            "text": text,
-            "token_estimate": estimate_tokens(text),
-        })
+        chunks.append(
+            {
+                "chunk_id": make_chunk_id(kb_name, rel_path, chunk_start, chunk_end, symbol),
+                "kb_name": kb_name,
+                "doc_id": rel_path,
+                "path": rel_path,
+                "title": Path(rel_path).name,
+                "symbol": symbol,
+                "start_line": chunk_start,
+                "end_line": chunk_end,
+                "language": language_for_path(rel_path),
+                "text": text,
+                "token_estimate": estimate_tokens(text),
+                "prev_chunk_id": "",
+                "next_chunk_id": "",
+            }
+        )
     return chunks
 
 
-def chunk_code_file(path: str,
-                    text: str,
-                    kb_name: str = "repo_code",
-                    max_lines: int = 80,
-                    overlap: int = 10) -> List[dict]:
+def find_python_end(lines: Sequence[str], start_idx: int, next_symbol_line: int) -> int:
+    start_indent = indent_of(lines[start_idx])
+    end_idx = len(lines) - 1
+    for idx in range(start_idx + 1, len(lines)):
+        line = lines[idx]
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if idx + 1 >= next_symbol_line and indent_of(line) <= start_indent:
+            end_idx = idx - 1
+            break
+        if indent_of(line) <= start_indent and PY_SYMBOL_RE.match(line):
+            end_idx = idx - 1
+            break
+    return max(start_idx, end_idx)
+
+
+def find_shell_end(lines: Sequence[str], start_idx: int, next_symbol_line: int) -> int:
+    depth = 0
+    started = False
+    end_idx = min(len(lines) - 1, next_symbol_line - 1)
+    for idx in range(start_idx, len(lines)):
+        line = lines[idx]
+        depth += line.count("{")
+        depth -= line.count("}")
+        if "{" in line:
+            started = True
+        if started and depth <= 0 and idx > start_idx:
+            end_idx = idx
+            break
+    return max(start_idx, end_idx)
+
+
+def find_cxx_end(lines: Sequence[str], start_idx: int, next_symbol_line: int) -> int:
+    depth = 0
+    saw_body = False
+    end_idx = min(len(lines) - 1, next_symbol_line - 1)
+    for idx in range(start_idx, len(lines)):
+        line = lines[idx]
+        depth += line.count("{")
+        depth -= line.count("}")
+        if "{" in line:
+            saw_body = True
+        if saw_body and depth <= 0 and idx > start_idx:
+            end_idx = idx
+            break
+    return max(start_idx, end_idx)
+
+
+def attach_neighbors(chunks: List[dict]) -> List[dict]:
+    for idx, chunk in enumerate(chunks):
+        chunk["prev_chunk_id"] = chunks[idx - 1]["chunk_id"] if idx > 0 else ""
+        chunk["next_chunk_id"] = chunks[idx + 1]["chunk_id"] if idx + 1 < len(chunks) else ""
+    return chunks
+
+
+def chunk_code_file(
+    path: str,
+    text: str,
+    kb_name: str = "repo_code",
+    max_lines: int = 80,
+    overlap: int = 10,
+) -> List[dict]:
     rel_path = Path(path).as_posix()
     lines = text.splitlines()
     suffix = Path(rel_path).suffix.lower()
     symbols = detect_symbol_starts(lines, suffix)
 
     if not symbols:
-        return fixed_line_chunks(rel_path, lines, kb_name, "", 1, max_lines, overlap)
+        return attach_neighbors(fixed_line_chunks(rel_path, lines, kb_name, "", 1, max_lines, overlap))
 
     chunks: List[dict] = []
     for idx, (start_line, symbol) in enumerate(symbols):
-        end_line = len(lines)
-        if idx + 1 < len(symbols):
-            end_line = symbols[idx + 1][0] - 1
-        block = lines[start_line - 1:end_line]
+        next_symbol_line = symbols[idx + 1][0] if idx + 1 < len(symbols) else len(lines) + 1
+        start_idx = start_line - 1
+        if suffix == ".py":
+            end_idx = find_python_end(lines, start_idx, next_symbol_line)
+        elif suffix == ".sh":
+            end_idx = find_shell_end(lines, start_idx, next_symbol_line)
+        else:
+            end_idx = find_cxx_end(lines, start_idx, next_symbol_line)
+
+        block = lines[start_idx : end_idx + 1]
         if len(block) > max_lines:
             chunks.extend(fixed_line_chunks(rel_path, block, kb_name, symbol, start_line, max_lines, overlap))
             continue
@@ -147,20 +221,24 @@ def chunk_code_file(path: str,
         text_block = "\n".join(block).strip()
         if not text_block:
             continue
-        chunks.append({
-            "chunk_id": make_chunk_id(kb_name, rel_path, start_line, end_line, symbol),
-            "kb_name": kb_name,
-            "doc_id": rel_path,
-            "path": rel_path,
-            "title": Path(rel_path).name,
-            "symbol": symbol,
-            "start_line": start_line,
-            "end_line": end_line,
-            "language": language_for_path(rel_path),
-            "text": text_block,
-            "token_estimate": estimate_tokens(text_block),
-        })
-    return chunks
+        chunks.append(
+            {
+                "chunk_id": make_chunk_id(kb_name, rel_path, start_line, end_idx + 1, symbol),
+                "kb_name": kb_name,
+                "doc_id": rel_path,
+                "path": rel_path,
+                "title": Path(rel_path).name,
+                "symbol": symbol,
+                "start_line": start_line,
+                "end_line": end_idx + 1,
+                "language": language_for_path(rel_path),
+                "text": text_block,
+                "token_estimate": estimate_tokens(text_block),
+                "prev_chunk_id": "",
+                "next_chunk_id": "",
+            }
+        )
+    return attach_neighbors(chunks)
 
 
 def _main(paths: Iterable[str]) -> int:

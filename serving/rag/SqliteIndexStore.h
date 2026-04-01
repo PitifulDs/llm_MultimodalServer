@@ -18,6 +18,12 @@ public:
                 std::vector<RetrievalHit> &hits_out,
                 std::string &error_out) const;
 
+    bool GetChunkById(const std::string &chunk_id,
+                      RagChunk &chunk_out,
+                      std::string &error_out) const;
+
+    int CountChunks(const std::string &kb, std::string &error_out) const;
+
 private:
     std::string index_path_;
 };

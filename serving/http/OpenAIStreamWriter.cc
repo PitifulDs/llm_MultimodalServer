@@ -123,6 +123,18 @@ void OpenAIStreamWriter::OnChunk(const StreamChunk &chunk)
     j["created"] = static_cast<int>(std::time(nullptr));
     j["model"] = model_;
 
+    if (!chunk.metadata_json.empty())
+    {
+        try
+        {
+            j["metadata"] = json::parse(chunk.metadata_json);
+        }
+        catch (...)
+        {
+            j["metadata"] = {{"raw", chunk.metadata_json}};
+        }
+    }
+
     json choice;
     choice["index"] = 0;
 

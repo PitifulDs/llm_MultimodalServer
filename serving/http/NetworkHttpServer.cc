@@ -363,6 +363,12 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
+    if (method == "GET" && url == "/admin/rag/status")
+    {
+        gateway_->HandleAdminRagStatus(req, *res_ptr);
+        return;
+    }
+
     if (method != "POST")
     {
         write_json_error(res_ptr, 405, "Method Not Allowed", "invalid_request_error", "method_not_allowed");
@@ -383,6 +389,14 @@ void NetworkHttpServer::handleHttpRequest(
             gateway_->HandleChatCompletion(req, *res_ptr);
         }
 
+    }
+    else if (method == "POST" && url == "/v1/retrieval/search")
+    {
+        gateway_->HandleRetrievalSearch(req, *res_ptr);
+    }
+    else if (method == "POST" && url == "/admin/rag/reload-index")
+    {
+        gateway_->HandleAdminRagReloadIndex(req, *res_ptr);
     }
     else
     {

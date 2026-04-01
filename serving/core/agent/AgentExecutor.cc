@@ -40,6 +40,8 @@ std::vector<std::string> default_tools_for_mode(const std::string &mode)
     if (mode == kCodeAnalysisMode)
     {
         return {
+            "search_kb",
+            "open_chunk",
             "search_code",
             "read_file",
             "list_files",
@@ -158,6 +160,53 @@ bool parse_first_search_code_match(const std::string &tool_output,
     return false;
 }
 
+bool parse_first_search_kb_hit(const std::string &tool_output,
+                               std::string &chunk_id_out,
+                               std::string &path_out,
+                               int &start_line_out,
+                               int &end_line_out,
+                               std::string &symbol_out)
+{
+    std::istringstream iss(tool_output);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        const std::string prefix = "- chunk_id=";
+        if (line.rfind(prefix, 0) != 0)
+            continue;
+
+        const auto path_pos = line.find(" path=");
+        if (path_pos == std::string::npos)
+            continue;
+        chunk_id_out = line.substr(prefix.size(), path_pos - prefix.size());
+
+        const auto symbol_pos = line.find(" symbol=", path_pos + 6);
+        if (symbol_pos == std::string::npos)
+            continue;
+        const std::string path_part = line.substr(path_pos + 6, symbol_pos - (path_pos + 6));
+        const auto colon_pos = path_part.rfind(':');
+        const auto dash_pos = path_part.rfind('-');
+        if (colon_pos == std::string::npos || dash_pos == std::string::npos || dash_pos < colon_pos)
+            continue;
+
+        path_out = path_part.substr(0, colon_pos);
+        try
+        {
+            start_line_out = std::stoi(path_part.substr(colon_pos + 1, dash_pos - colon_pos - 1));
+            const auto score_pos = line.find(" score=", symbol_pos + 8);
+            const size_t symbol_end = score_pos == std::string::npos ? std::string::npos : score_pos - (symbol_pos + 8);
+            end_line_out = std::stoi(path_part.substr(dash_pos + 1));
+            symbol_out = line.substr(symbol_pos + 8, symbol_end);
+        }
+        catch (...)
+        {
+            continue;
+        }
+        return !chunk_id_out.empty() && !path_out.empty();
+    }
+    return false;
+}
+
 std::vector<std::string> extract_evidence_lines(const std::string &tool_output,
                                                 size_t limit = 4)
 {
@@ -256,6 +305,41 @@ std::string append_evidence_if_needed(const std::string &answer,
     return oss.str();
 }
 
+std::string build_fast_rag_answer(const std::string &query,
+                                  const std::string &path,
+                                  int start_line,
+                                  int end_line,
+                                  const std::string &symbol,
+                                  const std::string &chunk_text)
+{
+    std::string snippet = truncate_text(chunk_text, 240);
+    std::replace(snippet.begin(), snippet.end(), '\n', ' ');
+
+    std::ostringstream oss;
+    oss << "我先检索了知识库。";
+    if (!symbol.empty())
+        oss << "最相关命中是 " << path << ":" << start_line << "-" << end_line << " 的 `" << symbol << "`。";
+    else
+        oss << "最相关命中是 " << path << ":" << start_line << "-" << end_line << "。";
+    if (!query.empty())
+        oss << "它与问题“" << truncate_text(query, 60) << "”直接相关。";
+    if (!snippet.empty())
+        oss << "片段摘要：" << snippet;
+    return oss.str();
+}
+
+bool should_use_tool_only_fast_path(const std::vector<std::string> &allowed_tools)
+{
+    if (allowed_tools.empty())
+        return false;
+    for (const auto &tool : allowed_tools)
+    {
+        if (tool != "search_kb" && tool != "open_chunk")
+            return false;
+    }
+    return std::find(allowed_tools.begin(), allowed_tools.end(), "search_kb") != allowed_tools.end();
+}
+
 void maybe_append_code_context(const ToolRegistry &registry,
                                const std::string &agent_mode,
                                const std::string &tool_name,
@@ -293,6 +377,8 @@ AgentExecutor::AgentExecutor(EngineExecutor &executor, Options options)
     builtin_options.docs_root = options_.docs_root;
     builtin_options.config_path = options_.config_path;
     builtin_options.max_tool_output_chars = options_.max_tool_output_chars;
+    builtin_options.search_kb_handler = options_.search_kb_handler;
+    builtin_options.open_chunk_handler = options_.open_chunk_handler;
 
     RegisterBuiltinTools(tool_registry_, builtin_options, [this]()
                          {
@@ -358,6 +444,43 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         ctx->on_chunk(chunk);
     };
 
+    if (agent_mode == kCodeAnalysisMode && should_use_tool_only_fast_path(allowed_tools))
+    {
+        const std::string auto_query = fallback_search_query.empty() ? std::string("EdgeLLM-Serving") : fallback_search_query;
+        nlohmann::json search_input = {
+            {"kb", "repo_code"},
+            {"query", truncate_text(auto_query, 160)},
+            {"top_k", 3},
+            {"mode", "hybrid"}};
+
+        emit_progress("[agent] fast-path: search_kb\n");
+        const std::string search_output = tool_registry_.Execute("search_kb", search_input);
+        std::string chunk_id;
+        std::string path;
+        std::string symbol;
+        int start_line = 0;
+        int end_line = 0;
+        if (!parse_first_search_kb_hit(search_output, chunk_id, path, start_line, end_line, symbol))
+        {
+            ctx->error_message = "AgentExecutor: search_kb fast-path produced no usable hit";
+            ctx->EmitFinish(FinishReason::error);
+            return;
+        }
+
+        std::string chunk_text;
+        if (is_tool_allowed(allowed_tools, "open_chunk"))
+        {
+            emit_progress("[agent] fast-path: open_chunk\n");
+            chunk_text = tool_registry_.Execute("open_chunk", {{"chunk_id", chunk_id}});
+        }
+
+        const std::string answer = build_fast_rag_answer(auto_query, path, start_line, end_line, symbol, chunk_text);
+        LOG(INFO) << "[agent] req=" << ctx->request_id << " fast_path=search_kb_open_chunk";
+        ctx->EmitDelta(answer);
+        ctx->EmitFinish(FinishReason::stop);
+        return;
+    }
+
     for (int step = 0; step < max_steps; ++step)
     {
         if (ctx->cancelled.load(std::memory_order_acquire))
@@ -417,7 +540,7 @@ void AgentExecutor::Run(const std::shared_ptr<ServingContext> &ctx)
         step_ctx->inference_backend = ctx->inference_backend;
         step_ctx->is_chat = true;
         step_ctx->stream = false;
-        step_ctx->session = nullptr;
+        step_ctx->session = ctx->session;
         trim_agent_messages(step_messages,
                             fixed_prefix_count,
                             kAgentModelInputMaxMessages,
