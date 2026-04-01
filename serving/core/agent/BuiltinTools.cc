@@ -61,10 +61,13 @@ std::vector<std::string> split_terms(const std::string &query)
     std::vector<std::string> terms;
     std::istringstream iss(query);
     std::string term;
+    static const std::set<std::string> stopwords = {
+        "的", "是", "在", "里", "怎么", "如何", "哪里", "哪一层", "哪个", "什么",
+        "and", "the", "is", "in", "of", "to", "for", "what", "where", "how"};
     while (iss >> term)
     {
         term = to_lower_copy(term);
-        if (!term.empty())
+        if (!term.empty() && stopwords.find(term) == stopwords.end())
             terms.push_back(term);
     }
     return terms;
@@ -98,6 +101,26 @@ std::vector<std::string> split_code_terms(const std::string &query)
 {
     std::vector<std::string> generic = split_terms(query);
     std::vector<std::string> preferred;
+    auto camel_to_snake = [](const std::string &token)
+    {
+        std::string out;
+        for (size_t i = 0; i < token.size(); ++i)
+        {
+            const unsigned char ch = static_cast<unsigned char>(token[i]);
+            if (std::isupper(ch) != 0)
+            {
+                if (!out.empty())
+                    out.push_back('_');
+                out.push_back(static_cast<char>(std::tolower(ch)));
+            }
+            else
+            {
+                out.push_back(static_cast<char>(std::tolower(ch)));
+            }
+        }
+        return out;
+    };
+
     std::istringstream iss(query);
     std::string token;
     while (iss >> token)
@@ -107,7 +130,19 @@ std::vector<std::string> split_code_terms(const std::string &query)
             continue;
         if (!looks_like_code_symbol(token))
             continue;
-        preferred.push_back(to_lower_copy(token));
+        const std::string lower = to_lower_copy(token);
+        preferred.push_back(lower);
+        const std::string snake = camel_to_snake(token);
+        if (!snake.empty() && snake != lower)
+            preferred.push_back(snake);
+        std::string compact;
+        if (lower.find('_') != std::string::npos)
+        {
+            compact = lower;
+            compact.erase(std::remove(compact.begin(), compact.end(), '_'), compact.end());
+        }
+        if (!compact.empty() && compact != lower)
+            preferred.push_back(compact);
     }
 
     auto dedupe = [](std::vector<std::string> items)
@@ -226,6 +261,32 @@ bool is_code_file(const std::filesystem::path &path)
     return exts.find(ext) != exts.end() || path.filename() == "CMakeLists.txt";
 }
 
+std::string extract_symbol_from_line(const std::string &line)
+{
+    static const std::vector<std::string> prefixes = {
+        "class ", "struct ", "enum class ", "enum ", "void ", "int ", "bool ",
+        "std::string ", "size_t ", "static ", "inline ", "const "};
+
+    std::string text = trim_copy(line);
+    const auto paren = text.find('(');
+    if (paren != std::string::npos)
+    {
+        const auto before = trim_copy(text.substr(0, paren));
+        const auto sep = before.find_last_of(" :*&");
+        return sep == std::string::npos ? before : before.substr(sep + 1);
+    }
+
+    for (const auto &prefix : prefixes)
+    {
+        if (text.rfind(prefix, 0) != 0)
+            continue;
+        text = text.substr(prefix.size());
+        const auto end = text.find_first_of(" :{<");
+        return end == std::string::npos ? text : text.substr(0, end);
+    }
+    return "";
+}
+
 struct DocMatch
 {
     std::filesystem::path path;
@@ -246,12 +307,17 @@ struct CodeMatch
     int line = 0;
     int score = 0;
     std::string text;
+    std::string symbol;
 };
 
 bool compare_code_match(const CodeMatch &a, const CodeMatch &b)
 {
     if (a.score != b.score)
         return a.score > b.score;
+    const bool a_impl = a.file.find(".cc") != std::string::npos || a.file.find(".cpp") != std::string::npos || a.file.find(".c:") != std::string::npos;
+    const bool b_impl = b.file.find(".cc") != std::string::npos || b.file.find(".cpp") != std::string::npos || b.file.find(".c:") != std::string::npos;
+    if (a_impl != b_impl)
+        return a_impl;
     if (a.file != b.file)
         return a.file < b.file;
     return a.line < b.line;
@@ -471,17 +537,58 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
         {
             ++lineno;
             const std::string lower_line = to_lower_copy(line);
+            std::error_code rel_ec;
+            const auto rel_path = std::filesystem::relative(path, root, rel_ec);
+            const std::string rel = rel_ec ? path.string() : rel_path.string();
+            const std::string lower_rel = to_lower_copy(rel);
             int score = 0;
+            int matched_terms = 0;
             for (const auto &term : terms)
             {
-                if (lower_line.find(term) != std::string::npos)
-                    ++score;
+                if (term.empty())
+                    continue;
+                const bool line_hit = lower_line.find(term) != std::string::npos;
+                const bool path_hit = lower_rel.find(term) != std::string::npos;
+                const bool base_hit = to_lower_copy(path.filename().string()).find(term) != std::string::npos;
+                if (line_hit || path_hit)
+                {
+                    ++matched_terms;
+                    score += 3;
+                    if (line_hit)
+                        score += 2;
+                    if (path_hit)
+                        score += 2;
+                }
+                if (base_hit)
+                    score += 4;
             }
             if (score == 0)
                 continue;
-            std::error_code ec;
-            auto rel = std::filesystem::relative(path, root, ec);
-            matches.push_back({ec ? path.string() : rel.string(), lineno, score, line});
+
+            if (matched_terms == static_cast<int>(terms.size()) && !terms.empty())
+                score += 4;
+            if (lower_line.find(to_lower_copy(query)) != std::string::npos)
+                score += 6;
+            if (lower_rel.find("serving/") == 0)
+                score += 3;
+            if (lower_rel.find("serving/http/") == 0 || lower_rel.find("serving/core/agent/") == 0 || lower_rel.find("serving/rag/") == 0)
+                score += 2;
+            if (lower_rel.find("thirds/") == 0 && query.find("thirds") == std::string::npos && query.find("llama.cpp") == std::string::npos)
+                score -= 8;
+            if (lower_rel.find("docs/") == 0 && query.find("docs") == std::string::npos && query.find("readme") == std::string::npos)
+                score -= 4;
+            if (lower_rel.find("cmakelists.txt") != std::string::npos)
+                score -= 6;
+            if (path.extension() == ".h" || path.extension() == ".hpp" || path.extension() == ".hh")
+                score -= 1;
+            if (path.extension() == ".cc" || path.extension() == ".cpp" || path.extension() == ".c")
+                score += 2;
+            if (lower_line.find("::") != std::string::npos || lower_line.find("void ") != std::string::npos || lower_line.find("class ") != std::string::npos)
+                score += 1;
+
+            if (score <= 0)
+                continue;
+            matches.push_back({rel, lineno, score, line, extract_symbol_from_line(line)});
         }
     };
 
@@ -496,8 +603,6 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
         {
             if (it->is_regular_file())
                 scan_file(it->path());
-            if (static_cast<int>(matches.size()) >= limit)
-                break;
         }
     }
 
@@ -522,7 +627,12 @@ std::string search_code_tool(const BuiltinToolsOptions &options, const nlohmann:
     }
     oss << "Code matches for query: " << query << "\n";
     for (const auto &m : matches)
-        oss << "- file=" << m.file << ":" << m.line << " score=" << m.score << " text=" << m.text << "\n";
+    {
+        oss << "- file=" << m.file << ":" << m.line << " score=" << m.score;
+        if (!m.symbol.empty())
+            oss << " symbol=" << m.symbol;
+        oss << " text=" << m.text << "\n";
+    }
     return truncate_text(oss.str(), options.max_tool_output_chars);
 }
 } // namespace

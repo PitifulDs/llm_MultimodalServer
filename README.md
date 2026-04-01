@@ -325,6 +325,138 @@ python3 tools/rag/eval_answer.py --base-url http://127.0.0.1:8080 --model llama
 
 若索引文件缺失，请求会返回明确错误，不会导致服务崩溃；`mode=lexical` 的旧请求格式仍可直接复用。
 
+**Code Analysis Agent V1**
+
+`agent_mode=code_analysis` 现在走稳定的 `planner + evidence + formatter` 主链路，不再只靠模型自由决定工具。它的目标不是“万能 agent”，而是“能稳定分析当前仓库代码”的只读分析能力。
+
+当前特性：
+- 支持模块职责、调用链、函数/类行为、接口/配置定位、流式链路定位、排障类问题
+- 优先走 deterministic tool strategy，先检索再精读，最后输出结构化结论
+- 所有证据统一映射为 `CodeEvidence`
+- 非流式 debug 可直接返回 `agent_trace / evidence / agent_result`
+- 新增 `POST /v1/agent/debug`，方便前端和评测脚本直接调试 planner 过程
+
+默认工具优先级：
+- `search_kb`
+- `open_chunk`
+- `search_code`
+- `read_file`
+- `list_files`
+- `search_docs` / `get_config` / `get_server_status`
+
+支持的问题类型：
+- 模块职责
+- 调用链 / 依赖关系
+- 函数 / 类做什么
+- 接口 / 配置 / 流式逻辑在哪里
+- 带证据的排障问题
+
+默认执行原则：
+- 不一上来读整文件
+- 先粗召回，再精读上下文
+- 先拿证据，再给结论
+- 没证据不下强结论
+- 回答里尽量先给结论，再给分析、证据、风险和下一步
+
+与普通 chat / RAG 的区别：
+- 普通 chat 直接走模型
+- RAG 是把检索结果注入 prompt
+- `code_analysis` 是 agent 先多步取证，再输出结构化结论，且响应里保留 `evidence`
+
+请求字段：
+- `agent_debug`: 返回 `agent_trace`
+- `agent_output_format`: `text | structured`
+- `agent_include_trace`: 非 debug 模式下也可显式返回 trace
+- `tools`: 可选工具白名单；如果不传，会自动填充 `code_analysis` 默认工具集
+- `max_steps`: 最大 planner 步数，解析阶段会限制在 `8` 以内
+
+structured output 示例：
+```json
+{
+  "summary": "针对“HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的”，最相关实现位于 serving/http/HttpGateway.cc:642-700。",
+  "analysis": [
+    "工具链：search_code -> read_file",
+    "serving/http/HttpGateway.cc:642-700 展示了请求如何进入 AgentExecutor。"
+  ],
+  "evidence": [
+    {
+      "path": "serving/http/HttpGateway.cc",
+      "start_line": 642,
+      "end_line": 700,
+      "symbol": "HttpGateway::HandleChatCompletion",
+      "why_relevant": "这里展示了 agent 请求如何进入 AgentExecutor。"
+    }
+  ],
+  "risks": [
+    "如果没有继续 read_file，结论可能只停留在搜索命中。"
+  ],
+  "next_steps": [
+    "继续围绕首个证据文件扩展上下文。"
+  ]
+}
+```
+
+非流式 `chat/completions` debug 返回里会额外附带：
+- `agent_result`
+- `evidence`
+- `agent_trace`
+
+`chat/completions` 示例：
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"llama",
+    "agent":true,
+    "agent_mode":"code_analysis",
+    "agent_debug":true,
+    "agent_output_format":"structured",
+    "tools":["search_kb","open_chunk","search_code","read_file"],
+    "messages":[
+      {"role":"user","content":"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？"}
+    ]
+  }' | jq
+```
+
+调试接口：
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/agent/debug" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"llama",
+    "mode":"code_analysis",
+    "debug":true,
+    "query":"references 是在哪里拼出来的"
+  }' | jq
+```
+
+返回里会包含：
+- `planner_steps`
+- `evidence`
+- `final_answer`
+- `content`
+
+可直接跑的验证脚本：
+```bash
+bash scripts/smoke_test_agent_code_analysis.sh
+python3 tools/agent/eval_code_analysis.py --base-url http://127.0.0.1:8080 --model llama
+```
+
+当前内置评测集：
+- 位置：`tools/agent/eval_dataset.jsonl`
+- 样例数：20
+- 覆盖：`HttpGateway` / `SessionExecutor` 关系、`references` 拼装位置、`stream metadata` 输出层、`search_kb/open_chunk` 使用方式、`rag mode=hybrid` 主链路等
+
+最新一轮小评测结果：
+- `path_hit = 20/20`
+- `symbol_hit = 20/20`
+- `answer_term_hit = 20/20`
+- `evidence_present = 20/20`
+
+更多说明见：
+- `docs/智能体使用说明.md`
+- `docs/API调用示例.md`
+
 **流式请求兼容说明**
 
 - OpenAI 兼容方式：在 JSON body 里携带 `"stream": true`

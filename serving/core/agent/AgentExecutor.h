@@ -9,6 +9,8 @@
 
 struct ServingContext;
 class EngineExecutor;
+class CodeAnalysisPlanner;
+class CodeAnalysisEvidenceStore;
 
 class AgentExecutor
 {
@@ -30,6 +32,13 @@ public:
     void Run(const std::shared_ptr<ServingContext> &ctx);
 
 private:
+    void RunCodeAnalysis(const std::shared_ptr<ServingContext> &ctx,
+                         const std::vector<std::string> &allowed_tools,
+                         int max_steps);
+    void RunGenericAgent(const std::shared_ptr<ServingContext> &ctx,
+                         const std::vector<std::string> &allowed_tools,
+                         int max_steps);
+
     EngineExecutor &executor_;
     Options options_;
     ToolRegistry tool_registry_;

@@ -9,6 +9,7 @@
 #include <condition_variable>
 
 #include "glog/logging.h"
+#include "serving/core/agent/code_analysis/CodeAnalysisTypes.h"
 #include "serving/rag/Chunk.h"
 struct Session;
 class ModelEngine;
@@ -60,6 +61,12 @@ struct ServingContext
     std::string agent_mode;
     int agent_max_steps = 0;
     std::vector<std::string> agent_tools;
+    bool agent_debug = false;
+    bool agent_include_trace = false;
+    std::string agent_output_format = "text";
+    std::vector<AgentTraceStep> agent_trace;
+    std::vector<CodeEvidence> agent_evidence;
+    nlohmann::json agent_structured_output = nlohmann::json::object();
     RagOptions rag_options;
     std::vector<RetrievalHit> rag_hits;
     RagRetrievalSummary rag_summary;

@@ -52,6 +52,7 @@ public:
     void HandleMetrics(const HttpRequest &req, HttpResponse &res);
     void HandleModels(const HttpRequest &req, HttpResponse &res);
     void HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res);
+    void HandleAgentDebug(const HttpRequest &req, HttpResponse &res);
     void HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse &res);
     void HandleAdminRagStatus(const HttpRequest &req, HttpResponse &res);
 

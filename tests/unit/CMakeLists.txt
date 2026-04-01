@@ -21,3 +21,9 @@ add_executable(rag_test
 )
 target_include_directories(rag_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
 target_link_libraries(rag_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
+
+add_executable(code_analysis_agent_test
+    code_analysis_agent_test.cpp
+)
+target_include_directories(code_analysis_agent_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
+target_link_libraries(code_analysis_agent_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})

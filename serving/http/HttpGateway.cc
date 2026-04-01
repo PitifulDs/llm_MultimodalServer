@@ -323,6 +323,9 @@ void HttpGateway::WriteError(HttpResponse &res, int status, const std::string &m
                              const std::string &param)
 {
     res.SetStatus(status);
+    res.SetStatus(200, "OK");
+    res.SetStatus(200, "OK");
+    res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
 
@@ -559,6 +562,148 @@ void HttpGateway::HandleRetrievalSearch(const HttpRequest &req, HttpResponse &re
             {"vector_search_latency_ms", response.summary.vector_search_latency_ms},
         };
     }
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));
+    res.End();
+}
+
+void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
+{
+    const auto start_time = std::chrono::steady_clock::now();
+    total_requests_.fetch_add(1, std::memory_order_relaxed);
+    in_flight_.fetch_add(1, std::memory_order_relaxed);
+
+    json body;
+    try
+    {
+        body = json::parse(req.body.empty() ? "{}" : req.body);
+    }
+    catch (...)
+    {
+        WriteError(res, 400, "invalid json", "invalid_request_error", "invalid_json");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    const std::string query = body.value("query", "");
+    if (query.empty())
+    {
+        WriteError(res, 400, "query is required", "invalid_request_error", "invalid_query");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    std::string mode = body.value("mode", "code_analysis");
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char ch)
+                   { return static_cast<char>(std::tolower(ch)); });
+    if (mode != "code_analysis")
+    {
+        WriteError(res, 400, "only code_analysis mode is supported by /v1/agent/debug", "invalid_request_error", "invalid_mode");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    const std::string request_id = gen_request_id();
+    auto ctx = std::make_shared<ServingContext>();
+    ctx->request_id = request_id;
+    ctx->session_id = body.value("session_id", request_id);
+    ctx->model = body.value("model", get_default_model());
+    ctx->is_chat = true;
+    ctx->stream = false;
+    ctx->use_agent = true;
+    ctx->agent_mode = "code_analysis";
+    ctx->agent_debug = body.value("debug", true);
+    ctx->agent_include_trace = true;
+    ctx->agent_output_format = body.value("agent_output_format", std::string("structured"));
+    ctx->agent_max_steps = std::max(1, std::min(body.value("max_steps", 4), 8));
+    ctx->messages = {{"user", query}};
+    ctx->session = session_mgr_->getOrCreate(ctx->session_id, ctx->model, "");
+    ctx->params["max_tokens"] = std::to_string(std::max(64, body.value("max_tokens", 256)));
+    if (body.contains("tools") && body["tools"].is_array())
+    {
+        for (const auto &item : body["tools"])
+        {
+            if (item.is_string())
+                ctx->agent_tools.push_back(item.get<std::string>());
+        }
+    }
+
+    ctx->on_finish = [this, ctx, start_time](FinishReason r)
+    {
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(r, dur_ms);
+        LOG(INFO) << "[agent-debug] done req=" << ctx->request_id
+                  << " dur_ms=" << dur_ms
+                  << " reason=" << finish_reason_to_str(r);
+    };
+
+    res.SetOnClose([ctx]
+                   {
+                       ctx->cancelled.store(true, std::memory_order_release);
+                       ctx->EmitFinish(FinishReason::cancelled); });
+
+    bool accepted = session_executor_.Submit(ctx->session, [this, ctx]
+                                             {
+                                                 if (ctx->use_agent && agent_executor_)
+                                                 {
+                                                     agent_executor_->Run(ctx);
+                                                     return;
+                                                 }
+                                                 ctx->error_message = "agent executor unavailable";
+                                                 ctx->EmitFinish(FinishReason::error);
+                                             });
+    if (!accepted)
+    {
+        ctx->error_message = "SessionExecutor: session queue full, session=" + ctx->session_id;
+        ctx->params["error_code"] = "overloaded";
+        ctx->EmitFinish(FinishReason::error);
+    }
+
+    ctx->WaitFinishOrCancel([&res]
+                            { return res.IsAlive(); }, std::chrono::milliseconds(100));
+
+    if (!res.IsAlive())
+        return;
+
+    if (!ctx->error_message.empty() || ctx->finish_reason == FinishReason::error)
+    {
+        WriteError(res, 500, ctx->error_message.empty() ? "agent debug failed" : ctx->error_message, "internal_error", "agent_debug_failed");
+        return;
+    }
+
+    json planner_steps = json::array();
+    for (const auto &item : ctx->agent_trace)
+        planner_steps.push_back(ToJson(item));
+
+    json evidence = json::array();
+    for (const auto &item : ctx->agent_evidence)
+        evidence.push_back(ToJson(item));
+
+    json out = {
+        {"mode", ctx->agent_mode},
+        {"query", query},
+        {"planner_steps", planner_steps},
+        {"evidence", evidence},
+        {"final_answer", ctx->agent_structured_output.empty() ? json{{"content", ctx->final_text}} : ctx->agent_structured_output},
+        {"content", ctx->final_text},
+        {"usage",
+         {{"prompt_tokens", ctx->usage.prompt_tokens},
+          {"completion_tokens", ctx->usage.completion_tokens},
+          {"total_tokens", ctx->usage.total_tokens}}}};
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
@@ -825,7 +970,27 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
             {"retrieval_latency_ms", ctx->rag_summary.retrieval_latency_ms},
         };
     }
+    if (ctx->use_agent && ctx->agent_mode == "code_analysis")
+    {
+        if (!ctx->agent_structured_output.empty())
+            out["agent_result"] = ctx->agent_structured_output;
+        if (!ctx->agent_evidence.empty())
+        {
+            json evidence = json::array();
+            for (const auto &item : ctx->agent_evidence)
+                evidence.push_back(ToJson(item));
+            out["evidence"] = evidence;
+        }
+        if (ctx->agent_debug || ctx->agent_include_trace)
+        {
+            json trace = json::array();
+            for (const auto &item : ctx->agent_trace)
+                trace.push_back(ToJson(item));
+            out["agent_trace"] = trace;
+        }
+    }
 
+    res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
     res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));

@@ -81,6 +81,27 @@ std::vector<std::string> get_agent_tools(const json &body)
     return tools;
 }
 
+bool get_agent_debug(const json &body)
+{
+    return body.contains("agent_debug") && body["agent_debug"].is_boolean() && body["agent_debug"].get<bool>();
+}
+
+bool get_agent_include_trace(const json &body)
+{
+    return body.contains("agent_include_trace") && body["agent_include_trace"].is_boolean() && body["agent_include_trace"].get<bool>();
+}
+
+std::string get_agent_output_format(const json &body)
+{
+    if (!body.contains("agent_output_format") || !body["agent_output_format"].is_string())
+        return "text";
+
+    std::string format = to_lower_copy(body["agent_output_format"].get<std::string>());
+    if (format != "structured")
+        return "text";
+    return format;
+}
+
 bool parse_rag_options(const json &body, RagOptions &out, std::string &error_message, std::string &error_code)
 {
     out = RagOptions{};
@@ -275,6 +296,9 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     ctx->agent_mode = ctx->use_agent ? get_agent_mode(body) : std::string();
     ctx->agent_max_steps = get_agent_max_steps(body);
     ctx->agent_tools = get_agent_tools(body);
+    ctx->agent_debug = ctx->use_agent ? get_agent_debug(body) : false;
+    ctx->agent_include_trace = ctx->use_agent ? (ctx->agent_debug || get_agent_include_trace(body)) : false;
+    ctx->agent_output_format = ctx->use_agent ? get_agent_output_format(body) : std::string("text");
 
     std::string rag_error_message;
     std::string rag_error_code;

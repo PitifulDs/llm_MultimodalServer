@@ -394,6 +394,10 @@ void NetworkHttpServer::handleHttpRequest(
     {
         gateway_->HandleRetrievalSearch(req, *res_ptr);
     }
+    else if (method == "POST" && url == "/v1/agent/debug")
+    {
+        gateway_->HandleAgentDebug(req, *res_ptr);
+    }
     else if (method == "POST" && url == "/admin/rag/reload-index")
     {
         gateway_->HandleAdminRagReloadIndex(req, *res_ptr);

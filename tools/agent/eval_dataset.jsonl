@@ -1,0 +1,20 @@
+{"id":"ca-001","query":"HttpGateway 和 SessionExecutor 的关系是什么","expected_paths":["serving/http/HttpGateway.cc","serving/core/SessionExecutor.cc"],"expected_symbols":["HandleChatCompletion","Submit"],"expected_terms":["SessionExecutor","Submit"]}
+{"id":"ca-002","query":"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的","expected_paths":["serving/http/HttpGateway.cc","serving/core/agent/AgentExecutor.cc"],"expected_symbols":["HandleChatCompletion","Run"],"expected_terms":["agent_executor_","Run"]}
+{"id":"ca-003","query":"references 是在哪里拼出来的","expected_paths":["serving/http/HttpGateway.cc"],"expected_symbols":["HandleChatCompletion"],"expected_terms":["references"]}
+{"id":"ca-004","query":"stream metadata 在哪一层输出","expected_paths":["serving/http/OpenAIStreamWriter.cc"],"expected_symbols":["OnChunk"],"expected_terms":["metadata"]}
+{"id":"ca-005","query":"search_kb 和 open_chunk 怎么被 agent 用","expected_paths":["serving/core/agent/AgentExecutor.cc","serving/core/agent/code_analysis/CodeAnalysisPlanner.cc"],"expected_symbols":["RunCodeAnalysis","NextStep"],"expected_terms":["search_kb","open_chunk"]}
+{"id":"ca-006","query":"rag mode=hybrid 的主链路在哪","expected_paths":["serving/rag/RAGExecutor.cc","serving/rag/Retriever.cc"],"expected_symbols":["Apply","Search"],"expected_terms":["hybrid"]}
+{"id":"ca-007","query":"/v1/retrieval/search 是在哪处理的","expected_paths":["serving/http/HttpGateway.cc"],"expected_symbols":["HandleRetrievalSearch"],"expected_terms":["/v1/retrieval/search"]}
+{"id":"ca-008","query":"open_chunk 的 HTTP 侧实现在哪里","expected_paths":["serving/http/HttpGateway.cc"],"expected_symbols":["open_chunk_handler"],"expected_terms":["open_chunk"]}
+{"id":"ca-009","query":"search_code 工具在哪里实现","expected_paths":["serving/core/agent/BuiltinTools.cc"],"expected_symbols":["search_code_tool"],"expected_terms":["search_code"]}
+{"id":"ca-010","query":"read_file 工具在哪里实现","expected_paths":["serving/core/agent/BuiltinTools.cc"],"expected_symbols":["read_file_tool"],"expected_terms":["read_file"]}
+{"id":"ca-011","query":"list_files 工具在哪里实现","expected_paths":["serving/core/agent/BuiltinTools.cc"],"expected_symbols":["list_files_tool"],"expected_terms":["list_files"]}
+{"id":"ca-012","query":"agent trace 是在哪里挂到响应里的","expected_paths":["serving/http/HttpGateway.cc","serving/core/ServingContext.h"],"expected_symbols":["HandleChatCompletion"],"expected_terms":["agent_trace"]}
+{"id":"ca-013","query":"agent_debug 和 agent_output_format 是在哪里解析的","expected_paths":["serving/http/ChatRequestParser.cc"],"expected_symbols":["ParseChatRequestBody"],"expected_terms":["agent_debug","agent_output_format"]}
+{"id":"ca-014","query":"code_analysis 的问题分类规则在哪里","expected_paths":["serving/core/agent/code_analysis/CodeAnalysisHeuristics.cc"],"expected_symbols":["ClassifyCodeAnalysisQuestion"],"expected_terms":["ClassifyCodeAnalysisQuestion"]}
+{"id":"ca-015","query":"evidence dedup 是在哪里做的","expected_paths":["serving/core/agent/code_analysis/CodeAnalysisEvidence.cc"],"expected_symbols":["AddEvidence"],"expected_terms":["chunk_id","symbol"]}
+{"id":"ca-016","query":"structured final answer 是在哪里格式化的","expected_paths":["serving/core/agent/code_analysis/CodeAnalysisFormatter.cc"],"expected_symbols":["Build","ToStructuredText"],"expected_terms":["summary","evidence"]}
+{"id":"ca-017","query":"planner 的 deterministic tool strategy 在哪里","expected_paths":["serving/core/agent/code_analysis/CodeAnalysisPlanner.cc"],"expected_symbols":["NextStep","PickInitialStep"],"expected_terms":["deterministic","search_kb"]}
+{"id":"ca-018","query":"/v1/agent/debug 是在哪里处理的","expected_paths":["serving/http/HttpGateway.cc","serving/http/NetworkHttpServer.cc"],"expected_symbols":["HandleAgentDebug"],"expected_terms":["/v1/agent/debug"]}
+{"id":"ca-019","query":"ServingContext 里 agent evidence 和 trace 放在哪里","expected_paths":["serving/core/ServingContext.h"],"expected_symbols":[],"expected_terms":["agent_trace","agent_evidence"]}
+{"id":"ca-020","query":"code_analysis 的默认工具链是什么","expected_paths":["serving/core/agent/AgentExecutor.cc"],"expected_symbols":[],"expected_terms":["search_kb","open_chunk","search_code","read_file"]}
