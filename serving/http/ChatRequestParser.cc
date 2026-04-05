@@ -51,7 +51,9 @@ std::string get_agent_mode(const json &body)
     std::string mode = to_lower_copy(body["agent_mode"].get<std::string>());
     if (mode == "assistant" || mode == "code" || mode == "code_agent")
         mode = "code_analysis";
-    if (mode != "code_analysis")
+    if (mode == "web" || mode == "research")
+        mode = "web_research";
+    if (mode != "code_analysis" && mode != "web_research")
         return "code_analysis";
     return mode;
 }

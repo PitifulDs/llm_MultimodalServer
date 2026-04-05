@@ -35,6 +35,9 @@ private:
     void RunCodeAnalysis(const std::shared_ptr<ServingContext> &ctx,
                          const std::vector<std::string> &allowed_tools,
                          int max_steps);
+    void RunWebResearch(const std::shared_ptr<ServingContext> &ctx,
+                        const std::vector<std::string> &allowed_tools,
+                        int max_steps);
     void RunGenericAgent(const std::shared_ptr<ServingContext> &ctx,
                          const std::vector<std::string> &allowed_tools,
                          int max_steps);

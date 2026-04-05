@@ -50,6 +50,16 @@ bool contains_any(const std::string &text, const std::vector<std::string> &terms
     return false;
 }
 
+bool is_smart_pointer_topic(const std::string &lower)
+{
+    return lower.find("智能指针") != std::string::npos ||
+           lower.find("smart pointer") != std::string::npos ||
+           lower.find("shared_ptr") != std::string::npos ||
+           lower.find("unique_ptr") != std::string::npos ||
+           lower.find("weak_ptr") != std::string::npos ||
+           lower.find("shared_from_this") != std::string::npos;
+}
+
 bool looks_like_symbol(const std::string &token)
 {
     if (token.find("::") != std::string::npos)
@@ -405,12 +415,97 @@ std::vector<ParsedDocMatch> ParseDocMatches(const std::string &tool_output)
     return matches;
 }
 
+std::vector<ParsedWebSearchHit> ParseWebSearchHits(const std::string &tool_output)
+{
+    std::vector<ParsedWebSearchHit> hits;
+    std::istringstream iss(tool_output);
+    std::string line;
+    ParsedWebSearchHit current;
+    bool has_current = false;
+    while (std::getline(iss, line))
+    {
+        if (line.rfind("- title=", 0) == 0)
+        {
+            if (has_current)
+                hits.push_back(current);
+
+            current = ParsedWebSearchHit{};
+            has_current = true;
+
+            const auto url_pos = line.find(" url=");
+            if (url_pos == std::string::npos)
+                continue;
+            current.title = trim_copy(line.substr(8, url_pos - 8));
+            current.url = trim_copy(line.substr(url_pos + 5));
+            continue;
+        }
+
+        if (has_current && line.find("snippet=") != std::string::npos)
+            current.snippet = trim_copy(line.substr(line.find("snippet=") + 8));
+    }
+
+    if (has_current)
+        hits.push_back(current);
+    return hits;
+}
+
+bool ParseFetchedUrlOutput(const std::string &tool_output, ParsedFetchedUrl &out)
+{
+    std::istringstream iss(tool_output);
+    std::string line;
+    if (!std::getline(iss, line))
+        return false;
+    if (trim_copy(line) != "WEB_PAGE")
+        return false;
+
+    out = ParsedFetchedUrl{};
+    bool in_text = false;
+    std::ostringstream text;
+    while (std::getline(iss, line))
+    {
+        if (!in_text)
+        {
+            if (line.rfind("title=", 0) == 0)
+            {
+                out.title = trim_copy(line.substr(6));
+                continue;
+            }
+            if (line.rfind("canonical_url=", 0) == 0)
+            {
+                out.canonical_url = trim_copy(line.substr(14));
+                continue;
+            }
+            if (line.rfind("url=", 0) == 0)
+            {
+                out.url = trim_copy(line.substr(4));
+                continue;
+            }
+            if (line.rfind("text=", 0) == 0)
+            {
+                text << line.substr(5);
+                in_text = true;
+                continue;
+            }
+        }
+        else
+        {
+            if (text.tellp() > 0)
+                text << "\n";
+            text << line;
+        }
+    }
+
+    out.text = text.str();
+    return !out.url.empty() || !out.canonical_url.empty() || !out.title.empty() || !out.text.empty();
+}
+
 bool ToolOutputLooksEmpty(const std::string &tool_output)
 {
     const std::string lower = to_lower_copy(tool_output);
     return lower.empty() ||
            lower.find("no code match") != std::string::npos ||
            lower.find("no documentation match") != std::string::npos ||
+           lower.find("no web result") != std::string::npos ||
            lower.find("requires") != std::string::npos ||
            lower.find("not found") != std::string::npos ||
            lower.find("unavailable") != std::string::npos;
@@ -429,6 +524,8 @@ std::string BuildPrimarySearchQuery(const std::string &question,
                                     const CodeAnalysisQuestionHints &hints)
 {
     const std::string lower = to_lower_copy(question);
+    if (is_smart_pointer_topic(lower))
+        return "智能指针 shared_ptr unique_ptr weak_ptr shared_from_this make_shared make_unique";
     if (lower.find("/v1/retrieval/search") != std::string::npos)
         return "HandleRetrievalSearch";
     if (lower.find("/v1/agent/debug") != std::string::npos)
@@ -490,6 +587,8 @@ std::string InferPreferredSearchPath(const std::string &question,
         return hints.primary_directory;
 
     const std::string lower = to_lower_copy(question);
+    if (is_smart_pointer_topic(lower))
+        return "";
     if (lower.find("servingcontext") != std::string::npos)
         return "serving/core/ServingContext.h";
     if (lower.find("httpgateway") != std::string::npos ||

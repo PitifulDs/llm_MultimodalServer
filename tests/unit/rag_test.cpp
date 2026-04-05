@@ -309,6 +309,8 @@ int run_agent_tool_tests(RAGExecutor &rag_exec)
     RegisterBuiltinTools(registry, options, []() { return std::string("{}"); });
     EXPECT_TRUE(registry.Has("search_kb"));
     EXPECT_TRUE(registry.Has("open_chunk"));
+    EXPECT_TRUE(registry.Has("search_web"));
+    EXPECT_TRUE(registry.Has("fetch_url"));
     const auto search_output = registry.Execute("search_kb", {{"kb", "repo_code"}, {"query", "stream metadata"}, {"top_k", 2}, {"mode", "hybrid"}});
     EXPECT_TRUE(search_output.find("c2") != std::string::npos || search_output.find("c3") != std::string::npos);
     const auto chunk_output = registry.Execute("open_chunk", {{"chunk_id", "c2"}});

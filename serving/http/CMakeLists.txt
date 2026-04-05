@@ -39,6 +39,7 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/serving/rag/RAGExecutor.cc
     ${CMAKE_SOURCE_DIR}/serving/rag/vector/EmbeddingProvider.cc
     ${CMAKE_SOURCE_DIR}/serving/rag/vector/FaissIndexStore.cc
+    ${CMAKE_SOURCE_DIR}/thirds/llama.cpp/vendor/cpp-httplib/httplib.cpp
 )
 
 target_include_directories(serving_core

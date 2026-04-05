@@ -18,15 +18,16 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
                                                 const std::string &question,
                                                 CodeAnalysisQuestionType question_type)
 {
-    (void)tool_input;
     size_t added = 0;
 
     if (tool_name == "search_kb")
     {
+        const std::string kb_name = tool_input.is_object() ? tool_input.value("kb", "repo_code") : std::string("repo_code");
         for (const auto &hit : ParseSearchKbHits(tool_output))
         {
             CodeEvidence evidence;
             evidence.source_type = "kb";
+            evidence.reference_source = kb_name == "docs" ? "docs" : "repo_code";
             evidence.chunk_id = hit.chunk_id;
             evidence.path = hit.path;
             evidence.start_line = hit.start_line;
@@ -47,6 +48,7 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
         {
             CodeEvidence evidence;
             evidence.source_type = "kb";
+            evidence.reference_source = chunk.kb_name == "docs" ? "docs" : "repo_code";
             evidence.chunk_id = chunk.chunk_id;
             evidence.path = chunk.path;
             evidence.start_line = chunk.start_line;
@@ -66,6 +68,7 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
         {
             CodeEvidence evidence;
             evidence.source_type = "search_code";
+            evidence.reference_source = "repo_code";
             evidence.path = match.path;
             evidence.start_line = match.line;
             evidence.end_line = match.line;
@@ -85,6 +88,7 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
         {
             CodeEvidence evidence;
             evidence.source_type = "read_file";
+            evidence.reference_source = "repo_code";
             evidence.path = excerpt.path;
             evidence.start_line = excerpt.start_line;
             evidence.end_line = excerpt.end_line;
@@ -105,6 +109,7 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
             {
                 CodeEvidence evidence;
                 evidence.source_type = "docs";
+                evidence.reference_source = "docs";
                 evidence.path = match.path;
                 evidence.snippet = match.snippet;
                 evidence.score = static_cast<double>(match.score);
@@ -116,11 +121,49 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
 
         CodeEvidence evidence;
         evidence.source_type = tool_name == "get_config" ? "config" : "docs";
+        evidence.reference_source = "docs";
         evidence.path = tool_name == "get_server_status" ? "runtime" : "";
         evidence.snippet = TrimCodeAnalysisText(tool_output, 260);
         evidence.score = 1.0;
         evidence.why_relevant = BuildWhyRelevant(tool_name, question, question_type, "", evidence.path);
         added += AddEvidence(std::move(evidence));
+        return added;
+    }
+
+    if (tool_name == "search_web")
+    {
+        for (const auto &hit : ParseWebSearchHits(tool_output))
+        {
+            CodeEvidence evidence;
+            evidence.source_type = "web_search";
+            evidence.reference_source = "web";
+            evidence.title = hit.title;
+            evidence.url = hit.url;
+            evidence.snippet = hit.snippet;
+            evidence.score = 0.8;
+            evidence.why_relevant = BuildWhyRelevant(tool_name, question, question_type, hit.title, hit.url);
+            added += AddEvidence(std::move(evidence));
+        }
+        return added;
+    }
+
+    if (tool_name == "fetch_url")
+    {
+        ParsedFetchedUrl page;
+        if (ParseFetchedUrlOutput(tool_output, page))
+        {
+            CodeEvidence evidence;
+            evidence.source_type = "web";
+            evidence.reference_source = "web";
+            evidence.title = page.title;
+            evidence.url = page.canonical_url.empty() ? page.url : page.canonical_url;
+            evidence.path = evidence.url;
+            evidence.snippet = TrimCodeAnalysisText(page.text, 260);
+            evidence.score = 1.2;
+            evidence.why_relevant = BuildWhyRelevant(tool_name, question, question_type, page.title, evidence.url);
+            added += AddEvidence(std::move(evidence));
+        }
+        return added;
     }
 
     return added;
@@ -178,7 +221,8 @@ size_t CodeAnalysisEvidenceStore::AddEvidence(CodeEvidence evidence)
                                 existing.start_line == evidence.start_line &&
                                 existing.end_line == evidence.end_line;
         const bool same_symbol = !evidence.symbol.empty() && existing.symbol == evidence.symbol;
-        if (!same_chunk && !same_range && !same_symbol)
+        const bool same_url = !evidence.url.empty() && existing.url == evidence.url;
+        if (!same_chunk && !same_range && !same_symbol && !same_url)
             continue;
 
         if (existing.snippet.size() < evidence.snippet.size())
@@ -188,6 +232,9 @@ size_t CodeAnalysisEvidenceStore::AddEvidence(CodeEvidence evidence)
         existing.score = std::max(existing.score, evidence.score);
         existing.symbol = choose_symbol(existing.symbol, evidence.symbol);
         existing.path = choose_symbol(existing.path, evidence.path);
+        existing.title = choose_symbol(existing.title, evidence.title);
+        existing.url = choose_symbol(existing.url, evidence.url);
+        existing.reference_source = choose_symbol(existing.reference_source, evidence.reference_source);
         if (existing.start_line == 0)
             existing.start_line = evidence.start_line;
         if (existing.end_line == 0)
@@ -229,6 +276,10 @@ std::string CodeAnalysisEvidenceStore::BuildWhyRelevant(const std::string &tool_
 
     if (tool_name == "search_docs")
         return "这是文档侧证据，可辅助定位实现。";
+    if (tool_name == "search_web")
+        return "这是外部网页搜索命中，可用于补充仓库外知识或最新信息。";
+    if (tool_name == "fetch_url")
+        return "这是网页正文抽取结果，可作为外部事实依据。";
     if (!path.empty())
         return "这里与问题直接相关。";
     return "这是与问题相关的辅助证据。";
