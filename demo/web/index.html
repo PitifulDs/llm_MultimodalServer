@@ -230,6 +230,82 @@
       margin-top: 10px;
     }
 
+    .refs-card {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .refs-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .refs-box[hidden] {
+      display: none !important;
+    }
+
+    .refs-empty {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .refs-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .ref-item {
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(10, 16, 31, 0.48);
+      border: 1px solid var(--border);
+    }
+
+    .ref-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .ref-title {
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .ref-meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+
+    .ref-snippet {
+      margin-top: 8px;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .ref-link {
+      color: var(--accent-2);
+      text-decoration: none;
+    }
+
+    .ref-link:hover {
+      text-decoration: underline;
+    }
+
     .badge {
       color: #0b0f1a;
       background: var(--accent-2);
@@ -377,27 +453,43 @@
             </div>
           </div>
 
-          <div id="agentPanel" class="agent-panel" hidden>
-            <div class="row">
-              <div>
-                <label>Max Steps</label>
-                <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
-              </div>
-              <div>
-                <label>Agent Preset</label>
-                <select id="agentPreset">
-                  <option value="" selected>Custom</option>
-                  <option value="analysis">Code Analysis</option>
-                  <option value="status">Server Status</option>
-                  <option value="config">Default Model & Config</option>
-                  <option value="docs">Streaming & Docs</option>
-                </select>
-              </div>
-            </div>
+	          <div id="agentPanel" class="agent-panel" hidden>
+	            <div class="row">
+	              <div>
+	                <label>Agent Mode</label>
+	                <select id="agentMode">
+	                  <option value="code_analysis" selected>Code Analysis</option>
+	                  <option value="web_research">Web Research</option>
+	                </select>
+	              </div>
+	              <div>
+	                <label>Max Steps</label>
+	                <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
+	              </div>
+	            </div>
+	            <div class="row">
+	              <div>
+	                <label>Agent Preset</label>
+	                <select id="agentPreset">
+	                  <option value="" selected>Custom</option>
+	                  <option value="analysis">Code Analysis</option>
+	                  <option value="research">Web Research</option>
+	                  <option value="status">Server Status</option>
+	                  <option value="config">Default Model & Config</option>
+	                  <option value="docs">Streaming & Docs</option>
+	                </select>
+	              </div>
+	              <div>
+	                <label>Mode Hint</label>
+	                <div id="agentModeHint" class="hint" style="margin-top:10px;">
+	                  Repo-focused analysis with local tools only.
+	                </div>
+	              </div>
+	            </div>
 
-            <label>Agent Tools</label>
-            <input
-              id="agentTools"
+	            <label>Agent Tools</label>
+	            <input
+	              id="agentTools"
               value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
               placeholder="Comma-separated tools"
             />
@@ -438,20 +530,32 @@
         </div>
       </div>
 
-      <div class="card response-card">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <strong>Response</strong>
-          <span id="status" class="badge">IDLE</span>
-        </div>
-        <div id="output" class="output"></div>
-        <div class="meta">
-          <div>TTFB: <span id="ttfb">-</span></div>
-          <div>Tokens (approx): <span id="tokCount">0</span></div>
-          <div>Finish: <span id="finishReason">-</span></div>
-          <div>Duration: <span id="dur">-</span></div>
-        </div>
-      </div>
-    </div>
+	      <div class="card response-card">
+	        <div style="display:flex; justify-content:space-between; align-items:center;">
+	          <strong>Response</strong>
+	          <span id="status" class="badge">IDLE</span>
+	        </div>
+	        <div id="output" class="output"></div>
+	        <div class="meta">
+	          <div>TTFB: <span id="ttfb">-</span></div>
+	          <div>Tokens (approx): <span id="tokCount">0</span></div>
+	          <div>Finish: <span id="finishReason">-</span></div>
+	          <div>Duration: <span id="dur">-</span></div>
+	        </div>
+	        <div class="refs-card">
+	          <div class="refs-head">
+	            <strong>References</strong>
+	            <span id="refsCount" class="badge">0</span>
+	          </div>
+	          <div id="refsBox" class="refs-box" hidden>
+	            <div id="refsList" class="refs-list"></div>
+	          </div>
+	          <div id="refsEmpty" class="refs-empty">
+	            No references collected yet.
+	          </div>
+	        </div>
+	      </div>
+	    </div>
 
     <div class="card debug-card">
       <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -481,8 +585,12 @@
   </div>
 
   <script>
-    const output = document.getElementById('output');
-    const statusEl = document.getElementById('status');
+	    const output = document.getElementById('output');
+	    const refsCountEl = document.getElementById('refsCount');
+	    const refsBoxEl = document.getElementById('refsBox');
+	    const refsListEl = document.getElementById('refsList');
+	    const refsEmptyEl = document.getElementById('refsEmpty');
+	    const statusEl = document.getElementById('status');
     const ttfbEl = document.getElementById('ttfb');
     const tokEl = document.getElementById('tokCount');
     const finishReasonEl = document.getElementById('finishReason');
@@ -501,45 +609,65 @@
     const backendEl = document.getElementById('inferenceBackend');
     const sessionIdEl = document.getElementById('sessionId');
     const newSessionEachEl = document.getElementById('newSessionEach');
-    const enableAgentEl = document.getElementById('enableAgent');
-    const agentMaxStepsEl = document.getElementById('agentMaxSteps');
-    const agentPresetEl = document.getElementById('agentPreset');
-    const agentToolsEl = document.getElementById('agentTools');
-    const agentPanelEl = document.getElementById('agentPanel');
-    const requestModeHintEl = document.getElementById('requestModeHint');
-    const systemEl = document.getElementById('system');
-    const promptEl = document.getElementById('prompt');
+	    const enableAgentEl = document.getElementById('enableAgent');
+	    const agentModeEl = document.getElementById('agentMode');
+	    const agentMaxStepsEl = document.getElementById('agentMaxSteps');
+	    const agentPresetEl = document.getElementById('agentPreset');
+	    const agentToolsEl = document.getElementById('agentTools');
+	    const agentPanelEl = document.getElementById('agentPanel');
+	    const agentModeHintEl = document.getElementById('agentModeHint');
+	    const requestModeHintEl = document.getElementById('requestModeHint');
+	    const systemEl = document.getElementById('system');
+	    const promptEl = document.getElementById('prompt');
 
-    const AGENT_PRESETS = {
-      analysis: {
-        enableAgent: true,
-        maxTokens: 768,
-        maxSteps: 4,
-        tools: ['search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
-        system: 'You are a concise read-only code analysis agent for EdgeLLM-Serving.',
-        prompt: 'HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？请基于仓库代码回答，并指出相关文件。',
-      },
-      status: {
-        enableAgent: true,
-        maxTokens: 384,
-        maxSteps: 3,
-        tools: ['get_server_status'],
+	    const DEFAULT_AGENT_TOOLS = {
+	      code_analysis: ['search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
+	      web_research: ['search_kb', 'open_chunk', 'search_code', 'read_file', 'search_docs', 'search_web', 'fetch_url'],
+	    };
+
+	    const AGENT_PRESETS = {
+	      analysis: {
+	        enableAgent: true,
+	        mode: 'code_analysis',
+	        maxTokens: 768,
+	        maxSteps: 4,
+	        tools: DEFAULT_AGENT_TOOLS.code_analysis,
+	        system: 'You are a concise read-only code analysis agent for EdgeLLM-Serving.',
+	        prompt: 'HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？请基于仓库代码回答，并指出相关文件。',
+	      },
+	      research: {
+	        enableAgent: true,
+	        mode: 'web_research',
+	        maxTokens: 896,
+	        maxSteps: 6,
+	        tools: DEFAULT_AGENT_TOOLS.web_research,
+	        system: 'You are a concise hybrid research agent for EdgeLLM-Serving. Prefer repo evidence first, then controlled web evidence.',
+	        prompt: '结合仓库和外部网页资料，说明 EdgeLLM-Serving 的 references 输出链路，并区分 repo_code 与 web 证据。',
+	      },
+	      status: {
+	        enableAgent: true,
+	        mode: 'code_analysis',
+	        maxTokens: 384,
+	        maxSteps: 3,
+	        tools: ['get_server_status'],
         system: 'You are a concise operations assistant for EdgeLLM-Serving.',
         prompt: '当前服务健康状态怎么样？有多少请求正在处理中？请基于真实状态回答。',
       },
-      config: {
-        enableAgent: true,
-        maxTokens: 384,
-        maxSteps: 4,
-        tools: ['get_config'],
+	      config: {
+	        enableAgent: true,
+	        mode: 'code_analysis',
+	        maxTokens: 384,
+	        maxSteps: 4,
+	        tools: ['get_config'],
         system: 'You are a concise configuration assistant for EdgeLLM-Serving.',
         prompt: '默认模型是什么？默认 max_tokens 是多少？如果能查到，也说明当前后端类型。',
       },
-      docs: {
-        enableAgent: true,
-        maxTokens: 512,
-        maxSteps: 4,
-        tools: ['search_docs'],
+	      docs: {
+	        enableAgent: true,
+	        mode: 'code_analysis',
+	        maxTokens: 512,
+	        maxSteps: 4,
+	        tools: ['search_docs'],
         system: 'You are a concise documentation assistant for EdgeLLM-Serving.',
         prompt: '这个项目是否支持流式输出？接口怎么调用？请基于项目文档回答。',
       },
@@ -547,8 +675,9 @@
 
     let aborter = null;
     let modelCatalog = [];
-    let rawResponseText = '';
-    let lastPresetSystemPrompt = '';
+	    let rawResponseText = '';
+	    let lastReferences = [];
+	    let lastPresetSystemPrompt = '';
     let lastFinishReason = '-';
     let shouldStickOutputToBottom = true;
     let isAutoContinuing = false;
@@ -659,7 +788,7 @@
       return null;
     }
 
-    function sanitizeAssistantText(rawText) {
+	    function sanitizeAssistantText(rawText) {
       const withoutThink = stripThinkBlocks(rawText || '').trim();
       if (!withoutThink) {
         return '';
@@ -670,10 +799,102 @@
         return wrappedAnswer.trim();
       }
 
-      return withoutThink;
-    }
+	      return withoutThink;
+	    }
 
-    function isOutputNearBottom() {
+	    function escapeHtml(value) {
+	      return String(value == null ? '' : value)
+	        .replace(/&/g, '&amp;')
+	        .replace(/</g, '&lt;')
+	        .replace(/>/g, '&gt;')
+	        .replace(/"/g, '&quot;')
+	        .replace(/'/g, '&#39;');
+	    }
+
+	    function normalizeReferences(items) {
+	      if (!Array.isArray(items)) return [];
+	      const out = [];
+	      const seen = new Set();
+	      for (const item of items) {
+	        if (!item || typeof item !== 'object') continue;
+	        const source = item.source || item.reference_source || item.kb || '';
+	        const path = item.path || '';
+	        const url = item.url || '';
+	        const chunkId = item.chunk_id || '';
+	        const title = item.title || item.symbol || path || url || chunkId || '(unknown)';
+	        const key = [source, path, url, chunkId, item.start_line || 0, item.end_line || 0].join('|');
+	        if (seen.has(key)) continue;
+	        seen.add(key);
+	        out.push({
+	          source,
+	          title,
+	          path,
+	          url,
+	          chunkId,
+	          symbol: item.symbol || '',
+	          startLine: item.start_line || 0,
+	          endLine: item.end_line || 0,
+	          snippet: item.snippet || '',
+	        });
+	      }
+	      return out;
+	    }
+
+	    function extractReferencesFromResponse(json) {
+	      if (Array.isArray(json?.references)) return normalizeReferences(json.references);
+	      if (Array.isArray(json?.agent_result?.references)) return normalizeReferences(json.agent_result.references);
+	      return [];
+	    }
+
+	    function updateReferences(items) {
+	      const normalized = normalizeReferences(items);
+	      if (!normalized.length) return;
+	      lastReferences = normalizeReferences([...lastReferences, ...normalized]);
+	      renderReferences();
+	    }
+
+	    function resetReferences() {
+	      lastReferences = [];
+	      renderReferences();
+	    }
+
+	    function renderReferences() {
+	      const refs = lastReferences;
+	      refsCountEl.textContent = String(refs.length);
+	      if (!refs.length) {
+	        refsBoxEl.hidden = true;
+	        refsEmptyEl.hidden = false;
+	        refsListEl.innerHTML = '';
+	        return;
+	      }
+
+	      refsBoxEl.hidden = false;
+	      refsEmptyEl.hidden = true;
+	      refsListEl.innerHTML = refs.map((item) => {
+	        const source = escapeHtml(item.source || 'unknown');
+	        const title = escapeHtml(item.title);
+	        const symbol = item.symbol ? ` · ${escapeHtml(item.symbol)}` : '';
+	        const range = item.startLine
+	          ? `:${item.startLine}${item.endLine && item.endLine > item.startLine ? `-${item.endLine}` : ''}`
+	          : '';
+	        const location = item.url
+	          ? `<a class="ref-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>`
+	          : `${escapeHtml(item.path || item.chunkId || '')}${range}`;
+	        const snippet = item.snippet ? `<div class="ref-snippet">${escapeHtml(item.snippet)}</div>` : '';
+	        return `
+	          <div class="ref-item">
+	            <div class="ref-top">
+	              <div class="ref-title">${title}</div>
+	              <span class="badge">${source}</span>
+	            </div>
+	            <div class="ref-meta">${location}${symbol}</div>
+	            ${snippet}
+	          </div>
+	        `;
+	      }).join('');
+	    }
+
+	    function isOutputNearBottom() {
       const remaining = output.scrollHeight - output.scrollTop - output.clientHeight;
       return remaining < 32;
     }
@@ -914,28 +1135,56 @@
       debugModeEl.textContent = enableAgentEl.checked ? 'AGENT' : 'CHAT';
     }
 
-    function updateAgentUI() {
-      const enabled = enableAgentEl.checked;
-      agentPanelEl.hidden = !enabled;
-      if (!enabled && systemEl.value.trim() && systemEl.value.trim() === lastPresetSystemPrompt) {
-        systemEl.value = '';
-      }
-      requestModeHintEl.textContent = enabled
-        ? 'Agent is on. The model may call tools before answering.'
-        : 'Agent is off. The model will answer directly.';
-      setButtonLabel();
-      renderDebugPanel();
-    }
+	    function updateAgentUI() {
+	      const enabled = enableAgentEl.checked;
+	      agentPanelEl.hidden = !enabled;
+	      syncAgentModeDefaults(false);
+	      if (!enabled && systemEl.value.trim() && systemEl.value.trim() === lastPresetSystemPrompt) {
+	        systemEl.value = '';
+	      }
+	      requestModeHintEl.textContent = enabled
+	        ? `Agent is on. Mode=${agentModeLabel(agentModeEl.value)}. The model may call tools before answering.`
+	        : 'Agent is off. The model will answer directly.';
+	      setButtonLabel();
+	      renderDebugPanel();
+	    }
 
-    function parseAgentTools() {
-      return agentToolsEl.value
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-    }
+	    function parseAgentTools() {
+	      return agentToolsEl.value
+	        .split(',')
+	        .map((item) => item.trim())
+	        .filter(Boolean);
+	    }
 
-    function getEffectiveMaxTokens(rawValue) {
-      const parsed = parseInt(rawValue, 10) || 0;
+	    function agentModeLabel(mode) {
+	      return mode === 'web_research' ? 'web_research' : 'code_analysis';
+	    }
+
+	    function getDefaultAgentTools(mode) {
+	      return DEFAULT_AGENT_TOOLS[mode] || DEFAULT_AGENT_TOOLS.code_analysis;
+	    }
+
+	    function normalizeTools(tools) {
+	      return tools.map((item) => item.trim()).filter(Boolean).join(',');
+	    }
+
+	    function syncAgentModeDefaults(force = false) {
+	      const selectedMode = agentModeEl.value || 'code_analysis';
+	      const current = normalizeTools(parseAgentTools());
+	      const knownDefaults = Object.values(DEFAULT_AGENT_TOOLS).map((tools) => normalizeTools(tools));
+	      if (force || !current || knownDefaults.includes(current)) {
+	        agentToolsEl.value = getDefaultAgentTools(selectedMode).join(',');
+	      }
+	      if (selectedMode === 'web_research' && parseInt(agentMaxStepsEl.value, 10) < 8) {
+	        agentMaxStepsEl.value = '8';
+	      }
+	      agentModeHintEl.textContent = selectedMode === 'web_research'
+	        ? 'Hybrid repo/docs/web research. The model only plans/synthesizes; the server executes controlled search_web/fetch_url.'
+	        : 'Repo-focused analysis with local tools only.';
+	    }
+
+	    function getEffectiveMaxTokens(rawValue) {
+	      const parsed = parseInt(rawValue, 10) || 0;
       if (enableAgentEl.checked) {
         return Math.max(parsed || MIN_AGENT_MAX_TOKENS, MIN_AGENT_MAX_TOKENS);
       }
@@ -956,12 +1205,12 @@
         request_id: genId('req'),
       };
 
-      if (enableAgentEl.checked) {
-        payload.agent = true;
-        payload.agent_mode = 'code_analysis';
-        payload.max_steps = parseInt(agentMaxStepsEl.value, 10) || 4;
-        payload.tools = parseAgentTools();
-      }
+	      if (enableAgentEl.checked) {
+	        payload.agent = true;
+	        payload.agent_mode = agentModeEl.value || 'code_analysis';
+	        payload.max_steps = parseInt(agentMaxStepsEl.value, 10) || 4;
+	        payload.tools = parseAgentTools();
+	      }
 
       return payload;
     }
@@ -976,16 +1225,19 @@
         ].join('\n');
       }
 
-      const tools = parseAgentTools();
-      return [
-        'Current mode: agent',
-        `Inference backend: ${backendLabel(backendEl.value)}`,
-        'Agent mode: code_analysis',
-        `Allowed tools: ${tools.length ? tools.join(', ') : '(none)'}`,
-        'Use this only when the answer should come from repo files, docs, config, or live server state.',
-        'Server-side tool calls are logged as: [agent] req=... step=... tool=...',
-      ].join('\n');
-    }
+	      const tools = parseAgentTools();
+	      const mode = agentModeEl.value || 'code_analysis';
+	      return [
+	        'Current mode: agent',
+	        `Inference backend: ${backendLabel(backendEl.value)}`,
+	        `Agent mode: ${agentModeLabel(mode)}`,
+	        `Allowed tools: ${tools.length ? tools.join(', ') : '(none)'}`,
+	        mode === 'web_research'
+	          ? 'Use this when you want mixed repo/docs/web evidence. The model only does decomposition/synthesis; external access stays behind controlled search_web/fetch_url.'
+	          : 'Use this only when the answer should come from repo files, docs, config, or live server state.',
+	        'Server-side tool calls are logged as: [agent] req=... step=... tool=...',
+	      ].join('\n');
+	    }
 
     function renderDebugPanel({ baseUrl = '', endpoint = '', payload = null } = {}) {
       agentHintEl.textContent = buildAgentHint();
@@ -1037,24 +1289,28 @@
       }
     }
 
-    function applyPreset(name) {
-      const preset = AGENT_PRESETS[name];
-      if (!preset) {
-        lastPresetSystemPrompt = '';
-        return;
-      }
+	    function applyPreset(name) {
+	      const preset = AGENT_PRESETS[name];
+	      if (!preset) {
+	        lastPresetSystemPrompt = '';
+	        return;
+	      }
 
-      enableAgentEl.checked = !!preset.enableAgent;
-      if (preset.maxTokens) {
-        maxTokensEl.value = String(preset.maxTokens);
-      }
-      agentMaxStepsEl.value = String(preset.maxSteps || 4);
-      agentToolsEl.value = (preset.tools || []).join(',');
-      systemEl.value = preset.system || '';
-      lastPresetSystemPrompt = preset.system || '';
-      promptEl.value = preset.prompt || '';
-      updateAgentUI();
-    }
+	      enableAgentEl.checked = !!preset.enableAgent;
+	      if (preset.mode) {
+	        agentModeEl.value = preset.mode;
+	      }
+	      if (preset.maxTokens) {
+	        maxTokensEl.value = String(preset.maxTokens);
+	      }
+	      agentMaxStepsEl.value = String(preset.maxSteps || 4);
+	      agentToolsEl.value = (preset.tools || []).join(',');
+	      systemEl.value = preset.system || '';
+	      lastPresetSystemPrompt = preset.system || '';
+	      promptEl.value = preset.prompt || '';
+	      syncAgentModeDefaults(true);
+	      updateAgentUI();
+	    }
 
     async function streamChat() {
       const baseUrl = baseUrlEl.value.trim();
@@ -1071,9 +1327,10 @@
         sessionIdEl.value = sessionId;
       }
 
-      output.textContent = '';
-      rawResponseText = '';
-      lastFinishReason = '-';
+	      output.textContent = '';
+	      rawResponseText = '';
+	      resetReferences();
+	      lastFinishReason = '-';
       shouldStickOutputToBottom = true;
       output.scrollTop = 0;
       ttfbEl.textContent = '-';
@@ -1140,8 +1397,11 @@
                 break;
               }
               try {
-                const json = JSON.parse(data);
-                const delta = json.choices?.[0]?.delta?.content || '';
+	                const json = JSON.parse(data);
+	                if (Array.isArray(json?.metadata?.references)) {
+	                  updateReferences(json.metadata.references);
+	                }
+	                const delta = json.choices?.[0]?.delta?.content || '';
                 const finishReason = json.choices?.[0]?.finish_reason;
                 if (finishReason) {
                   lastFinishReason = finishReason;
@@ -1188,9 +1448,10 @@
         sessionIdEl.value = sessionId;
       }
 
-      output.textContent = '';
-      rawResponseText = '';
-      lastFinishReason = '-';
+	      output.textContent = '';
+	      rawResponseText = '';
+	      resetReferences();
+	      lastFinishReason = '-';
       shouldStickOutputToBottom = true;
       output.scrollTop = 0;
       ttfbEl.textContent = '-';
@@ -1230,8 +1491,9 @@
           return;
         }
 
-        const json = await resp.json();
-        const content = json.choices?.[0]?.message?.content || '';
+	        const json = await resp.json();
+	        updateReferences(extractReferencesFromResponse(json));
+	        const content = json.choices?.[0]?.message?.content || '';
         lastFinishReason = json.choices?.[0]?.finish_reason || '-';
         rawResponseText = content;
         renderAssistantText();
@@ -1265,13 +1527,17 @@
       syncBackendOptions();
       renderDebugPanel();
     });
-    enableAgentEl.addEventListener('change', () => {
-      updateAgentUI();
-    });
-    baseUrlEl.addEventListener('change', loadModels);
-    agentPresetEl.addEventListener('change', () => {
-      applyPreset(agentPresetEl.value);
-    });
+	    enableAgentEl.addEventListener('change', () => {
+	      updateAgentUI();
+	    });
+	    agentModeEl.addEventListener('change', () => {
+	      syncAgentModeDefaults(false);
+	      updateAgentUI();
+	    });
+	    baseUrlEl.addEventListener('change', loadModels);
+	    agentPresetEl.addEventListener('change', () => {
+	      applyPreset(agentPresetEl.value);
+	    });
     agentMaxStepsEl.addEventListener('input', () => renderDebugPanel());
     agentToolsEl.addEventListener('input', () => renderDebugPanel());
     backendEl.addEventListener('change', () => {
@@ -1280,11 +1546,12 @@
     });
     systemEl.addEventListener('input', () => renderDebugPanel());
     promptEl.addEventListener('input', () => renderDebugPanel());
-    modeEl.addEventListener('change', () => renderDebugPanel());
-    ensureBaseUrlDefault();
-    syncBackendOptions();
-    updateAgentUI();
-    loadModels();
-  </script>
+	    modeEl.addEventListener('change', () => renderDebugPanel());
+	    ensureBaseUrlDefault();
+	    syncBackendOptions();
+	    resetReferences();
+	    updateAgentUI();
+	    loadModels();
+	  </script>
 </body>
 </html>

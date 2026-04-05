@@ -63,6 +63,25 @@ std::string BuildToolPrompt(const std::string &agent_mode,
         return oss.str();
     }
 
+    if (agent_mode == "web_research")
+    {
+        oss << "You are a read-only hybrid research agent inside EdgeLLM-Serving.\n";
+        oss << "Your job is to combine repository evidence and controlled web evidence.\n";
+        oss << "Available tools: " << tools_desc << ".\n";
+        oss << "Prefer local repository tools for repo-specific facts, and use search_web / fetch_url only for external or recent information.\n";
+        oss << "Never use shell, curl, or any capability outside the provided tools.\n";
+        oss << "Return JSON only.\n";
+        oss << "If a tool is needed, return:\n";
+        oss << "{\"action\":\"tool\",\"tool\":\"tool_name\",\"input\":{...}}\n";
+        oss << "If you can answer now, return:\n";
+        oss << "{\"action\":\"final\",\"answer\":\"...\"}\n";
+        oss << "Tool usage rules:\n";
+        oss << "- search_kb/open_chunk/search_code/read_file/search_docs: repository and documentation evidence.\n";
+        oss << "- search_web: external search results only. Input should contain query and may contain top_k.\n";
+        oss << "- fetch_url: fetch one public webpage and extract正文. Input should contain url.\n";
+        return oss.str();
+    }
+
     oss << "You are an agent inside EdgeLLM-Serving.\n";
     oss << "You may either answer directly or call one tool.\n";
     oss << "Available tools: " << tools_desc << ".\n";
@@ -93,5 +112,34 @@ std::string BuildToolResultMessage(const std::string &tool_name, const std::stri
     oss << "If the evidence is still insufficient, call another tool instead of guessing.\n";
     oss << "If this was a search result, prefer read_file on the most relevant file before finalizing.\n";
     oss << "Do not invent symbols or call chains that are absent from the tool output.";
+    return oss.str();
+}
+
+std::string BuildWebResearchDecompositionPrompt()
+{
+    std::ostringstream oss;
+    oss << "You are a read-only research planning model inside EdgeLLM-Serving.\n";
+    oss << "Your only job is to decompose the user's question into 3 to 5 research subqueries.\n";
+    oss << "Do not call tools. Do not describe shell, curl, HTTP clients, or execution details.\n";
+    oss << "For each subquery, choose exactly one source from: local, web, hybrid.\n";
+    oss << "Use local for repository/docs questions, web for external-only facts, and hybrid when both local and web evidence are needed.\n";
+    oss << "Prefer short, specific queries that preserve symbols, file names, APIs, versions, or time-sensitive terms from the question.\n";
+    oss << "Return JSON only in this shape:\n";
+    oss << "{\"subqueries\":[{\"label\":\"...\",\"query\":\"...\",\"source\":\"local|web|hybrid\"}]}\n";
+    oss << "Never include markdown fences or extra commentary.";
+    return oss.str();
+}
+
+std::string BuildWebResearchSynthesisPrompt()
+{
+    std::ostringstream oss;
+    oss << "You are a read-only research synthesis model inside EdgeLLM-Serving.\n";
+    oss << "You will receive a user question plus collected evidence. Use only that evidence.\n";
+    oss << "Do not call tools. Do not invent facts. If evidence is incomplete, state the gap.\n";
+    oss << "Return JSON only in this shape:\n";
+    oss << "{\"summary\":\"...\",\"analysis\":[\"...\"],\"risks\":[\"...\"],\"next_steps\":[\"...\"],\"references\":[\"E1\",\"E2\"]}\n";
+    oss << "references must contain evidence ids from the provided list.\n";
+    oss << "Keep summary concise, analysis to 2-4 lines, risks to 0-3 lines, and next_steps to 0-2 lines.\n";
+    oss << "Never include markdown fences or extra commentary.";
     return oss.str();
 }

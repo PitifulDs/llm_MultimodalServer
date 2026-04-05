@@ -17,6 +17,14 @@ std::string to_lower_copy(std::string s)
 std::string evidence_ref(const CodeEvidence &evidence)
 {
     std::ostringstream oss;
+    if (!evidence.url.empty() && (evidence.reference_source == "web" || evidence.path.empty() || evidence.path == evidence.url))
+    {
+        if (!evidence.title.empty())
+            oss << evidence.title << " ";
+        oss << evidence.url;
+        return oss.str();
+    }
+
     oss << evidence.path;
     if (evidence.start_line > 0)
         oss << ":" << evidence.start_line;
@@ -47,6 +55,83 @@ std::string fallback_summary(CodeAnalysisQuestionType question_type)
     default:
         return "当前证据不足以给出强结论。";
     }
+}
+
+CodeAnalysisFinalAnswer build_web_research_fallback(const std::string &question,
+                                                    const std::vector<CodeEvidence> &evidence,
+                                                    const std::vector<AgentTraceStep> &trace)
+{
+    CodeAnalysisFinalAnswer answer;
+    answer.evidence = evidence;
+
+    if (evidence.empty())
+    {
+        answer.summary = "当前还没有收集到足够的仓库或网页证据。";
+        answer.analysis.push_back("`web_research` 已执行，但本地 KB 和外部网页都没有形成稳定证据。");
+        answer.risks.push_back("缺少引用来源时，继续总结容易把猜测当成事实。");
+        answer.next_steps.push_back("扩大检索词，分别补 repo/docs/web 侧证据。");
+        return answer;
+    }
+
+    int repo_hits = 0;
+    int docs_hits = 0;
+    int web_hits = 0;
+    for (const auto &item : evidence)
+    {
+        if (item.reference_source == "web")
+            ++web_hits;
+        else if (item.reference_source == "docs")
+            ++docs_hits;
+        else
+            ++repo_hits;
+    }
+
+    answer.summary = "针对“" + TrimCodeAnalysisText(question, 56) + "”，已汇总本地仓库与外部网页证据，首个高相关来源是 " + evidence_ref(evidence.front()) + "。";
+
+    if (!trace.empty())
+    {
+        std::ostringstream trace_line;
+        trace_line << "工具链：";
+        for (size_t i = 0; i < trace.size() && i < 5; ++i)
+        {
+            if (i > 0)
+                trace_line << " -> ";
+            trace_line << trace[i].selected_tool;
+        }
+        answer.analysis.push_back(trace_line.str());
+    }
+
+    answer.analysis.push_back("证据分布：repo_code=" + std::to_string(repo_hits) +
+                              " docs=" + std::to_string(docs_hits) +
+                              " web=" + std::to_string(web_hits) + "。");
+
+    for (size_t i = 0; i < evidence.size() && i < 4; ++i)
+    {
+        const auto &item = evidence[i];
+        std::string line = evidence_ref(item);
+        if (!item.why_relevant.empty())
+            line += " 表明：" + item.why_relevant;
+        if (!item.snippet.empty())
+            line += " 片段：" + TrimCodeAnalysisText(item.snippet, 120);
+        answer.analysis.push_back(std::move(line));
+    }
+
+    if (repo_hits == 0)
+        answer.risks.push_back("当前没有 repo_code 侧证据，仓库内实现细节仍可能缺失。");
+    if (web_hits == 0)
+        answer.risks.push_back("当前没有 web 侧证据，仓库外背景或最新信息未验证。");
+    if (!trace.empty() && trace.back().selected_tool != "read_file" &&
+        trace.back().selected_tool != "open_chunk" &&
+        trace.back().selected_tool != "fetch_url")
+    {
+        answer.risks.push_back("最后一步不是精读型工具，局部上下文可能仍不完整。");
+    }
+
+    answer.next_steps.push_back("如需更强结论，可继续围绕最高相关 repo 证据做 read_file/open_chunk 深读。");
+    if (web_hits > 0)
+        answer.next_steps.push_back("如需更高时效性，可对首个 web 来源再次 fetch_url 或扩展更多站点。");
+
+    return answer;
 }
 } // namespace
 
@@ -114,6 +199,27 @@ CodeAnalysisFinalAnswer CodeAnalysisFormatter::Build(const std::string &question
     if (answer.next_steps.empty())
         answer.next_steps.push_back("若需要更完整结论，可继续围绕首个证据文件做 read_file 扩展上下文。");
 
+    return answer;
+}
+
+CodeAnalysisFinalAnswer CodeAnalysisFormatter::BuildWebResearch(const std::string &question,
+                                                               const std::vector<CodeEvidence> &evidence,
+                                                               const std::vector<AgentTraceStep> &trace,
+                                                               const CodeAnalysisSynthesis *synthesis)
+{
+    CodeAnalysisFinalAnswer answer = build_web_research_fallback(question, evidence, trace);
+    if (synthesis)
+    {
+        if (!synthesis->summary.empty())
+            answer.summary = synthesis->summary;
+        if (!synthesis->analysis.empty())
+            answer.analysis = synthesis->analysis;
+        if (!synthesis->risks.empty())
+            answer.risks = synthesis->risks;
+        if (!synthesis->next_steps.empty())
+            answer.next_steps = synthesis->next_steps;
+        answer.evidence = evidence;
+    }
     return answer;
 }
 

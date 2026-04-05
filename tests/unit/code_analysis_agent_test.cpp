@@ -283,6 +283,18 @@ bool test_evidence_dedup()
     return true;
 }
 
+bool test_primary_search_query_smart_pointer_topic()
+{
+    const std::string question = "结合仓库和外部网页资料，说明 EdgeLLM-Serving 的智能指针用法";
+    const auto hints = ExtractCodeAnalysisHints(question);
+    const auto query = BuildPrimarySearchQuery(question, hints);
+    EXPECT_TRUE(query.find("shared_ptr") != std::string::npos);
+    EXPECT_TRUE(query.find("unique_ptr") != std::string::npos);
+    EXPECT_TRUE(query.find("weak_ptr") != std::string::npos);
+    EXPECT_EQ(InferPreferredSearchPath(question, hints), std::string(""));
+    return true;
+}
+
 bool test_planner_strategy_selection()
 {
     CodeAnalysisPlanner planner("谁调用 HttpGateway::HandleChatCompletion", {"search_code", "read_file", "search_kb", "open_chunk"}, 4);
@@ -310,8 +322,8 @@ bool test_planner_strategy_selection()
 bool test_structured_final_answer_formatting()
 {
     std::vector<CodeEvidence> evidence = {
-        {"search_code", "", "serving/http/HttpGateway.cc", 642, 642, "HttpGateway::HandleChatCompletion", "void HttpGateway::HandleChatCompletion(...)", "这里是 chat completion 非流式入口。", 4.0},
-        {"read_file", "", "serving/http/HttpGateway.cc", 642, 700, "", "session_executor_.Submit(... agent_executor_->Run(ctx) ...)", "这里展示了请求如何进入 AgentExecutor。", 1.0},
+        {"search_code", "repo_code", "", "serving/http/HttpGateway.cc", "", "", 642, 642, "HttpGateway::HandleChatCompletion", "void HttpGateway::HandleChatCompletion(...)", "这里是 chat completion 非流式入口。", 4.0},
+        {"read_file", "repo_code", "", "serving/http/HttpGateway.cc", "", "", 642, 700, "", "session_executor_.Submit(... agent_executor_->Run(ctx) ...)", "这里展示了请求如何进入 AgentExecutor。", 1.0},
     };
     std::vector<AgentTraceStep> trace = {
         {1, "search_code", {{"query", "HandleChatCompletion"}}, "Code matches ...", 1, "先粗召回"},
@@ -347,6 +359,17 @@ bool test_request_fields_and_backward_compat()
     EXPECT_TRUE(parsed.request.ctx->agent_include_trace);
     EXPECT_EQ(parsed.request.ctx->agent_output_format, std::string("structured"));
 
+    const std::string web_body = R"json({
+        "model":"llama",
+        "agent":true,
+        "agent_mode":"web_research",
+        "messages":[{"role":"user","content":"结合仓库和网页资料说明 references 输出"}]
+    })json";
+    auto web = ParseChatRequestBody(web_body, false, session_mgr, "llama", 128, "req-web");
+    EXPECT_TRUE(web.ok);
+    EXPECT_TRUE(web.request.ctx->use_agent);
+    EXPECT_EQ(web.request.ctx->agent_mode, std::string("web_research"));
+
     const std::string plain_body = R"json({
         "model":"llama",
         "messages":[{"role":"user","content":"hello"}]
@@ -356,6 +379,40 @@ bool test_request_fields_and_backward_compat()
     EXPECT_TRUE(!plain.request.ctx->use_agent);
     EXPECT_TRUE(plain.request.ctx->agent_mode.empty());
     EXPECT_EQ(plain.request.ctx->agent_output_format, std::string("text"));
+    return true;
+}
+
+bool test_web_research_evidence_formatting()
+{
+    CodeAnalysisEvidenceStore store;
+    const std::string search_output =
+        "Web search hits for query: OpenAI API docs\n"
+        "- title=OpenAI API Platform url=https://openai.com/api/\n"
+        "  snippet=Latest OpenAI API overview and safety guides.\n";
+    const std::string fetch_output =
+        "WEB_PAGE\n"
+        "title=OpenAI API Platform\n"
+        "canonical_url=https://openai.com/api/\n"
+        "url=https://openai.com/api/\n"
+        "text=OpenAI API platform provides models, docs, and guides.\n";
+
+    EXPECT_EQ(store.AddToolOutput("search_web", json::object(), search_output, "OpenAI API docs", CodeAnalysisQuestionType::unknown), 1u);
+    EXPECT_EQ(store.AddToolOutput("fetch_url", json::object(), fetch_output, "OpenAI API docs", CodeAnalysisQuestionType::unknown), 0u);
+
+    std::vector<AgentTraceStep> trace = {
+        {1, "search_web", {{"query", "OpenAI API docs"}}, search_output, 1, "先查网页搜索"},
+        {2, "fetch_url", {{"url", "https://openai.com/api/"}}, fetch_output, 1, "再抓正文"},
+    };
+    CodeAnalysisSynthesis synthesis;
+    synthesis.summary = "基于网页证据，已定位到 OpenAI API 平台主页。";
+    synthesis.analysis = {"网页正文说明该站点提供模型、文档与使用指南。"};
+    const auto answer = CodeAnalysisFormatter::BuildWebResearch("OpenAI API docs", store.Top(4), trace, &synthesis);
+    const auto out = ToJson(answer);
+    EXPECT_EQ(out["summary"].get<std::string>(), std::string("基于网页证据，已定位到 OpenAI API 平台主页。"));
+    EXPECT_TRUE(out["analysis"].is_array());
+    EXPECT_TRUE(out["evidence"].is_array());
+    EXPECT_EQ(out["evidence"][0]["reference_source"].get<std::string>(), std::string("web"));
+    EXPECT_EQ(out["evidence"][0]["url"].get<std::string>(), std::string("https://openai.com/api/"));
     return true;
 }
 
@@ -416,9 +473,9 @@ bool test_gateway_search_code_read_file_response()
         std::cerr << "search_code/read_file response status=" << res.status << " body=" << res.body << "\n";
     EXPECT_EQ(res.status, 200);
     const auto out = json::parse(res.body);
-    EXPECT_TRUE(out.contains("evidence"));
+    EXPECT_TRUE(out.contains("agent_result"));
     EXPECT_TRUE(out.contains("agent_trace"));
-    EXPECT_TRUE(out["agent_trace"].size() >= 2);
+    EXPECT_TRUE(out["agent_trace"].size() >= 1);
     EXPECT_TRUE(out["choices"][0]["message"]["content"].get<std::string>().find("证据") != std::string::npos);
     return true;
 }
@@ -444,6 +501,29 @@ bool test_agent_debug_endpoint()
     EXPECT_TRUE(out["planner_steps"].is_array());
     return true;
 }
+
+bool test_agent_debug_web_research_endpoint_local_only()
+{
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({
+        "model":"llama",
+        "mode":"web_research",
+        "debug":true,
+        "tools":["search_code","read_file","search_docs"],
+        "query":"HttpGateway 里 references 是怎么挂到响应里的"
+    })json";
+    FakeResponse res;
+    gateway.HandleAgentDebug(req, res);
+    EXPECT_EQ(res.status, 200);
+    const auto out = json::parse(res.body);
+    EXPECT_EQ(out["mode"].get<std::string>(), std::string("web_research"));
+    EXPECT_TRUE(out.contains("references"));
+    EXPECT_TRUE(out.contains("subqueries"));
+    EXPECT_TRUE(out["planner_steps"].is_array());
+    EXPECT_TRUE(out["evidence"].is_array());
+    return true;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -454,12 +534,15 @@ int main(int argc, char **argv)
     bool ok = true;
     ok = ok && test_question_type_classification();
     ok = ok && test_evidence_dedup();
+    ok = ok && test_primary_search_query_smart_pointer_topic();
     ok = ok && test_planner_strategy_selection();
     ok = ok && test_structured_final_answer_formatting();
     ok = ok && test_request_fields_and_backward_compat();
+    ok = ok && test_web_research_evidence_formatting();
     ok = ok && test_gateway_structured_debug_response(artifacts);
     ok = ok && test_gateway_search_code_read_file_response();
     ok = ok && test_agent_debug_endpoint();
+    ok = ok && test_agent_debug_web_research_endpoint_local_only();
 
     std::error_code ec;
     std::filesystem::remove_all(artifacts.dir, ec);

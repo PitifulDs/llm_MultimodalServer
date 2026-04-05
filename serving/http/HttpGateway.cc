@@ -605,9 +605,11 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
     std::string mode = body.value("mode", "code_analysis");
     std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char ch)
                    { return static_cast<char>(std::tolower(ch)); });
-    if (mode != "code_analysis")
+    if (mode == "web" || mode == "research")
+        mode = "web_research";
+    if (mode != "code_analysis" && mode != "web_research")
     {
-        WriteError(res, 400, "only code_analysis mode is supported by /v1/agent/debug", "invalid_request_error", "invalid_mode");
+        WriteError(res, 400, "only code_analysis and web_research are supported by /v1/agent/debug", "invalid_request_error", "invalid_mode");
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
@@ -623,7 +625,7 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
     ctx->is_chat = true;
     ctx->stream = false;
     ctx->use_agent = true;
-    ctx->agent_mode = "code_analysis";
+    ctx->agent_mode = mode;
     ctx->agent_debug = body.value("debug", true);
     ctx->agent_include_trace = true;
     ctx->agent_output_format = body.value("agent_output_format", std::string("structured"));
@@ -704,6 +706,10 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
          {{"prompt_tokens", ctx->usage.prompt_tokens},
           {"completion_tokens", ctx->usage.completion_tokens},
           {"total_tokens", ctx->usage.total_tokens}}}};
+    if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("references"))
+        out["references"] = ctx->agent_structured_output["references"];
+    if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("subqueries"))
+        out["subqueries"] = ctx->agent_structured_output["subqueries"];
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
@@ -970,10 +976,25 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
             {"retrieval_latency_ms", ctx->rag_summary.retrieval_latency_ms},
         };
     }
-    if (ctx->use_agent && ctx->agent_mode == "code_analysis")
+    if (ctx->use_agent)
     {
         if (!ctx->agent_structured_output.empty())
             out["agent_result"] = ctx->agent_structured_output;
+        if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("references"))
+        {
+            if (out.contains("references") && out["references"].is_array() &&
+                ctx->agent_structured_output["references"].is_array())
+            {
+                for (const auto &item : ctx->agent_structured_output["references"])
+                    out["references"].push_back(item);
+            }
+            else
+            {
+                out["references"] = ctx->agent_structured_output["references"];
+            }
+        }
+        if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("subqueries"))
+            out["subqueries"] = ctx->agent_structured_output["subqueries"];
         if (!ctx->agent_evidence.empty())
         {
             json evidence = json::array();

@@ -19,8 +19,11 @@ enum class CodeAnalysisQuestionType
 struct CodeEvidence
 {
     std::string source_type;
+    std::string reference_source;
     std::string chunk_id;
     std::string path;
+    std::string title;
+    std::string url;
     int start_line = 0;
     int end_line = 0;
     std::string symbol;
@@ -52,6 +55,14 @@ struct CodeAnalysisFinalAnswer
     std::string summary;
     std::vector<std::string> analysis;
     std::vector<CodeEvidence> evidence;
+    std::vector<std::string> risks;
+    std::vector<std::string> next_steps;
+};
+
+struct CodeAnalysisSynthesis
+{
+    std::string summary;
+    std::vector<std::string> analysis;
     std::vector<std::string> risks;
     std::vector<std::string> next_steps;
 };
@@ -112,6 +123,21 @@ struct ParsedDocMatch
     std::string snippet;
 };
 
+struct ParsedWebSearchHit
+{
+    std::string title;
+    std::string url;
+    std::string snippet;
+};
+
+struct ParsedFetchedUrl
+{
+    std::string title;
+    std::string url;
+    std::string canonical_url;
+    std::string text;
+};
+
 inline std::string ToString(CodeAnalysisQuestionType type)
 {
     switch (type)
@@ -138,8 +164,11 @@ inline nlohmann::json ToJson(const CodeEvidence &evidence)
 {
     return {
         {"source_type", evidence.source_type},
+        {"reference_source", evidence.reference_source},
         {"chunk_id", evidence.chunk_id},
         {"path", evidence.path},
+        {"title", evidence.title},
+        {"url", evidence.url},
         {"start_line", evidence.start_line},
         {"end_line", evidence.end_line},
         {"symbol", evidence.symbol},
