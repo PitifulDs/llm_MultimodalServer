@@ -580,6 +580,19 @@ bool test_agent_debug_web_research_endpoint_local_only()
     EXPECT_TRUE(out["evidence"].is_array());
     return true;
 }
+
+bool test_gateway_invalid_chat_request_status()
+{
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({"model":"llama","messages":"bad"})json";
+    FakeResponse res;
+    gateway.HandleChatCompletion(req, res);
+    EXPECT_EQ(res.status, 400);
+    const auto out = json::parse(res.body);
+    EXPECT_EQ(out["error"]["code"].get<std::string>(), std::string("invalid_messages"));
+    return true;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -601,6 +614,7 @@ int main(int argc, char **argv)
     ok = ok && test_gateway_search_code_read_file_response();
     ok = ok && test_agent_debug_endpoint();
     ok = ok && test_agent_debug_web_research_endpoint_local_only();
+    ok = ok && test_gateway_invalid_chat_request_status();
 
     std::error_code ec;
     std::filesystem::remove_all(artifacts.dir, ec);

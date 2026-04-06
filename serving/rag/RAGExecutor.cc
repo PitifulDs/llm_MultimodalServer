@@ -60,6 +60,7 @@ bool RAGExecutor::Apply(const std::shared_ptr<ServingContext> &ctx)
     if (!ctx || !ctx->rag_options.enabled)
         return true;
 
+    const bool request_stream = ctx->stream;
     const std::string query = ExtractLastUserQuery(ctx->messages);
     if (query.empty())
     {
@@ -101,8 +102,9 @@ bool RAGExecutor::Apply(const std::shared_ptr<ServingContext> &ctx)
     const auto assembled = assembler_.Assemble(ctx->messages, retrieval.hits);
     ctx->messages = assembled.messages;
     ctx->rag_summary.injected_chars = static_cast<int>(assembled.injected_chars);
+    ctx->stream = request_stream;
 
-    if (ctx->stream)
+    if (request_stream)
     {
         json metadata = {
             {"references", json::array()},

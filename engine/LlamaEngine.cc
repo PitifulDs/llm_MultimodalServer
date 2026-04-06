@@ -308,32 +308,18 @@ static std::string token_to_piece(const llama_vocab *vocab, llama_token tok)
     return s;
 }
 
-// KV 续写 decode：pos 必须从 n_past 开始递增
+// Single-sequence decode using llama.cpp's transition helper.
+// Positions are tracked by the context memory, which is the supported path in
+// newer llama.cpp builds for one active seq_id.
 static bool decode_tokens(llama_context *lctx,
-                          const std::vector<llama_token> &toks,
-                          int n_past)
+                          std::vector<llama_token> &toks,
+                          int /* n_past */)
 {
     if (!lctx || toks.empty())
         return true;
 
-    llama_batch batch = llama_batch_init((int)toks.size(), 0, 1);
-    batch.n_tokens = (int)toks.size();
-
-    for (int i = 0; i < (int)toks.size(); ++i)
-    {
-        batch.token[i] = toks[i];
-        batch.pos[i] = n_past + i;
-
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-
-        // 只需要最后一个 token 的 logits 用于采样
-        batch.logits[i] = (i == (int)toks.size() - 1);
-    }
-
-    const int rc = llama_decode(lctx, batch);
-    llama_batch_free(batch);
-    return rc == 0;
+    llama_batch batch = llama_batch_get_one(toks.data(), (int)toks.size());
+    return llama_decode(lctx, batch) == 0;
 }
 
 
@@ -587,7 +573,6 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         }
 
         llama_token next = llama_sampler_sample(mc->sampler, mc->ctx, -1);
-        llama_sampler_accept(mc->sampler, next);
 
         if (llama_vocab_is_eog(vocab, next))
         {
