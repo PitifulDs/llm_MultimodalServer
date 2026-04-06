@@ -158,10 +158,16 @@ hello rerank</textarea>
 
         <details class="panel collapsible" id="agentSection">
           <summary>
-            <span>Experimental Agent Settings</span>
+            <span>Compatibility Extensions</span>
             <span id="agentStatus" class="summary-meta">Disabled. Mainline requests go directly to the model.</span>
           </summary>
           <div class="panel-body">
+            <p class="microcopy">
+              Agent and RAG are compatibility extensions. Keep them off for normal platform requests. Dedicated extension APIs such as
+              <code>/v1/agent/debug</code>, <code>/v1/retrieval/search</code>, and <code>/admin/rag/*</code> stay behind
+              <code>EXPERIMENTAL_AGENT_API_ENABLED=1</code> or <code>EXPERIMENTAL_RAG_API_ENABLED=1</code>.
+            </p>
+
             <label class="checkbox-row checkbox-row-strong">
               <input id="enableAgent" type="checkbox" />
               <span>Enable Agent</span>
@@ -169,6 +175,10 @@ hello rerank</textarea>
 
             <p id="agentDisabledState" class="microcopy">
               Agent is off. Leave it off for the mainline chat flow; turn it on only when you explicitly need tool, repo, docs, or server-status evidence.
+            </p>
+
+            <p class="microcopy">
+              RAG compatibility is not exposed in the quick form. Use extension smoke scripts or explicit chat payloads only when you are validating legacy behavior.
             </p>
 
             <div id="agentConfig" hidden>

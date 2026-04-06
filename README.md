@@ -262,6 +262,9 @@ bash scripts/smoke_test.sh
 
 **扩展能力（兼容保留，默认不占主线）**
 
+主线 demo 启动：
+- `bash scripts/start_platform_demo.sh`
+
 agent/rag 仍保留兼容能力，但已经退出主 README 的默认操作路径：
 - `POST /v1/chat/completions` 仍兼容 `agent=true` 与 `rag` 扩展字段
 - `GET /health` 保留为兼容别名，主入口改为 `GET /healthz`
