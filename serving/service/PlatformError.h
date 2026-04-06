@@ -6,6 +6,7 @@ enum class PlatformErrorKind
 {
     None,
     InvalidRequest,
+    Timeout,
     ServiceUnavailable,
     RateLimit,
     Internal
@@ -28,6 +29,8 @@ struct PlatformError
         {
         case PlatformErrorKind::InvalidRequest:
             return 400;
+        case PlatformErrorKind::Timeout:
+            return 504;
         case PlatformErrorKind::ServiceUnavailable:
             return 503;
         case PlatformErrorKind::RateLimit:
@@ -45,6 +48,8 @@ struct PlatformError
         {
         case PlatformErrorKind::InvalidRequest:
             return "invalid_request_error";
+        case PlatformErrorKind::Timeout:
+            return "timeout_error";
         case PlatformErrorKind::ServiceUnavailable:
             return "service_unavailable_error";
         case PlatformErrorKind::RateLimit:
@@ -56,4 +61,3 @@ struct PlatformError
         }
     }
 };
-

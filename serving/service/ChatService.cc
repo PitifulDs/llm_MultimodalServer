@@ -197,7 +197,15 @@ ChatError ChatService::BuildError(const std::shared_ptr<ServingContext> &ctx) co
             ctx->error_message.empty() ? "invalid chat request" : ctx->error_message};
     }
 
-    if (error_code == "backend_not_available" || error_code == "backend_timeout")
+    if (error_code == "backend_timeout" || error_code == "request_timeout")
+    {
+        return {
+            ChatErrorKind::Timeout,
+            error_code,
+            ctx->error_message.empty() ? "request timed out" : ctx->error_message};
+    }
+
+    if (error_code == "backend_not_available")
     {
         return {
             ChatErrorKind::ServiceUnavailable,
@@ -251,6 +259,9 @@ void ChatService::LogChatStart(const std::shared_ptr<ServingContext> &ctx, bool 
                                     "",
                                     0,
                                     "",
+                                    0,
+                                    0,
+                                    0,
                                     stream});
 }
 
@@ -279,6 +290,7 @@ void ChatService::AttachNonStreamFinishHandler(const ChatExecutionRequest &reque
                   << " total_ms=" << dur_ms
                   << " queue_wait_ms=" << queue_wait_ms
                   << " reason=" << http_utils::finish_reason_to_str(reason);
+        ctx->request_state.reset();
     };
 }
 
@@ -310,6 +322,7 @@ void ChatService::AttachStreamFinishHandler(const ChatExecutionRequest &request,
                   << " total_ms=" << dur_ms
                   << " queue_wait_ms=" << queue_wait_ms
                   << " reason=" << http_utils::finish_reason_to_str(reason);
+        ctx->request_state.reset();
     };
 }
 

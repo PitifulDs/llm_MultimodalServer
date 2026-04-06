@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -48,5 +49,7 @@ private:
     static int ConnectTcp(const std::string &host, int port);
     static bool SendLine(int fd, const std::string &line);
     static bool ReadLine(int fd, std::string &line, std::string &buffer,
-                         const std::atomic<bool> &cancelled, int timeout_ms);
+                         const std::atomic<bool> &cancelled,
+                         int timeout_ms,
+                         std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max());
 };

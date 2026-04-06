@@ -160,6 +160,43 @@ namespace
         }
     }
 
+    bool has_deadline(std::chrono::steady_clock::time_point deadline)
+    {
+        return deadline != std::chrono::steady_clock::time_point::max();
+    }
+
+    void start_sync_cancel_watchdog(const std::shared_ptr<std::atomic<bool>> &cancel_flag,
+                                    const std::shared_ptr<std::atomic<bool>> &done,
+                                    const std::function<bool()> &is_client_alive)
+    {
+        if (!cancel_flag || !done)
+            return;
+
+        std::thread([cancel_flag, done, is_client_alive]
+        {
+            while (!done->load(std::memory_order_acquire))
+            {
+                if (!is_client_alive())
+                {
+                    cancel_flag->store(true, std::memory_order_release);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }).detach();
+    }
+
+    struct ScopedWatchdogDone
+    {
+        std::shared_ptr<std::atomic<bool>> done;
+
+        ~ScopedWatchdogDone()
+        {
+            if (done)
+                done->store(true, std::memory_order_release);
+        }
+    };
+
     PlatformError build_chat_platform_error(const ServingContext &ctx)
     {
         const std::string error_code =
@@ -177,8 +214,16 @@ namespace
                 ctx.error_message.empty() ? "invalid chat request" : ctx.error_message};
         }
 
+        if (error_code == "backend_timeout" ||
+            error_code == "request_timeout")
+        {
+            return {
+                PlatformErrorKind::Timeout,
+                error_code,
+                ctx.error_message.empty() ? "request timed out" : ctx.error_message};
+        }
+
         if (error_code == "backend_not_available" ||
-            error_code == "backend_timeout" ||
             error_code == "rag_index_missing" ||
             error_code == "rag_unavailable")
         {
@@ -509,6 +554,10 @@ HttpGateway::HttpGateway()
     experimental_agent_api_enabled_ = get_env_bool("EXPERIMENTAL_AGENT_API_ENABLED", false);
     experimental_rag_api_enabled_ = get_env_bool("EXPERIMENTAL_RAG_API_ENABLED", false);
     rag_retrieval_debug_api_enabled_ = get_env_bool("RAG_ENABLE_RETRIEVAL_DEBUG_API", true);
+    max_concurrent_requests_ = get_env_int("MAX_CONCURRENT_REQUESTS", 0);
+    max_model_concurrency_ = get_env_int("MAX_MODEL_CONCURRENCY", 0);
+    max_session_concurrency_ = get_env_int("MAX_SESSION_CONCURRENCY", 0);
+    request_timeout_ms_ = get_env_int("HTTP_REQUEST_TIMEOUT_MS", 0);
 
     AgentExecutor::Options agent_opt;
     agent_opt.repo_root = repo_root.string();
@@ -738,6 +787,9 @@ HttpGateway::HttpGateway()
                                       error_code,
                                       queue_wait_ms,
                                       run_ms,
+                                      ctx.usage.prompt_tokens,
+                                      ctx.usage.completion_tokens,
+                                      ctx.usage.total_tokens,
                                       ctx.stream);
             }});
     agent_executor_->SetStatusProvider([this]()
@@ -754,7 +806,10 @@ HttpGateway::HttpGateway()
             {"requests_in_flight", in_flight_.load(std::memory_order_relaxed)},
             {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
             {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
-            {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)}};
+            {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)},
+            {"requests_timeout_total", timeout_requests_.load(std::memory_order_relaxed)},
+            {"requests_rate_limited_total", rate_limited_requests_.load(std::memory_order_relaxed)},
+            {"total_tokens_total", total_tokens_total_.load(std::memory_order_relaxed)}};
         return out.dump();
     });
 
@@ -842,6 +897,9 @@ void HttpGateway::RecordGovernedRequest(const std::string &request_id,
                                         const std::string &error_code,
                                         int64_t queue_wait_ms,
                                         int64_t run_ms,
+                                        int prompt_tokens,
+                                        int completion_tokens,
+                                        int total_tokens,
                                         bool stream)
 {
     LogPlatformRequest("finish", RequestLogRecord{
@@ -856,7 +914,20 @@ void HttpGateway::RecordGovernedRequest(const std::string &request_id,
                                      finish_reason_to_str(reason),
                                      status_code,
                                      error_code,
+                                     prompt_tokens,
+                                     completion_tokens,
+                                     total_tokens,
                                      stream});
+
+    prompt_tokens_total_.fetch_add(prompt_tokens, std::memory_order_relaxed);
+    completion_tokens_total_.fetch_add(completion_tokens, std::memory_order_relaxed);
+    total_tokens_total_.fetch_add(total_tokens, std::memory_order_relaxed);
+    if (error_code == "backend_timeout" || error_code == "request_timeout")
+        timeout_requests_.fetch_add(1, std::memory_order_relaxed);
+    if (error_code == "queue_full" || error_code == "queue_timeout" ||
+        error_code == "rate_limit_global" || error_code == "rate_limit_model" ||
+        error_code == "rate_limit_session")
+        rate_limited_requests_.fetch_add(1, std::memory_order_relaxed);
 
     if (backend.empty())
         return;
@@ -864,12 +935,22 @@ void HttpGateway::RecordGovernedRequest(const std::string &request_id,
     std::lock_guard<std::mutex> lk(backend_governance_mu_);
     auto &stats = backend_governance_[backend];
     stats.requests_total += 1;
+    stats.prompt_tokens_total += prompt_tokens;
+    stats.completion_tokens_total += completion_tokens;
+    stats.total_tokens_total += total_tokens;
     if (reason == FinishReason::error)
     {
         stats.requests_error_total += 1;
         stats.last_error = error_code.empty() ? "internal_error" : error_code;
-        if (error_code == "backend_timeout")
+        if (error_code == "backend_timeout" || error_code == "request_timeout")
+        {
+            stats.requests_timeout_total += 1;
             stats.timeout_total += 1;
+        }
+        if (error_code == "queue_full" || error_code == "queue_timeout" ||
+            error_code == "rate_limit_global" || error_code == "rate_limit_model" ||
+            error_code == "rate_limit_session")
+            stats.requests_rate_limited_total += 1;
     }
     else if (reason == FinishReason::cancelled)
     {
@@ -914,6 +995,11 @@ PlatformRuntimeSnapshot HttpGateway::BuildPlatformRuntimeSnapshot() const
     snapshot.requests_stream_total = stream_requests_.load(std::memory_order_relaxed);
     snapshot.requests_error_total = error_requests_.load(std::memory_order_relaxed);
     snapshot.requests_cancelled_total = cancelled_requests_.load(std::memory_order_relaxed);
+    snapshot.requests_timeout_total = timeout_requests_.load(std::memory_order_relaxed);
+    snapshot.requests_rate_limited_total = rate_limited_requests_.load(std::memory_order_relaxed);
+    snapshot.prompt_tokens_total = prompt_tokens_total_.load(std::memory_order_relaxed);
+    snapshot.completion_tokens_total = completion_tokens_total_.load(std::memory_order_relaxed);
+    snapshot.total_tokens_total = total_tokens_total_.load(std::memory_order_relaxed);
     return snapshot;
 }
 
@@ -932,8 +1018,13 @@ std::vector<BackendRuntimeSnapshot> HttpGateway::BuildBackendRuntimeSnapshots() 
         snapshot.requests_total += counters.requests_total;
         snapshot.requests_error_total += counters.requests_error_total;
         snapshot.requests_cancelled_total += counters.requests_cancelled_total;
+        snapshot.requests_timeout_total += counters.requests_timeout_total;
+        snapshot.requests_rate_limited_total += counters.requests_rate_limited_total;
         snapshot.timeout_total += counters.timeout_total;
         snapshot.cancelled_total += counters.cancelled_total;
+        snapshot.prompt_tokens_total += counters.prompt_tokens_total;
+        snapshot.completion_tokens_total += counters.completion_tokens_total;
+        snapshot.total_tokens_total += counters.total_tokens_total;
         if (!counters.last_error.empty())
             snapshot.last_error = counters.last_error;
     }
@@ -984,6 +1075,11 @@ void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
         {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
         {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
         {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)},
+        {"requests_timeout_total", timeout_requests_.load(std::memory_order_relaxed)},
+        {"requests_rate_limited_total", rate_limited_requests_.load(std::memory_order_relaxed)},
+        {"prompt_tokens_total", prompt_tokens_total_.load(std::memory_order_relaxed)},
+        {"completion_tokens_total", completion_tokens_total_.load(std::memory_order_relaxed)},
+        {"total_tokens_total", total_tokens_total_.load(std::memory_order_relaxed)},
         {"avg_latency_ms", avg_latency_ms},
         {"rag_requests_total", rag_requests_total_.load(std::memory_order_relaxed)},
         {"rag_requests_total_by_kb",
@@ -1070,7 +1166,7 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
     const std::string request_id = gen_request_id();
-    const auto parsed = ParseEmbeddingsRequestBody(req.body, get_default_model(), request_id);
+    auto parsed = ParseEmbeddingsRequestBody(req.body, get_default_model(), request_id);
     if (!parsed.ok)
     {
         WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
@@ -1088,6 +1184,9 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                               parsed.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1104,6 +1203,9 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                                     "",
                                     0,
                                     "",
+                                    0,
+                                    0,
+                                    0,
                                     false});
 
     if (!embeddings_service_)
@@ -1127,6 +1229,9 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                               error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1150,12 +1255,75 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                               validation_error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
+    std::shared_ptr<void> request_lease;
+    const PlatformError limit_error = AcquireRequestLease(parsed.request.model, "", request_lease);
+    if (limit_error.HasError())
+    {
+        WriteError(res, limit_error);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/embeddings",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              limit_error.HttpStatus(),
+                              limit_error.code,
+                              0,
+                              dur_ms,
+                              0,
+                              0,
+                              0,
+                              false);
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    parsed.request.cancelled = std::make_shared<std::atomic<bool>>(false);
+    if (request_timeout_ms_ > 0)
+        parsed.request.deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
+    const auto watchdog_done = std::make_shared<std::atomic<bool>>(false);
+    ScopedWatchdogDone stop_watchdog{watchdog_done};
+    start_sync_cancel_watchdog(parsed.request.cancelled, watchdog_done, [&res]()
+    {
+        return res.IsAlive();
+    });
+
     const auto result = embeddings_service_->Run(parsed.request);
+    if (!res.IsAlive())
+    {
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/embeddings",
+                              parsed.request.model,
+                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::cancelled,
+                              499,
+                              "request_cancelled",
+                              0,
+                              dur_ms,
+                              result.response.usage.prompt_tokens,
+                              result.response.usage.completion_tokens,
+                              result.response.usage.total_tokens,
+                              false);
+        RecordFinish(FinishReason::cancelled, dur_ms);
+        return;
+    }
     if (result.error.HasError())
     {
         WriteError(res, result.error);
@@ -1173,6 +1341,9 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                               result.error.code,
                               0,
                               dur_ms,
+                              result.response.usage.prompt_tokens,
+                              result.response.usage.completion_tokens,
+                              result.response.usage.total_tokens,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1199,6 +1370,9 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                           "",
                           0,
                           dur_ms,
+                          result.response.usage.prompt_tokens,
+                          result.response.usage.completion_tokens,
+                          result.response.usage.total_tokens,
                           false);
     RecordFinish(FinishReason::stop, dur_ms);
 }
@@ -1210,7 +1384,7 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
     const std::string request_id = gen_request_id();
-    const auto parsed = ParseRerankRequestBody(req.body, get_default_model(), request_id);
+    auto parsed = ParseRerankRequestBody(req.body, get_default_model(), request_id);
     if (!parsed.ok)
     {
         WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
@@ -1228,6 +1402,9 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                               parsed.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1244,6 +1421,9 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                                     "",
                                     0,
                                     "",
+                                    0,
+                                    0,
+                                    0,
                                     false});
 
     if (!rerank_service_)
@@ -1267,6 +1447,9 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                               error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1290,12 +1473,75 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                               validation_error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
+    std::shared_ptr<void> request_lease;
+    const PlatformError limit_error = AcquireRequestLease(parsed.request.model, "", request_lease);
+    if (limit_error.HasError())
+    {
+        WriteError(res, limit_error);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/rerank",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              limit_error.HttpStatus(),
+                              limit_error.code,
+                              0,
+                              dur_ms,
+                              0,
+                              0,
+                              0,
+                              false);
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    parsed.request.cancelled = std::make_shared<std::atomic<bool>>(false);
+    if (request_timeout_ms_ > 0)
+        parsed.request.deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
+    const auto watchdog_done = std::make_shared<std::atomic<bool>>(false);
+    ScopedWatchdogDone stop_watchdog{watchdog_done};
+    start_sync_cancel_watchdog(parsed.request.cancelled, watchdog_done, [&res]()
+    {
+        return res.IsAlive();
+    });
+
     const auto result = rerank_service_->Run(parsed.request);
+    if (!res.IsAlive())
+    {
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/rerank",
+                              parsed.request.model,
+                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::cancelled,
+                              499,
+                              "request_cancelled",
+                              0,
+                              dur_ms,
+                              result.response.usage.prompt_tokens,
+                              result.response.usage.completion_tokens,
+                              result.response.usage.total_tokens,
+                              false);
+        RecordFinish(FinishReason::cancelled, dur_ms);
+        return;
+    }
     if (result.error.HasError())
     {
         WriteError(res, result.error);
@@ -1313,6 +1559,9 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                               result.error.code,
                               0,
                               dur_ms,
+                              result.response.usage.prompt_tokens,
+                              result.response.usage.completion_tokens,
+                              result.response.usage.total_tokens,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1339,6 +1588,9 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                           "",
                           0,
                           dur_ms,
+                          result.response.usage.prompt_tokens,
+                          result.response.usage.completion_tokens,
+                          result.response.usage.total_tokens,
                           false);
     RecordFinish(FinishReason::stop, dur_ms);
 }
@@ -1743,6 +1995,9 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
                               parsed.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1770,6 +2025,9 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
                               error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1794,9 +2052,65 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
                               validation_error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
+    }
+
+    std::shared_ptr<void> request_lease;
+    const PlatformError limit_error = AcquireRequestLease(ctx ? ctx->model : std::string(),
+                                                          ctx ? ctx->session_id : std::string(),
+                                                          request_lease);
+    if (limit_error.HasError())
+    {
+        WriteError(res, limit_error);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordGovernedRequest(ctx ? ctx->request_id : request_id,
+                              "/v1/chat/completions",
+                              ctx ? ctx->model : std::string(),
+                              ctx ? ctx->inference_backend : std::string(),
+                              ModelCapability::Chat,
+                              ctx ? ctx->session_id : std::string(),
+                              FinishReason::error,
+                              limit_error.HttpStatus(),
+                              limit_error.code,
+                              0,
+                              dur_ms,
+                              0,
+                              0,
+                              0,
+                              false);
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+    ctx->request_state = request_lease;
+    if (request_timeout_ms_ > 0)
+        ctx->deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
+    if (has_deadline(ctx->deadline))
+    {
+        std::weak_ptr<ServingContext> weak_ctx = ctx;
+        std::thread([weak_ctx]
+        {
+            while (auto live = weak_ctx.lock())
+            {
+                if (live->finished.load(std::memory_order_acquire))
+                    return;
+                if (live->DeadlineExceeded())
+                {
+                    live->cancelled.store(true, std::memory_order_release);
+                    live->params["error_code"] = "request_timeout";
+                    live->error_message = "request timed out";
+                    live->EmitFinish(FinishReason::error);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }).detach();
     }
 
     auto run_result = chat_service_->RunNonStream(
@@ -1858,6 +2172,9 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
                               parsed.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               true);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1885,6 +2202,9 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
                               error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               true);
         RecordFinish(FinishReason::error, dur_ms);
         return;
@@ -1909,9 +2229,65 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
                               validation_error.code,
                               0,
                               dur_ms,
+                              0,
+                              0,
+                              0,
                               true);
         RecordFinish(FinishReason::error, dur_ms);
         return;
+    }
+
+    std::shared_ptr<void> request_lease;
+    const PlatformError limit_error = AcquireRequestLease(ctx ? ctx->model : std::string(),
+                                                          ctx ? ctx->session_id : std::string(),
+                                                          request_lease);
+    if (limit_error.HasError())
+    {
+        WriteError(*res_ptr, limit_error);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordGovernedRequest(ctx ? ctx->request_id : request_id,
+                              "/v1/chat/completions",
+                              ctx ? ctx->model : std::string(),
+                              ctx ? ctx->inference_backend : std::string(),
+                              ModelCapability::Chat,
+                              ctx ? ctx->session_id : std::string(),
+                              FinishReason::error,
+                              limit_error.HttpStatus(),
+                              limit_error.code,
+                              0,
+                              dur_ms,
+                              0,
+                              0,
+                              0,
+                              true);
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+    ctx->request_state = request_lease;
+    if (request_timeout_ms_ > 0)
+        ctx->deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
+    if (has_deadline(ctx->deadline))
+    {
+        std::weak_ptr<ServingContext> weak_ctx = ctx;
+        std::thread([weak_ctx]
+        {
+            while (auto live = weak_ctx.lock())
+            {
+                if (live->finished.load(std::memory_order_acquire))
+                    return;
+                if (live->DeadlineExceeded())
+                {
+                    live->cancelled.store(true, std::memory_order_release);
+                    live->params["error_code"] = "request_timeout";
+                    live->error_message = "request timed out";
+                    live->EmitFinish(FinishReason::error);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }).detach();
     }
 
     // 绑定 HttpStreamSession 生命周期（先不 Start）
@@ -1957,4 +2333,101 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
             http_session->Close();
         },
         start_time);
+}
+
+PlatformError HttpGateway::AcquireRequestLease(const std::string &model,
+                                               const std::string &session_id,
+                                               std::shared_ptr<void> &lease)
+{
+    struct Lease
+    {
+        HttpGateway *owner = nullptr;
+        std::string model;
+        std::string session_id;
+
+        ~Lease()
+        {
+            if (owner)
+                owner->ReleaseRequestLease(model, session_id);
+        }
+    };
+
+    std::lock_guard<std::mutex> lk(request_limit_mu_);
+    if (max_concurrent_requests_ > 0 && governed_in_flight_ >= max_concurrent_requests_)
+    {
+        return {
+            PlatformErrorKind::RateLimit,
+            "rate_limit_global",
+            "global request concurrency limit reached"};
+    }
+
+    if (max_model_concurrency_ > 0 && !model.empty())
+    {
+        const auto it = model_in_flight_.find(model);
+        const int64_t current = it == model_in_flight_.end() ? 0 : it->second;
+        if (current >= max_model_concurrency_)
+        {
+            return {
+                PlatformErrorKind::RateLimit,
+                "rate_limit_model",
+                "model concurrency limit reached: " + model};
+        }
+    }
+
+    if (max_session_concurrency_ > 0 && !session_id.empty())
+    {
+        const auto it = session_in_flight_.find(session_id);
+        const int64_t current = it == session_in_flight_.end() ? 0 : it->second;
+        if (current >= max_session_concurrency_)
+        {
+            return {
+                PlatformErrorKind::RateLimit,
+                "rate_limit_session",
+                "session concurrency limit reached: " + session_id};
+        }
+    }
+
+    governed_in_flight_ += 1;
+    if (!model.empty())
+        model_in_flight_[model] += 1;
+    if (!session_id.empty())
+        session_in_flight_[session_id] += 1;
+
+    auto owned_lease = std::make_shared<Lease>();
+    owned_lease->owner = this;
+    owned_lease->model = model;
+    owned_lease->session_id = session_id;
+    lease = owned_lease;
+    return {};
+}
+
+void HttpGateway::ReleaseRequestLease(const std::string &model, const std::string &session_id)
+{
+    std::lock_guard<std::mutex> lk(request_limit_mu_);
+    if (governed_in_flight_ > 0)
+        governed_in_flight_ -= 1;
+
+    if (!model.empty())
+    {
+        auto it = model_in_flight_.find(model);
+        if (it != model_in_flight_.end())
+        {
+            if (it->second > 0)
+                it->second -= 1;
+            if (it->second <= 0)
+                model_in_flight_.erase(it);
+        }
+    }
+
+    if (!session_id.empty())
+    {
+        auto it = session_in_flight_.find(session_id);
+        if (it != session_in_flight_.end())
+        {
+            if (it->second > 0)
+                it->second -= 1;
+            if (it->second <= 0)
+                session_in_flight_.erase(it);
+        }
+    }
 }

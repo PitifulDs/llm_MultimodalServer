@@ -43,5 +43,7 @@ private:
     bool EncodeTextEmbedding(const std::string &text,
                              std::vector<float> &embedding,
                              int &token_count,
-                             std::string &error_message);
+                             std::string &error_message,
+                             const std::shared_ptr<std::atomic<bool>> &cancelled = {},
+                             std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max());
 };

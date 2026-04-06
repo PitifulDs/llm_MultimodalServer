@@ -102,9 +102,14 @@ nlohmann::json AdminStatusService::BuildBackendsStatus(const std::vector<ModelIn
             {"requests_total", runtime.requests_total},
             {"requests_error_total", runtime.requests_error_total},
             {"requests_cancelled_total", runtime.requests_cancelled_total},
+            {"requests_timeout_total", runtime.requests_timeout_total},
+            {"requests_rate_limited_total", runtime.requests_rate_limited_total},
             {"last_error", runtime.last_error},
             {"timeout_total", runtime.timeout_total},
             {"cancelled_total", runtime.cancelled_total},
+            {"prompt_tokens_total", runtime.prompt_tokens_total},
+            {"completion_tokens_total", runtime.completion_tokens_total},
+            {"total_tokens_total", runtime.total_tokens_total},
             {"requests_in_flight", platform_runtime.requests_in_flight},
         });
     }

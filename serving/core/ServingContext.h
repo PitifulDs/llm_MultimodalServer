@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -69,6 +70,8 @@ struct ServingContext
     // ===== Runtime Control =====
     std::atomic<bool> cancelled{false};
     std::atomic<bool> finished{false};
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
+    std::shared_ptr<void> request_state;
 
     // ===== Streaming Callback =====
     std::function<void(const StreamChunk &)> on_chunk;
@@ -89,6 +92,16 @@ struct ServingContext
     // ===== Finish Wait (non-stream) =====
     mutable std::mutex finish_mu;
     std::condition_variable finish_cv;
+    bool HasDeadline() const
+    {
+        return deadline != std::chrono::steady_clock::time_point::max();
+    }
+
+    bool DeadlineExceeded() const
+    {
+        return HasDeadline() && std::chrono::steady_clock::now() >= deadline;
+    }
+
     void EmitDelta(const std::string& text)
     {
         if(finished.load()){

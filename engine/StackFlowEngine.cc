@@ -194,7 +194,9 @@ bool StackFlowEngine::SendLine(int fd, const std::string &line)
 }
 
 bool StackFlowEngine::ReadLine(int fd, std::string &line, std::string &buffer,
-                               const std::atomic<bool> &cancelled, int timeout_ms)
+                               const std::atomic<bool> &cancelled,
+                               int timeout_ms,
+                               std::chrono::steady_clock::time_point deadline)
 {
     const int total_timeout_ms = timeout_ms > 0 ? timeout_ms : 10000;
     int waited_ms = 0;
@@ -211,16 +213,31 @@ bool StackFlowEngine::ReadLine(int fd, std::string &line, std::string &buffer,
         if (cancelled.load(std::memory_order_acquire))
             return false;
 
+        if (deadline != std::chrono::steady_clock::time_point::max() &&
+            std::chrono::steady_clock::now() >= deadline)
+            return false;
+
         struct pollfd pfd;
         pfd.fd = fd;
         pfd.events = POLLIN;
-        const int step_ms = 200;
-        int ret = ::poll(&pfd, 1, step_ms);
+        int poll_ms = std::min(200, total_timeout_ms - waited_ms);
+        if (deadline != std::chrono::steady_clock::time_point::max())
+        {
+            const auto remaining_deadline_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (remaining_deadline_ms <= 0)
+                return false;
+            poll_ms = std::min(poll_ms, static_cast<int>(remaining_deadline_ms));
+        }
+        if (poll_ms <= 0)
+            return false;
+
+        int ret = ::poll(&pfd, 1, poll_ms);
         if (ret < 0)
             return false;
         if (ret == 0)
         {
-            waited_ms += step_ms;
+            waited_ms += poll_ms;
             if (waited_ms >= total_timeout_ms)
                 return false;
             continue;
@@ -278,6 +295,23 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     ctx->usage.prompt_tokens = estimate_tokens_from_text(payload);
     ctx->usage.completion_tokens = 0;
     ctx->usage.total_tokens = ctx->usage.prompt_tokens;
+
+    auto emit_timeout_or_cancel = [&](const std::string &timeout_message)
+    {
+        if (ctx->DeadlineExceeded())
+        {
+            ctx->cancelled.store(true, std::memory_order_release);
+            if (ctx->error_message.empty())
+                ctx->error_message = timeout_message;
+            ctx->params["error_code"] = "request_timeout";
+            ctx->EmitFinish(FinishReason::error);
+            return;
+        }
+
+        if (!ctx->cancelled.load(std::memory_order_acquire))
+            ctx->params["error_code"] = "backend_timeout";
+        ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
+    };
 
     int fd = ConnectTcp(host_, port_);
     if (fd < 0)
@@ -397,13 +431,11 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
             return;
         }
 
-        if (!ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_))
+        if (!ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_, ctx->deadline))
         {
             ::close(fd);
             ctx->error_message = "StackFlowEngine: setup timeout or cancelled";
-            if (!ctx->cancelled.load(std::memory_order_acquire))
-                ctx->params["error_code"] = "backend_timeout";
-            ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
+            emit_timeout_or_cancel("StackFlowEngine: request timeout");
             return;
         }
 
@@ -503,16 +535,13 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     {
         while (!ctx->finished.load(std::memory_order_acquire))
         {
-            if (!ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_))
+            if (!ReadLine(fd, line, buffer, ctx->cancelled, timeout_ms_, ctx->deadline))
             {
                 if (!ctx->finished.load(std::memory_order_acquire))
                 {
                     if (!ctx->cancelled.load(std::memory_order_acquire) && ctx->error_message.empty())
-                    {
                         ctx->error_message = "StackFlowEngine: stream inference timeout or connection closed";
-                        ctx->params["error_code"] = "backend_timeout";
-                    }
-                    ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
+                    emit_timeout_or_cancel("StackFlowEngine: request timeout");
                 }
                 break;
             }
@@ -576,7 +605,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     }
     else
     {
-        if (ReadLine(fd, line, buffer, ctx->cancelled, infer_timeout_ms))
+        if (ReadLine(fd, line, buffer, ctx->cancelled, infer_timeout_ms, ctx->deadline))
         {
             try
             {
@@ -627,11 +656,8 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         else
         {
             if (!ctx->cancelled.load(std::memory_order_acquire) && ctx->error_message.empty())
-            {
                 ctx->error_message = "StackFlowEngine: inference timeout or connection closed";
-                ctx->params["error_code"] = "backend_timeout";
-            }
-            ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
+            emit_timeout_or_cancel("StackFlowEngine: request timeout");
         }
     }
 

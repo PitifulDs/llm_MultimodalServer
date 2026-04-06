@@ -14,6 +14,11 @@ struct PlatformRuntimeSnapshot
     int64_t requests_stream_total = 0;
     int64_t requests_error_total = 0;
     int64_t requests_cancelled_total = 0;
+    int64_t requests_timeout_total = 0;
+    int64_t requests_rate_limited_total = 0;
+    int64_t prompt_tokens_total = 0;
+    int64_t completion_tokens_total = 0;
+    int64_t total_tokens_total = 0;
 };
 
 struct BackendRuntimeSnapshot
@@ -25,8 +30,13 @@ struct BackendRuntimeSnapshot
     int64_t requests_total = 0;
     int64_t requests_error_total = 0;
     int64_t requests_cancelled_total = 0;
+    int64_t requests_timeout_total = 0;
+    int64_t requests_rate_limited_total = 0;
     std::vector<std::string> capabilities;
     std::string last_error;
     int64_t timeout_total = 0;
     int64_t cancelled_total = 0;
+    int64_t prompt_tokens_total = 0;
+    int64_t completion_tokens_total = 0;
+    int64_t total_tokens_total = 0;
 };

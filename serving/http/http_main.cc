@@ -64,6 +64,10 @@ namespace
             set_env_from_json(cfg, "max_model_queue", "MAX_MODEL_QUEUE");
             set_env_from_json(cfg, "max_session_pending", "MAX_SESSION_PENDING");
             set_env_from_json(cfg, "max_queue_wait_ms", "MAX_QUEUE_WAIT_MS");
+            set_env_from_json(cfg, "http_request_timeout_ms", "HTTP_REQUEST_TIMEOUT_MS");
+            set_env_from_json(cfg, "max_concurrent_requests", "MAX_CONCURRENT_REQUESTS");
+            set_env_from_json(cfg, "max_model_concurrency", "MAX_MODEL_CONCURRENCY");
+            set_env_from_json(cfg, "max_session_concurrency", "MAX_SESSION_CONCURRENCY");
             set_env_from_json(cfg, "llama_model_path", "LLAMA_MODEL_PATH");
             set_env_from_json(cfg, "llama_n_ctx", "LLAMA_N_CTX");
             set_env_from_json(cfg, "llama_n_threads", "LLAMA_N_THREADS");

@@ -20,6 +20,40 @@ namespace
 std::mutex g_llama_backend_mu;
 int g_llama_backend_refcount = 0;
 
+bool has_deadline(std::chrono::steady_clock::time_point deadline)
+{
+    return deadline != std::chrono::steady_clock::time_point::max();
+}
+
+bool governance_cancelled(const std::shared_ptr<std::atomic<bool>> &cancelled)
+{
+    return cancelled && cancelled->load(std::memory_order_acquire);
+}
+
+bool governance_timed_out(std::chrono::steady_clock::time_point deadline)
+{
+    return has_deadline(deadline) && std::chrono::steady_clock::now() >= deadline;
+}
+
+bool check_embedding_abort(const std::shared_ptr<std::atomic<bool>> &cancelled,
+                           std::chrono::steady_clock::time_point deadline,
+                           std::string &error_message)
+{
+    if (governance_cancelled(cancelled))
+    {
+        error_message = "LlamaEngine: request cancelled";
+        return true;
+    }
+
+    if (governance_timed_out(deadline))
+    {
+        error_message = "LlamaEngine: request timeout";
+        return true;
+    }
+
+    return false;
+}
+
 void acquire_llama_backend()
 {
     std::lock_guard<std::mutex> lk(g_llama_backend_mu);
@@ -434,10 +468,15 @@ std::shared_ptr<ModelContext> LlamaEngine::EnsureContext(const std::shared_ptr<S
 bool LlamaEngine::EncodeTextEmbedding(const std::string &text,
                                       std::vector<float> &embedding,
                                       int &token_count,
-                                      std::string &error_message)
+                                      std::string &error_message,
+                                      const std::shared_ptr<std::atomic<bool>> &cancelled,
+                                      std::chrono::steady_clock::time_point deadline)
 {
     embedding.clear();
     token_count = 0;
+
+    if (check_embedding_abort(cancelled, deadline, error_message))
+        return false;
 
     if (!model_)
     {
@@ -479,6 +518,9 @@ bool LlamaEngine::EncodeTextEmbedding(const std::string &text,
         return false;
     }
 
+    if (check_embedding_abort(cancelled, deadline, error_message))
+        return false;
+
     token_count = static_cast<int>(toks.size());
 
     if (!decode_tokens(mc->ctx, toks))
@@ -488,6 +530,9 @@ bool LlamaEngine::EncodeTextEmbedding(const std::string &text,
     }
 
     llama_synchronize(mc->ctx);
+
+    if (check_embedding_abort(cancelled, deadline, error_message))
+        return false;
 
     float *embedding_ptr = llama_get_embeddings_ith(mc->ctx, -1);
     if (!embedding_ptr)
@@ -528,13 +573,31 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         ctx->usage.total_tokens = ctx->usage.prompt_tokens + ctx->usage.completion_tokens;
     };
 
-    // 取消点：尽早退出
-    if (ctx->cancelled.load(std::memory_order_acquire))
+    auto abort_if_needed = [&]() -> bool
     {
-        finalize_usage();
-        ctx->EmitFinish(FinishReason::cancelled);
+        if (ctx->DeadlineExceeded())
+        {
+            ctx->cancelled.store(true, std::memory_order_release);
+            ctx->error_message = "LlamaEngine: request timeout";
+            ctx->params["error_code"] = "request_timeout";
+            finalize_usage();
+            ctx->EmitFinish(FinishReason::error);
+            return true;
+        }
+
+        if (ctx->cancelled.load(std::memory_order_acquire))
+        {
+            finalize_usage();
+            ctx->EmitFinish(FinishReason::cancelled);
+            return true;
+        }
+
+        return false;
+    };
+
+    // 取消点：尽早退出
+    if (abort_if_needed())
         return;
-    }
 
     auto mc = EnsureContext(ctx->session);
     if (!mc || !mc->ctx || !mc->sampler)
@@ -592,12 +655,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     }
 
     // 取消点：tokenize 之前
-    if (ctx->cancelled.load(std::memory_order_acquire))
-    {
-        finalize_usage();
-        ctx->EmitFinish(FinishReason::cancelled);
+    if (abort_if_needed())
         return;
-    }
 
     // 2) tokenize
     std::vector<llama_token> toks;
@@ -614,12 +673,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     ctx->usage.prompt_tokens += static_cast<int>(toks.size());
 
     // 取消点：prefill 之前
-    if (ctx->cancelled.load(std::memory_order_acquire))
-    {
-        finalize_usage();
-        ctx->EmitFinish(FinishReason::cancelled);
+    if (abort_if_needed())
         return;
-    }
 
     // 3) prefill/append -> KV
     if (!decode_tokens(mc->ctx, toks, mc->n_past))
@@ -642,12 +697,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
     }
 
     // 取消点：prefill 之后
-    if (ctx->cancelled.load(std::memory_order_acquire))
-    {
-        finalize_usage();
-        ctx->EmitFinish(FinishReason::cancelled);
+    if (abort_if_needed())
         return;
-    }
 
     // 4) generate
     int max_new_tokens = 512;
@@ -681,12 +732,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
               << " max_new_tokens=" << max_new_tokens;
     for (int step = 0; step < max_new_tokens; ++step)
     {
-        if (ctx->cancelled.load(std::memory_order_acquire))
-        {
-            finalize_usage();
-            ctx->EmitFinish(FinishReason::cancelled);
+        if (abort_if_needed())
             return;
-        }
 
         llama_token next = llama_sampler_sample(mc->sampler, mc->ctx, -1);
 
@@ -697,12 +744,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
             return;
         }
 
-        if (ctx->cancelled.load(std::memory_order_acquire))
-        {
-            finalize_usage();
-            ctx->EmitFinish(FinishReason::cancelled);
+        if (abort_if_needed())
             return;
-        }
 
         std::vector<llama_token> one{next};
         if (!decode_tokens(mc->ctx, one, mc->n_past))
@@ -717,12 +760,8 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
         // completion tokens（成功 decode 的 token）
         ctx->usage.completion_tokens += 1;
 
-        if (ctx->cancelled.load(std::memory_order_acquire))
-        {
-            finalize_usage();
-            ctx->EmitFinish(FinishReason::cancelled);
+        if (abort_if_needed())
             return;
-        }
 
         std::string piece = token_to_piece(vocab, next);
         if (!piece.empty() && !ctx->cancelled.load(std::memory_order_acquire))
@@ -754,9 +793,16 @@ bool LlamaEngine::RunEmbeddings(const EmbeddingsRequest &request,
     response.data.reserve(request.input.size());
     for (size_t index = 0; index < request.input.size(); ++index)
     {
+        if (check_embedding_abort(request.cancelled, request.deadline, error_message))
+        {
+            response.error_message = error_message;
+            return false;
+        }
+
         std::vector<float> embedding;
         int token_count = 0;
-        if (!EncodeTextEmbedding(request.input[index], embedding, token_count, error_message))
+        if (!EncodeTextEmbedding(request.input[index], embedding, token_count, error_message,
+                                 request.cancelled, request.deadline))
         {
             response.error_message = error_message;
             return false;
@@ -790,7 +836,8 @@ bool LlamaEngine::RunRerank(const RerankRequest &request,
 
     std::vector<float> query_embedding;
     int query_tokens = 0;
-    if (!EncodeTextEmbedding(request.query, query_embedding, query_tokens, error_message))
+    if (!EncodeTextEmbedding(request.query, query_embedding, query_tokens, error_message,
+                             request.cancelled, request.deadline))
     {
         response.error_message = error_message;
         return false;
@@ -801,9 +848,16 @@ bool LlamaEngine::RunRerank(const RerankRequest &request,
     response.data.reserve(request.documents.size());
     for (size_t index = 0; index < request.documents.size(); ++index)
     {
+        if (check_embedding_abort(request.cancelled, request.deadline, error_message))
+        {
+            response.error_message = error_message;
+            return false;
+        }
+
         std::vector<float> document_embedding;
         int document_tokens = 0;
-        if (!EncodeTextEmbedding(request.documents[index], document_embedding, document_tokens, error_message))
+        if (!EncodeTextEmbedding(request.documents[index], document_embedding, document_tokens, error_message,
+                                 request.cancelled, request.deadline))
         {
             response.error_message = error_message;
             return false;

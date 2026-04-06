@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -16,6 +19,8 @@ struct EmbeddingsRequest
     std::vector<std::string> input;
     std::string encoding_format = "float";
     ModelCapability capability = ModelCapability::Embeddings;
+    std::shared_ptr<std::atomic<bool>> cancelled;
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
 };
 
 struct EmbeddingData

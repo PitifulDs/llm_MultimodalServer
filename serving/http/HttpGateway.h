@@ -91,18 +91,30 @@ private:
                                const std::string &error_code,
                                int64_t queue_wait_ms,
                                int64_t run_ms,
+                               int prompt_tokens,
+                               int completion_tokens,
+                               int total_tokens,
                                bool stream);
     void RecordRagMetrics(const ServingContext &ctx);
     PlatformRuntimeSnapshot BuildPlatformRuntimeSnapshot() const;
     std::vector<BackendRuntimeSnapshot> BuildBackendRuntimeSnapshots() const;
+    PlatformError AcquireRequestLease(const std::string &model,
+                                      const std::string &session_id,
+                                      std::shared_ptr<void> &lease);
+    void ReleaseRequestLease(const std::string &model, const std::string &session_id);
 
     struct BackendGovernanceCounters
     {
         int64_t requests_total = 0;
         int64_t requests_error_total = 0;
         int64_t requests_cancelled_total = 0;
+        int64_t requests_timeout_total = 0;
+        int64_t requests_rate_limited_total = 0;
         int64_t timeout_total = 0;
         int64_t cancelled_total = 0;
+        int64_t prompt_tokens_total = 0;
+        int64_t completion_tokens_total = 0;
+        int64_t total_tokens_total = 0;
         std::string last_error;
     };
 
@@ -125,8 +137,13 @@ private:
     std::atomic<int64_t> stream_requests_{0};
     std::atomic<int64_t> error_requests_{0};
     std::atomic<int64_t> cancelled_requests_{0};
+    std::atomic<int64_t> timeout_requests_{0};
+    std::atomic<int64_t> rate_limited_requests_{0};
     std::atomic<int64_t> in_flight_{0};
     std::atomic<int64_t> total_latency_ms_{0};
+    std::atomic<int64_t> prompt_tokens_total_{0};
+    std::atomic<int64_t> completion_tokens_total_{0};
+    std::atomic<int64_t> total_tokens_total_{0};
     std::atomic<int64_t> rag_requests_total_{0};
     std::atomic<int64_t> rag_requests_docs_total_{0};
     std::atomic<int64_t> rag_requests_repo_code_total_{0};
@@ -141,6 +158,14 @@ private:
     std::atomic<int64_t> rag_lexical_search_latency_ms_total_{0};
     mutable std::mutex backend_governance_mu_;
     std::unordered_map<std::string, BackendGovernanceCounters> backend_governance_;
+    mutable std::mutex request_limit_mu_;
+    int64_t governed_in_flight_{0};
+    std::unordered_map<std::string, int64_t> model_in_flight_;
+    std::unordered_map<std::string, int64_t> session_in_flight_;
+    int max_concurrent_requests_{0};
+    int max_model_concurrency_{0};
+    int max_session_concurrency_{0};
+    int request_timeout_ms_{0};
     bool experimental_agent_api_enabled_{false};
     bool experimental_rag_api_enabled_{false};
     bool rag_retrieval_debug_api_enabled_{true};

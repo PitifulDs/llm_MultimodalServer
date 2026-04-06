@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,6 +20,8 @@ struct RerankRequest
     std::vector<std::string> documents;
     int top_n = 0;
     ModelCapability capability = ModelCapability::Rerank;
+    std::shared_ptr<std::atomic<bool>> cancelled;
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
 };
 
 struct RerankResultItem

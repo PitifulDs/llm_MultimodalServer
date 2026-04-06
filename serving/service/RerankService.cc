@@ -5,6 +5,7 @@
 #include "serving/backend/RerankEngineFacade.h"
 #include "serving/service/ModelCatalogService.h"
 
+#include <chrono>
 #include <memory>
 
 RerankService::RerankService(ModelCatalogService &model_catalog_service)
@@ -110,6 +111,30 @@ RerankService::Result RerankService::Run(const RerankRequest &request) const
     result.response.model = spec.model_id.empty() ? request.model : spec.model_id;
     if (!facade.RunRerank(request, result.response, result.response.error_message))
     {
+        const bool request_timed_out =
+            request.deadline != std::chrono::steady_clock::time_point::max() &&
+            std::chrono::steady_clock::now() >= request.deadline;
+        const bool request_cancelled =
+            request.cancelled && request.cancelled->load(std::memory_order_acquire);
+
+        if (request_timed_out)
+        {
+            result.error = {
+                RerankErrorKind::Timeout,
+                "request_timeout",
+                result.response.error_message.empty() ? "rerank request timed out" : result.response.error_message};
+            return result;
+        }
+
+        if (request_cancelled)
+        {
+            result.error = {
+                RerankErrorKind::Internal,
+                "request_cancelled",
+                result.response.error_message.empty() ? "rerank request cancelled" : result.response.error_message};
+            return result;
+        }
+
         result.error = {
             RerankErrorKind::Internal,
             "internal_error",

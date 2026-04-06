@@ -18,6 +18,9 @@ struct RequestLogRecord
     std::string finish_reason;
     int status_code = 0;
     std::string error_code;
+    int prompt_tokens = 0;
+    int completion_tokens = 0;
+    int total_tokens = 0;
     bool stream = false;
 };
 
@@ -40,5 +43,8 @@ inline void LogPlatformRequest(const char *phase, const RequestLogRecord &record
               << " finish_reason=" << NormalizeRequestLogValue(record.finish_reason)
               << " status_code=" << record.status_code
               << " error_code=" << NormalizeRequestLogValue(record.error_code)
+              << " prompt_tokens=" << record.prompt_tokens
+              << " completion_tokens=" << record.completion_tokens
+              << " total_tokens=" << record.total_tokens
               << " stream=" << (record.stream ? 1 : 0);
 }

@@ -5,6 +5,10 @@
   "max_model_queue": 64,
   "max_session_pending": 64,
   "max_queue_wait_ms": 2000,
+  "http_request_timeout_ms": 180000,
+  "max_concurrent_requests": 0,
+  "max_model_concurrency": 0,
+  "max_session_concurrency": 0,
   "llama_model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
   "models": {
     "qwen2.5-1.5b": {
