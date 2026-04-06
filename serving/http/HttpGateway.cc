@@ -7,6 +7,7 @@
 #include "serving/core/SessionManager.h"
 #include "OpenAIStreamWriter.h"
 #include "HttpUtils.h"
+#include "serving/service/RequestLogging.h"
 
 #include "../../utils/json.hpp"
 #include <glog/logging.h>
@@ -134,109 +135,6 @@ namespace
         return http_utils::finish_reason_to_str(r);
     }
 
-    int status_from_chat_error_kind(ChatErrorKind kind)
-    {
-        switch (kind)
-        {
-        case ChatErrorKind::InvalidRequest:
-            return 400;
-        case ChatErrorKind::ServiceUnavailable:
-            return 503;
-        case ChatErrorKind::RateLimit:
-            return 429;
-        case ChatErrorKind::Internal:
-            return 500;
-        case ChatErrorKind::None:
-        default:
-            return 500;
-        }
-    }
-
-    const char *type_from_chat_error_kind(ChatErrorKind kind)
-    {
-        switch (kind)
-        {
-        case ChatErrorKind::InvalidRequest:
-            return "invalid_request_error";
-        case ChatErrorKind::ServiceUnavailable:
-            return "service_unavailable_error";
-        case ChatErrorKind::RateLimit:
-            return "rate_limit_error";
-        case ChatErrorKind::Internal:
-        case ChatErrorKind::None:
-        default:
-            return "internal_error";
-        }
-    }
-
-    int status_from_embeddings_error_kind(EmbeddingsErrorKind kind)
-    {
-        switch (kind)
-        {
-        case EmbeddingsErrorKind::InvalidRequest:
-            return 400;
-        case EmbeddingsErrorKind::ServiceUnavailable:
-            return 503;
-        case EmbeddingsErrorKind::RateLimit:
-            return 429;
-        case EmbeddingsErrorKind::Internal:
-        case EmbeddingsErrorKind::None:
-        default:
-            return 500;
-        }
-    }
-
-    const char *type_from_embeddings_error_kind(EmbeddingsErrorKind kind)
-    {
-        switch (kind)
-        {
-        case EmbeddingsErrorKind::InvalidRequest:
-            return "invalid_request_error";
-        case EmbeddingsErrorKind::ServiceUnavailable:
-            return "service_unavailable_error";
-        case EmbeddingsErrorKind::RateLimit:
-            return "rate_limit_error";
-        case EmbeddingsErrorKind::Internal:
-        case EmbeddingsErrorKind::None:
-        default:
-            return "internal_error";
-        }
-    }
-
-    int status_from_rerank_error_kind(RerankErrorKind kind)
-    {
-        switch (kind)
-        {
-        case RerankErrorKind::InvalidRequest:
-            return 400;
-        case RerankErrorKind::ServiceUnavailable:
-            return 503;
-        case RerankErrorKind::RateLimit:
-            return 429;
-        case RerankErrorKind::Internal:
-        case RerankErrorKind::None:
-        default:
-            return 500;
-        }
-    }
-
-    const char *type_from_rerank_error_kind(RerankErrorKind kind)
-    {
-        switch (kind)
-        {
-        case RerankErrorKind::InvalidRequest:
-            return "invalid_request_error";
-        case RerankErrorKind::ServiceUnavailable:
-            return "service_unavailable_error";
-        case RerankErrorKind::RateLimit:
-            return "rate_limit_error";
-        case RerankErrorKind::Internal:
-        case RerankErrorKind::None:
-        default:
-            return "internal_error";
-        }
-    }
-
     std::string normalize_backend_name(std::string backend)
     {
         std::transform(backend.begin(), backend.end(), backend.begin(), [](unsigned char ch)
@@ -246,6 +144,63 @@ namespace
         if (backend == "local" || backend == "llama")
             return "local";
         return "";
+    }
+
+    int64_t parse_int64_or_default(const std::string &value, int64_t default_value = 0)
+    {
+        if (value.empty())
+            return default_value;
+        try
+        {
+            return std::stoll(value);
+        }
+        catch (...)
+        {
+            return default_value;
+        }
+    }
+
+    PlatformError build_chat_platform_error(const ServingContext &ctx)
+    {
+        const std::string error_code =
+            ctx.params.count("error_code") ? ctx.params.at("error_code") : std::string();
+
+        if (error_code == "invalid_request" ||
+            error_code == "model_not_found" ||
+            error_code == "capability_not_supported" ||
+            error_code == "rag_invalid_request" ||
+            error_code == "rag_no_user_query")
+        {
+            return {
+                PlatformErrorKind::InvalidRequest,
+                error_code,
+                ctx.error_message.empty() ? "invalid chat request" : ctx.error_message};
+        }
+
+        if (error_code == "backend_not_available" ||
+            error_code == "backend_timeout" ||
+            error_code == "rag_index_missing" ||
+            error_code == "rag_unavailable")
+        {
+            return {
+                PlatformErrorKind::ServiceUnavailable,
+                error_code,
+                ctx.error_message.empty() ? "backend unavailable" : ctx.error_message};
+        }
+
+        if (error_code == "queue_full" || error_code == "queue_timeout" ||
+            ctx.error_message.find("queue full") != std::string::npos)
+        {
+            return {
+                PlatformErrorKind::RateLimit,
+                error_code.empty() ? "queue_full" : error_code,
+                ctx.error_message.empty() ? "engine overloaded" : ctx.error_message};
+        }
+
+        return {
+            PlatformErrorKind::Internal,
+            error_code.empty() ? "internal_error" : error_code,
+            ctx.error_message.empty() ? "engine error" : ctx.error_message};
     }
 
     struct EmbeddingsRequestParseResult
@@ -757,6 +712,33 @@ HttpGateway::HttpGateway()
             [this](const ServingContext &ctx)
             {
                 RecordRagMetrics(ctx);
+            },
+            [this](const ServingContext &ctx, FinishReason reason, int64_t run_ms)
+            {
+                const auto queue_wait_ms = parse_int64_or_default(
+                    ctx.params.count("queue_wait_ms") ? ctx.params.at("queue_wait_ms") : std::string(),
+                    0);
+                const std::string error_code =
+                    ctx.params.count("error_code") ? ctx.params.at("error_code") : std::string();
+                const int status_code = reason == FinishReason::cancelled
+                                            ? 499
+                                            : (reason == FinishReason::error
+                                                   ? build_chat_platform_error(ctx).HttpStatus()
+                                                   : 200);
+
+                RecordGovernedRequest(ctx.request_id,
+                                      "/v1/chat/completions",
+                                      ctx.model,
+                                      ctx.params.count("resolved_backend") ? ctx.params.at("resolved_backend")
+                                                                           : ctx.inference_backend,
+                                      ctx.capability,
+                                      ctx.session_id,
+                                      reason,
+                                      status_code,
+                                      error_code,
+                                      queue_wait_ms,
+                                      run_ms,
+                                      ctx.stream);
             }});
     agent_executor_->SetStatusProvider([this]()
     {
@@ -833,6 +815,11 @@ void HttpGateway::WriteError(HttpResponse &res, int status, const std::string &m
     res.End();
 }
 
+void HttpGateway::WriteError(HttpResponse &res, const PlatformError &error, const std::string &param)
+{
+    WriteError(res, error.HttpStatus(), error.message, error.HttpType(), error.code, param);
+}
+
 void HttpGateway::RecordFinish(FinishReason reason, int64_t dur_ms)
 {
     total_latency_ms_.fetch_add(dur_ms, std::memory_order_relaxed);
@@ -842,6 +829,53 @@ void HttpGateway::RecordFinish(FinishReason reason, int64_t dur_ms)
         error_requests_.fetch_add(1, std::memory_order_relaxed);
     else if (reason == FinishReason::cancelled)
         cancelled_requests_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void HttpGateway::RecordGovernedRequest(const std::string &request_id,
+                                        const std::string &api,
+                                        const std::string &model,
+                                        const std::string &backend,
+                                        ModelCapability capability,
+                                        const std::string &session_id,
+                                        FinishReason reason,
+                                        int status_code,
+                                        const std::string &error_code,
+                                        int64_t queue_wait_ms,
+                                        int64_t run_ms,
+                                        bool stream)
+{
+    LogPlatformRequest("finish", RequestLogRecord{
+                                     request_id,
+                                     api,
+                                     model,
+                                     backend,
+                                     std::string(ToString(capability)),
+                                     session_id,
+                                     queue_wait_ms,
+                                     run_ms,
+                                     finish_reason_to_str(reason),
+                                     status_code,
+                                     error_code,
+                                     stream});
+
+    if (backend.empty())
+        return;
+
+    std::lock_guard<std::mutex> lk(backend_governance_mu_);
+    auto &stats = backend_governance_[backend];
+    stats.requests_total += 1;
+    if (reason == FinishReason::error)
+    {
+        stats.requests_error_total += 1;
+        stats.last_error = error_code.empty() ? "internal_error" : error_code;
+        if (error_code == "backend_timeout")
+            stats.timeout_total += 1;
+    }
+    else if (reason == FinishReason::cancelled)
+    {
+        stats.requests_cancelled_total += 1;
+        stats.cancelled_total += 1;
+    }
 }
 
 void HttpGateway::RecordRagMetrics(const ServingContext &ctx)
@@ -881,6 +915,34 @@ PlatformRuntimeSnapshot HttpGateway::BuildPlatformRuntimeSnapshot() const
     snapshot.requests_error_total = error_requests_.load(std::memory_order_relaxed);
     snapshot.requests_cancelled_total = cancelled_requests_.load(std::memory_order_relaxed);
     return snapshot;
+}
+
+std::vector<BackendRuntimeSnapshot> HttpGateway::BuildBackendRuntimeSnapshots() const
+{
+    auto snapshots = executor_.GetBackendRuntimeSnapshots();
+    std::unordered_map<std::string, BackendRuntimeSnapshot> merged;
+    for (const auto &snapshot : snapshots)
+        merged[snapshot.backend] = snapshot;
+
+    std::lock_guard<std::mutex> lk(backend_governance_mu_);
+    for (const auto &[backend, counters] : backend_governance_)
+    {
+        auto &snapshot = merged[backend];
+        snapshot.backend = backend;
+        snapshot.requests_total += counters.requests_total;
+        snapshot.requests_error_total += counters.requests_error_total;
+        snapshot.requests_cancelled_total += counters.requests_cancelled_total;
+        snapshot.timeout_total += counters.timeout_total;
+        snapshot.cancelled_total += counters.cancelled_total;
+        if (!counters.last_error.empty())
+            snapshot.last_error = counters.last_error;
+    }
+
+    std::vector<BackendRuntimeSnapshot> out;
+    out.reserve(merged.size());
+    for (auto &[_, snapshot] : merged)
+        out.push_back(snapshot);
+    return out;
 }
 
 void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
@@ -1015,16 +1077,57 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(request_id,
+                              "/v1/embeddings",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              ModelCapability::Embeddings,
+                              "",
+                              FinishReason::error,
+                              parsed.status,
+                              parsed.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
+    LogPlatformRequest("start", RequestLogRecord{
+                                    parsed.request.request_id,
+                                    "/v1/embeddings",
+                                    parsed.request.model,
+                                    parsed.request.inference_backend,
+                                    std::string(ToString(parsed.request.capability)),
+                                    "",
+                                    -1,
+                                    -1,
+                                    "",
+                                    0,
+                                    "",
+                                    false});
 
     if (!embeddings_service_)
     {
-        WriteError(res, 500, "embeddings service unavailable", "internal_error", "embeddings_service_unavailable");
+        const PlatformError error{
+            PlatformErrorKind::Internal,
+            "embeddings_service_unavailable",
+            "embeddings service unavailable"};
+        WriteError(res, error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/embeddings",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              error.HttpStatus(),
+                              error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1032,14 +1135,22 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
     const EmbeddingsError validation_error = embeddings_service_->ValidateRequest(parsed.request);
     if (validation_error.HasError())
     {
-        WriteError(res,
-                   status_from_embeddings_error_kind(validation_error.kind),
-                   validation_error.message,
-                   type_from_embeddings_error_kind(validation_error.kind),
-                   validation_error.code);
+        WriteError(res, validation_error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/embeddings",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              validation_error.HttpStatus(),
+                              validation_error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1047,14 +1158,22 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
     const auto result = embeddings_service_->Run(parsed.request);
     if (result.error.HasError())
     {
-        WriteError(res,
-                   status_from_embeddings_error_kind(result.error.kind),
-                   result.error.message,
-                   type_from_embeddings_error_kind(result.error.kind),
-                   result.error.code);
+        WriteError(res, result.error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/embeddings",
+                              parsed.request.model,
+                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              result.error.HttpStatus(),
+                              result.error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1069,6 +1188,18 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
     const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - start_time)
                             .count();
+    RecordGovernedRequest(parsed.request.request_id,
+                          "/v1/embeddings",
+                          result.response.model,
+                          result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
+                          parsed.request.capability,
+                          "",
+                          FinishReason::stop,
+                          200,
+                          "",
+                          0,
+                          dur_ms,
+                          false);
     RecordFinish(FinishReason::stop, dur_ms);
 }
 
@@ -1086,16 +1217,57 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(request_id,
+                              "/v1/rerank",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              ModelCapability::Rerank,
+                              "",
+                              FinishReason::error,
+                              parsed.status,
+                              parsed.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
+    LogPlatformRequest("start", RequestLogRecord{
+                                    parsed.request.request_id,
+                                    "/v1/rerank",
+                                    parsed.request.model,
+                                    parsed.request.inference_backend,
+                                    std::string(ToString(parsed.request.capability)),
+                                    "",
+                                    -1,
+                                    -1,
+                                    "",
+                                    0,
+                                    "",
+                                    false});
 
     if (!rerank_service_)
     {
-        WriteError(res, 500, "rerank service unavailable", "internal_error", "rerank_service_unavailable");
+        const PlatformError error{
+            PlatformErrorKind::Internal,
+            "rerank_service_unavailable",
+            "rerank service unavailable"};
+        WriteError(res, error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/rerank",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              error.HttpStatus(),
+                              error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1103,14 +1275,22 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
     const RerankError validation_error = rerank_service_->ValidateRequest(parsed.request);
     if (validation_error.HasError())
     {
-        WriteError(res,
-                   status_from_rerank_error_kind(validation_error.kind),
-                   validation_error.message,
-                   type_from_rerank_error_kind(validation_error.kind),
-                   validation_error.code);
+        WriteError(res, validation_error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/rerank",
+                              parsed.request.model,
+                              parsed.request.inference_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              validation_error.HttpStatus(),
+                              validation_error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1118,14 +1298,22 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
     const auto result = rerank_service_->Run(parsed.request);
     if (result.error.HasError())
     {
-        WriteError(res,
-                   status_from_rerank_error_kind(result.error.kind),
-                   result.error.message,
-                   type_from_rerank_error_kind(result.error.kind),
-                   result.error.code);
+        WriteError(res, result.error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(parsed.request.request_id,
+                              "/v1/rerank",
+                              parsed.request.model,
+                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
+                              parsed.request.capability,
+                              "",
+                              FinishReason::error,
+                              result.error.HttpStatus(),
+                              result.error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1140,13 +1328,26 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
     const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - start_time)
                             .count();
+    RecordGovernedRequest(parsed.request.request_id,
+                          "/v1/rerank",
+                          result.response.model,
+                          result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
+                          parsed.request.capability,
+                          "",
+                          FinishReason::stop,
+                          200,
+                          "",
+                          0,
+                          dur_ms,
+                          false);
     RecordFinish(FinishReason::stop, dur_ms);
 }
 
 void HttpGateway::HandleAdminModelsStatus(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
-    const json out = admin_status_service_.BuildModelsStatus(model_catalog_service_.ListModels());
+    const json out = admin_status_service_.BuildModelsStatus(model_catalog_service_.ListModels(),
+                                                             BuildBackendRuntimeSnapshots());
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
@@ -1160,7 +1361,7 @@ void HttpGateway::HandleAdminBackendsStatus(const HttpRequest &req, HttpResponse
     (void)req;
     const json out = admin_status_service_.BuildBackendsStatus(
         model_catalog_service_.ListModels(),
-        executor_.GetBackendRuntimeSnapshots(),
+        BuildBackendRuntimeSnapshots(),
         BuildPlatformRuntimeSnapshot());
 
     res.SetStatus(200, "OK");
@@ -1531,16 +1732,45 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(request_id,
+                              "/v1/chat/completions",
+                              "",
+                              "",
+                              ModelCapability::Chat,
+                              "",
+                              FinishReason::error,
+                              parsed.status,
+                              parsed.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
+    auto ctx = parsed.request.ctx;
 
     if (!chat_service_)
     {
-        WriteError(res, 500, "chat service unavailable", "internal_error", "chat_service_unavailable");
+        const PlatformError error{
+            PlatformErrorKind::Internal,
+            "chat_service_unavailable",
+            "chat service unavailable"};
+        WriteError(res, error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(ctx ? ctx->request_id : request_id,
+                              "/v1/chat/completions",
+                              ctx ? ctx->model : std::string(),
+                              ctx ? ctx->inference_backend : std::string(),
+                              ModelCapability::Chat,
+                              ctx ? ctx->session_id : std::string(),
+                              FinishReason::error,
+                              error.HttpStatus(),
+                              error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1549,14 +1779,22 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     const ChatError validation_error = chat_service_->ValidateRequest(chat_request);
     if (validation_error.HasError())
     {
-        WriteError(res,
-                   status_from_chat_error_kind(validation_error.kind),
-                   validation_error.message,
-                   type_from_chat_error_kind(validation_error.kind),
-                   validation_error.code);
+        WriteError(res, validation_error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(ctx ? ctx->request_id : request_id,
+                              "/v1/chat/completions",
+                              ctx ? ctx->model : std::string(),
+                              ctx ? ctx->inference_backend : std::string(),
+                              ModelCapability::Chat,
+                              ctx ? ctx->session_id : std::string(),
+                              FinishReason::error,
+                              validation_error.HttpStatus(),
+                              validation_error.code,
+                              0,
+                              dur_ms,
+                              false);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1576,15 +1814,11 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     if (run_result.client_closed || !run_result.ctx)
         return;
 
-    auto ctx = run_result.ctx;
+    ctx = run_result.ctx;
     const ChatError error = chat_service_->BuildError(ctx);
     if (error.HasError())
     {
-        WriteError(res,
-                   status_from_chat_error_kind(error.kind),
-                   error.message,
-                   type_from_chat_error_kind(error.kind),
-                   error.code);
+        WriteError(res, error);
         return;
     }
 
@@ -1613,16 +1847,45 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(request_id,
+                              "/v1/chat/completions",
+                              "",
+                              "",
+                              ModelCapability::Chat,
+                              "",
+                              FinishReason::error,
+                              parsed.status,
+                              parsed.code,
+                              0,
+                              dur_ms,
+                              true);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
+    auto ctx = parsed.request.ctx;
 
     if (!chat_service_)
     {
-        WriteError(*res_ptr, 500, "chat service unavailable", "internal_error", "chat_service_unavailable");
+        const PlatformError error{
+            PlatformErrorKind::Internal,
+            "chat_service_unavailable",
+            "chat service unavailable"};
+        WriteError(*res_ptr, error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(ctx ? ctx->request_id : request_id,
+                              "/v1/chat/completions",
+                              ctx ? ctx->model : std::string(),
+                              ctx ? ctx->inference_backend : std::string(),
+                              ModelCapability::Chat,
+                              ctx ? ctx->session_id : std::string(),
+                              FinishReason::error,
+                              error.HttpStatus(),
+                              error.code,
+                              0,
+                              dur_ms,
+                              true);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
@@ -1631,19 +1894,25 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     const ChatError validation_error = chat_service_->ValidateRequest(chat_request);
     if (validation_error.HasError())
     {
-        WriteError(*res_ptr,
-                   status_from_chat_error_kind(validation_error.kind),
-                   validation_error.message,
-                   type_from_chat_error_kind(validation_error.kind),
-                   validation_error.code);
+        WriteError(*res_ptr, validation_error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        RecordGovernedRequest(ctx ? ctx->request_id : request_id,
+                              "/v1/chat/completions",
+                              ctx ? ctx->model : std::string(),
+                              ctx ? ctx->inference_backend : std::string(),
+                              ModelCapability::Chat,
+                              ctx ? ctx->session_id : std::string(),
+                              FinishReason::error,
+                              validation_error.HttpStatus(),
+                              validation_error.code,
+                              0,
+                              dur_ms,
+                              true);
         RecordFinish(FinishReason::error, dur_ms);
         return;
     }
-
-    auto ctx = parsed.request.ctx;
 
     // 绑定 HttpStreamSession 生命周期（先不 Start）
     auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);

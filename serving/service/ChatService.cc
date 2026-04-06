@@ -7,10 +7,12 @@
 #include "serving/core/ServingContext.h"
 #include "serving/http/HttpUtils.h"
 #include "serving/service/ModelCatalogService.h"
+#include "serving/service/RequestLogging.h"
 
 #include <algorithm>
 #include <chrono>
 #include <glog/logging.h>
+#include <cstdlib>
 #include <mutex>
 
 namespace
@@ -45,6 +47,27 @@ void prepare_session_delta(const std::shared_ptr<ServingContext> &ctx,
               << " incoming=" << incoming.size()
               << " delta=" << ctx->messages.size()
               << " hist=" << session->history.size();
+}
+
+int64_t get_param_int64(const std::shared_ptr<ServingContext> &ctx,
+                        const std::string &key,
+                        int64_t default_value = 0)
+{
+    if (!ctx)
+        return default_value;
+
+    const auto it = ctx->params.find(key);
+    if (it == ctx->params.end() || it->second.empty())
+        return default_value;
+
+    try
+    {
+        return std::stoll(it->second);
+    }
+    catch (...)
+    {
+        return default_value;
+    }
 }
 } // namespace
 
@@ -83,7 +106,7 @@ ChatError ChatService::ValidateRequest(const ChatExecutionRequest &request) cons
     {
         return {
             ChatErrorKind::InvalidRequest,
-            "unsupported_capability",
+            "capability_not_supported",
             "model does not support capability: " + std::string(ToString(ctx->capability))};
     }
 
@@ -112,7 +135,7 @@ ChatService::NonStreamResult ChatService::RunNonStream(const ChatExecutionReques
     if (!SubmitChatExecution(request))
     {
         result.ctx->error_message = "SessionExecutor: session queue full, session=" + result.ctx->session_id;
-        result.ctx->params["error_code"] = "overloaded";
+        result.ctx->params["error_code"] = "queue_full";
         result.ctx->EmitFinish(FinishReason::error);
     }
 
@@ -144,7 +167,7 @@ void ChatService::RunStream(const ChatExecutionRequest &request,
     if (!SubmitChatExecution(request))
     {
         request.ctx->error_message = "SessionExecutor: session queue full, session=" + request.ctx->session_id;
-        request.ctx->params["error_code"] = "overloaded";
+        request.ctx->params["error_code"] = "queue_full";
         request.ctx->EmitFinish(FinishReason::error);
     }
 }
@@ -164,13 +187,9 @@ ChatError ChatService::BuildError(const std::shared_ptr<ServingContext> &ctx) co
         return extension_error;
 
     const std::string error_code = ctx->params.count("error_code") ? ctx->params.at("error_code") : std::string();
-    const bool overloaded =
-        error_code == "overloaded" ||
-        (ctx->error_message.find("queue full") != std::string::npos);
-
     if (error_code == "invalid_request" ||
         error_code == "model_not_found" ||
-        error_code == "unsupported_capability")
+        error_code == "capability_not_supported")
     {
         return {
             ChatErrorKind::InvalidRequest,
@@ -178,11 +197,20 @@ ChatError ChatService::BuildError(const std::shared_ptr<ServingContext> &ctx) co
             ctx->error_message.empty() ? "invalid chat request" : ctx->error_message};
     }
 
-    if (overloaded)
+    if (error_code == "backend_not_available" || error_code == "backend_timeout")
+    {
+        return {
+            ChatErrorKind::ServiceUnavailable,
+            error_code,
+            ctx->error_message.empty() ? "backend unavailable" : ctx->error_message};
+    }
+
+    if (error_code == "queue_full" || error_code == "queue_timeout" ||
+        ctx->error_message.find("queue full") != std::string::npos)
     {
         return {
             ChatErrorKind::RateLimit,
-            "queue_full",
+            error_code.empty() ? "queue_full" : error_code,
             ctx->error_message.empty() ? "engine overloaded" : ctx->error_message};
     }
 
@@ -211,17 +239,19 @@ ChatResponse ChatService::BuildResponse(const std::shared_ptr<ServingContext> &c
 
 void ChatService::LogChatStart(const std::shared_ptr<ServingContext> &ctx, bool stream) const
 {
-    const char *mt_val = nullptr;
-    auto mt_it = ctx->params.find("max_tokens");
-    if (mt_it != ctx->params.end())
-        mt_val = mt_it->second.c_str();
-
-    LOG(INFO) << (stream ? "[chat-stream] start req=" : "[chat] start req=") << ctx->request_id
-              << " model=" << ctx->model
-              << " session=" << ctx->session_id
-              << " stream=" << (stream ? 1 : 0)
-              << " agent=" << (ctx->use_agent ? 1 : 0)
-              << " max_tokens=" << (mt_val ? mt_val : "default");
+    LogPlatformRequest("start", RequestLogRecord{
+                                    ctx ? ctx->request_id : std::string(),
+                                    "/v1/chat/completions",
+                                    ctx ? ctx->model : std::string(),
+                                    ctx ? ctx->inference_backend : std::string(),
+                                    ctx ? std::string(ToString(ctx->capability)) : std::string(),
+                                    ctx ? ctx->session_id : std::string(),
+                                    -1,
+                                    -1,
+                                    "",
+                                    0,
+                                    "",
+                                    stream});
 }
 
 void ChatService::AttachNonStreamFinishHandler(const ChatExecutionRequest &request,
@@ -237,14 +267,17 @@ void ChatService::AttachNonStreamFinishHandler(const ChatExecutionRequest &reque
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        const int64_t queue_wait_ms = get_param_int64(ctx, "queue_wait_ms", 0);
         if (callbacks_.record_finish)
             callbacks_.record_finish(reason, dur_ms);
+        if (callbacks_.record_governance)
+            callbacks_.record_governance(*ctx, reason, std::max<int64_t>(0, dur_ms - queue_wait_ms));
 
-        LOG(INFO) << "[chat] done req=" << ctx->request_id
-                  << " model=" << ctx->model
-                  << " dur_ms=" << dur_ms
+        LOG(INFO) << "[chat] req=" << ctx->request_id
                   << " prompt_tokens=" << ctx->usage.prompt_tokens
                   << " completion_tokens=" << ctx->usage.completion_tokens
+                  << " total_ms=" << dur_ms
+                  << " queue_wait_ms=" << queue_wait_ms
                   << " reason=" << http_utils::finish_reason_to_str(reason);
     };
 }
@@ -265,14 +298,17 @@ void ChatService::AttachStreamFinishHandler(const ChatExecutionRequest &request,
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
+        const int64_t queue_wait_ms = get_param_int64(ctx, "queue_wait_ms", 0);
         if (callbacks_.record_finish)
             callbacks_.record_finish(reason, dur_ms);
+        if (callbacks_.record_governance)
+            callbacks_.record_governance(*ctx, reason, std::max<int64_t>(0, dur_ms - queue_wait_ms));
 
-        LOG(INFO) << "[chat-stream] done req=" << ctx->request_id
-                  << " model=" << ctx->model
-                  << " dur_ms=" << dur_ms
+        LOG(INFO) << "[chat-stream] req=" << ctx->request_id
                   << " prompt_tokens=" << ctx->usage.prompt_tokens
                   << " completion_tokens=" << ctx->usage.completion_tokens
+                  << " total_ms=" << dur_ms
+                  << " queue_wait_ms=" << queue_wait_ms
                   << " reason=" << http_utils::finish_reason_to_str(reason);
     };
 }

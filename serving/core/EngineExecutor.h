@@ -26,7 +26,7 @@ public:
 
     // 同步：用于 non-stream（内部 Execute + wait）
     void ExecuteAndWait(std::shared_ptr<ServingContext> ctx);
-    std::vector<BackendRuntimeSnapshot> GetBackendRuntimeSnapshots();
+    std::vector<BackendRuntimeSnapshot> GetBackendRuntimeSnapshots() const;
 
 private:
     // ===== per-model queue =====
@@ -46,6 +46,6 @@ private:
     std::unordered_map<std::string, std::shared_ptr<ModelEngine>> engines_;
 
     ThreadPool& pool_;
-    std::mutex map_mu_;
+    mutable std::mutex map_mu_;
     std::unordered_map<std::string, std::shared_ptr<ModelQueue>> queues_;
 };

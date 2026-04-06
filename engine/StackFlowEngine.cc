@@ -401,6 +401,8 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         {
             ::close(fd);
             ctx->error_message = "StackFlowEngine: setup timeout or cancelled";
+            if (!ctx->cancelled.load(std::memory_order_acquire))
+                ctx->params["error_code"] = "backend_timeout";
             ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
             return;
         }
@@ -416,7 +418,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     ctx->error_message = resp["error"].value("message", "stackflow error");
                     if (code == -21 || code == -26)
                     {
-                        ctx->params["error_code"] = "overloaded";
+                        ctx->params["error_code"] = "queue_full";
                     }
                     ctx->EmitFinish(FinishReason::error);
                     ::close(fd);
@@ -508,6 +510,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     if (!ctx->cancelled.load(std::memory_order_acquire) && ctx->error_message.empty())
                     {
                         ctx->error_message = "StackFlowEngine: stream inference timeout or connection closed";
+                        ctx->params["error_code"] = "backend_timeout";
                     }
                     ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
                 }
@@ -524,7 +527,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                         ctx->error_message = resp["error"].value("message", "stackflow error");
                         if (code == -21 || code == -26)
                         {
-                            ctx->params["error_code"] = "overloaded";
+                            ctx->params["error_code"] = "queue_full";
                         }
                         ctx->EmitFinish(FinishReason::error);
                         break;
@@ -586,7 +589,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                         ctx->error_message = resp["error"].value("message", "stackflow error");
                         if (code == -21 || code == -26)
                         {
-                            ctx->params["error_code"] = "overloaded";
+                            ctx->params["error_code"] = "queue_full";
                         }
                         ctx->EmitFinish(FinishReason::error);
                     }
@@ -626,6 +629,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
             if (!ctx->cancelled.load(std::memory_order_acquire) && ctx->error_message.empty())
             {
                 ctx->error_message = "StackFlowEngine: inference timeout or connection closed";
+                ctx->params["error_code"] = "backend_timeout";
             }
             ctx->EmitFinish(ctx->cancelled ? FinishReason::cancelled : FinishReason::error);
         }

@@ -6,6 +6,7 @@
 
 #include "serving/core/CompletionTypes.h"
 #include "serving/core/ModelCapability.h"
+#include "serving/service/PlatformError.h"
 
 struct RerankRequest
 {
@@ -33,23 +34,5 @@ struct RerankResponse
     std::string error_message;
 };
 
-enum class RerankErrorKind
-{
-    None,
-    InvalidRequest,
-    ServiceUnavailable,
-    RateLimit,
-    Internal
-};
-
-struct RerankError
-{
-    RerankErrorKind kind = RerankErrorKind::None;
-    std::string code;
-    std::string message;
-
-    bool HasError() const
-    {
-        return kind != RerankErrorKind::None;
-    }
-};
+using RerankErrorKind = PlatformErrorKind;
+using RerankError = PlatformError;

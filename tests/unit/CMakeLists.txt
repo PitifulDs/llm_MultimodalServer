@@ -45,3 +45,9 @@ add_executable(rerank_gateway_test
 )
 target_include_directories(rerank_gateway_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
 target_link_libraries(rerank_gateway_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
+
+add_executable(admin_status_gateway_test
+    admin_status_gateway_test.cpp
+)
+target_include_directories(admin_status_gateway_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
+target_link_libraries(admin_status_gateway_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})

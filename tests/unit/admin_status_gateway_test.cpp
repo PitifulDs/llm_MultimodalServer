@@ -122,7 +122,7 @@ struct ScopedEnvVar
 std::filesystem::path make_temp_dir()
 {
     static int seq = 0;
-    const auto path = std::filesystem::temp_directory_path() / ("edge_rerank_gateway_test_" + std::to_string(++seq));
+    const auto path = std::filesystem::temp_directory_path() / ("edge_admin_status_gateway_test_" + std::to_string(++seq));
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
     std::filesystem::create_directories(path, ec);
@@ -147,57 +147,16 @@ std::string repo_model_path()
     return "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf";
 }
 
-bool test_chat_only_model_returns_400()
-{
-    const auto temp_dir = make_temp_dir();
-    const auto config_path = temp_dir / "config.json";
-
-    std::ofstream out(config_path);
-    out << R"json({
-  "default_model": "chat-only",
-  "models": {
-    "chat-only": {
-      "backend": "local",
-      "engine": "llama",
-      "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf"
-    }
-  }
-})json";
-    out.close();
-
-    const ScopedEnvVar scoped_config("CONFIG_PATH", config_path.string());
-    EngineFactory::ClearCache();
-
-    HttpGateway gateway;
-    FakeRequest req;
-    req.body = R"json({
-        "model":"chat-only",
-        "query":"hello",
-        "documents":["hello world"]
-    })json";
-
-    FakeResponse res;
-    gateway.HandleRerank(req, res);
-    EXPECT_EQ(res.status, 400);
-
-    const auto response = json::parse(res.body);
-    EXPECT_EQ(response["error"]["code"].get<std::string>(), std::string("capability_not_supported"));
-
-    std::error_code ec;
-    std::filesystem::remove_all(temp_dir, ec);
-    return true;
-}
-
-bool test_local_llama_rerank_returns_200()
+bool test_admin_status_uses_unified_backend_runtime_fields()
 {
     const auto temp_dir = make_temp_dir();
     const auto config_path = temp_dir / "config.json";
 
     std::ofstream out(config_path);
     out << "{\n"
-           "  \"default_model\": \"rerank-local\",\n"
+           "  \"default_model\": \"platform-model\",\n"
            "  \"models\": {\n"
-           "    \"rerank-local\": {\n"
+           "    \"platform-model\": {\n"
            "      \"default_backend\": \"local\",\n"
            "      \"capabilities\": [\"chat\", \"embeddings\", \"rerank\"],\n"
            "      \"backends\": {\n"
@@ -216,29 +175,49 @@ bool test_local_llama_rerank_returns_200()
     EngineFactory::ClearCache();
 
     HttpGateway gateway;
-    FakeRequest req;
-    req.body = R"json({
-        "model":"rerank-local",
+
+    FakeRequest embeddings_req;
+    embeddings_req.body = R"json({
+        "model":"platform-model",
         "backend":"local",
-        "query":"hello rerank",
-        "documents":["totally unrelated weather report","hello rerank"],
-        "top_n":1
+        "input":"admin status embeddings"
     })json";
+    FakeResponse embeddings_res;
+    gateway.HandleEmbeddings(embeddings_req, embeddings_res);
+    EXPECT_EQ(embeddings_res.status, 200);
 
-    FakeResponse res;
-    gateway.HandleRerank(req, res);
-    EXPECT_EQ(res.status, 200);
+    FakeRequest rerank_req;
+    rerank_req.body = R"json({
+        "model":"platform-model",
+        "backend":"local",
+        "query":"admin status rerank",
+        "documents":["other document","admin status rerank"]
+    })json";
+    FakeResponse rerank_res;
+    gateway.HandleRerank(rerank_req, rerank_res);
+    EXPECT_EQ(rerank_res.status, 200);
 
-    const auto response = json::parse(res.body);
-    EXPECT_EQ(response["object"].get<std::string>(), std::string("list"));
-    EXPECT_EQ(response["model"].get<std::string>(), std::string("rerank-local"));
-    EXPECT_TRUE(response["data"].is_array());
-    EXPECT_EQ(response["data"].size(), static_cast<size_t>(1));
-    EXPECT_EQ(response["data"][0]["document"].get<std::string>(), std::string("hello rerank"));
-    EXPECT_EQ(response["data"][0]["index"].get<int>(), 1);
-    EXPECT_TRUE(response["data"][0]["relevance_score"].is_number());
-    EXPECT_TRUE(response["usage"]["prompt_tokens"].get<int>() > 0);
-    EXPECT_EQ(response["usage"]["total_tokens"].get<int>(), response["usage"]["prompt_tokens"].get<int>());
+    FakeRequest model_status_req;
+    FakeResponse model_status_res;
+    gateway.HandleAdminModelsStatus(model_status_req, model_status_res);
+    EXPECT_EQ(model_status_res.status, 200);
+    const auto model_status = json::parse(model_status_res.body);
+    EXPECT_EQ(model_status["data"].size(), static_cast<size_t>(1));
+    EXPECT_EQ(model_status["data"][0]["id"].get<std::string>(), std::string("platform-model"));
+    EXPECT_TRUE(model_status["data"][0]["capabilities"].is_array());
+    EXPECT_EQ(model_status["data"][0]["available_backends"][0].get<std::string>(), std::string("local"));
+
+    FakeRequest backend_status_req;
+    FakeResponse backend_status_res;
+    gateway.HandleAdminBackendsStatus(backend_status_req, backend_status_res);
+    EXPECT_EQ(backend_status_res.status, 200);
+    const auto backend_status = json::parse(backend_status_res.body);
+    EXPECT_EQ(backend_status["data"].size(), static_cast<size_t>(1));
+    EXPECT_EQ(backend_status["data"][0]["backend"].get<std::string>(), std::string("local"));
+    EXPECT_TRUE(backend_status["data"][0]["capabilities"].is_array());
+    EXPECT_EQ(backend_status["data"][0]["requests_total"].get<int>(), 2);
+    EXPECT_EQ(backend_status["data"][0]["requests_error_total"].get<int>(), 0);
+    EXPECT_EQ(backend_status["data"][0]["requests_cancelled_total"].get<int>(), 0);
 
     std::error_code ec;
     std::filesystem::remove_all(temp_dir, ec);
@@ -249,12 +228,11 @@ bool test_local_llama_rerank_returns_200()
 int main()
 {
     bool ok = true;
-    ok = ok && test_chat_only_model_returns_400();
-    ok = ok && test_local_llama_rerank_returns_200();
+    ok = ok && test_admin_status_uses_unified_backend_runtime_fields();
 
     if (!ok)
         return 1;
 
-    std::cout << "rerank_gateway_test passed\n";
+    std::cout << "admin_status_gateway_test passed\n";
     return 0;
 }

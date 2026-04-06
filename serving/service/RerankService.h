@@ -11,6 +11,7 @@ public:
     {
         RerankResponse response;
         RerankError error;
+        std::string resolved_backend;
     };
 
     explicit RerankService(ModelCatalogService &model_catalog_service);

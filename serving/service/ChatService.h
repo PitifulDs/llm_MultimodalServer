@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <functional>
+#include <cstdint>
 #include <memory>
 
 #include "serving/service/ChatTypes.h"
@@ -26,6 +27,7 @@ public:
     {
         std::function<void(FinishReason, int64_t)> record_finish;
         std::function<void(const ServingContext &)> record_rag_metrics;
+        std::function<void(const ServingContext &, FinishReason, int64_t)> record_governance;
     };
 
     struct NonStreamResult

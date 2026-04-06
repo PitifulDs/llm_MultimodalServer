@@ -11,6 +11,7 @@ public:
     {
         EmbeddingsResponse response;
         EmbeddingsError error;
+        std::string resolved_backend;
     };
 
     explicit EmbeddingsService(ModelCatalogService &model_catalog_service);

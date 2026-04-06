@@ -6,6 +6,7 @@
 
 #include "serving/core/CompletionTypes.h"
 #include "serving/core/ModelCapability.h"
+#include "serving/service/PlatformError.h"
 
 struct EmbeddingsRequest
 {
@@ -31,23 +32,5 @@ struct EmbeddingsResponse
     std::string error_message;
 };
 
-enum class EmbeddingsErrorKind
-{
-    None,
-    InvalidRequest,
-    ServiceUnavailable,
-    RateLimit,
-    Internal
-};
-
-struct EmbeddingsError
-{
-    EmbeddingsErrorKind kind = EmbeddingsErrorKind::None;
-    std::string code;
-    std::string message;
-
-    bool HasError() const
-    {
-        return kind != EmbeddingsErrorKind::None;
-    }
-};
+using EmbeddingsErrorKind = PlatformErrorKind;
+using EmbeddingsError = PlatformError;

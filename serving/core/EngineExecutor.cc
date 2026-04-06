@@ -52,11 +52,13 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     if (!spec.valid)
     {
         ctx->error_message = "EngineExecutor: model resolve failed, model=" + ctx->model;
+        ctx->params["error_code"] = "backend_not_available";
         ctx->EmitFinish(FinishReason::error);
         return false;
     }
 
     const std::string resolved_backend = spec.backend.empty() ? ctx->inference_backend : spec.backend;
+    ctx->params["resolved_backend"] = resolved_backend;
     const std::string route_key = build_route_key(ctx->capability, ctx->model, resolved_backend);
 
     auto get_env_int = [](const char *name, int def) -> int {
@@ -93,10 +95,11 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 
         const auto start_at = std::chrono::steady_clock::now();
         const auto wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(start_at - enqueued_at).count();
+        ctx->params["queue_wait_ms"] = std::to_string(wait_ms);
         if (max_queue_wait_ms > 0 && wait_ms > max_queue_wait_ms)
         {
             ctx->error_message = "EngineExecutor: queue wait timeout";
-            ctx->params["error_code"] = "overloaded";
+            ctx->params["error_code"] = "queue_timeout";
             ctx->EmitFinish(FinishReason::error);
             return;
         }
@@ -120,6 +123,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         if (!engine)
         {
             ctx->error_message = "EngineExecutor: EngineFactory::Create failed, model=" + ctx->model;
+            ctx->params["error_code"] = "backend_not_available";
             ctx->EmitFinish(FinishReason::error);
             return;
         }
@@ -142,7 +146,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     {
         // 立即失败：避免客户端挂死超时
         ctx->error_message = "EngineExecutor: model queue full, model=" + ctx->model;
-        ctx->params["error_code"] = "overloaded";
+        ctx->params["error_code"] = "queue_full";
         ctx->EmitFinish(FinishReason::error);
         return false;
     }
@@ -150,7 +154,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     return true;
 }
 
-std::vector<BackendRuntimeSnapshot> EngineExecutor::GetBackendRuntimeSnapshots()
+std::vector<BackendRuntimeSnapshot> EngineExecutor::GetBackendRuntimeSnapshots() const
 {
     std::unordered_map<std::string, BackendRuntimeSnapshot> snapshots;
 

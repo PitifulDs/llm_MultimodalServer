@@ -9,6 +9,7 @@
 #include "utils/json.hpp"
 #include "serving/core/CompletionTypes.h"
 #include "serving/core/ModelCapability.h"
+#include "serving/service/PlatformError.h"
 
 struct ServingContext;
 
@@ -46,23 +47,5 @@ struct ChatResponse
     nlohmann::json agent_trace = nlohmann::json();
 };
 
-enum class ChatErrorKind
-{
-    None,
-    InvalidRequest,
-    ServiceUnavailable,
-    RateLimit,
-    Internal
-};
-
-struct ChatError
-{
-    ChatErrorKind kind = ChatErrorKind::None;
-    std::string code;
-    std::string message;
-
-    bool HasError() const
-    {
-        return kind != ChatErrorKind::None;
-    }
-};
+using ChatErrorKind = PlatformErrorKind;
+using ChatError = PlatformError;

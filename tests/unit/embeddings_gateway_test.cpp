@@ -128,6 +128,24 @@ std::filesystem::path make_temp_dir()
     return path;
 }
 
+std::string repo_model_path()
+{
+    const std::vector<std::filesystem::path> candidates = {
+        std::filesystem::current_path() / "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
+        std::filesystem::current_path() / "../models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
+        std::filesystem::current_path() / "../../models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
+    };
+    for (const auto &candidate : candidates)
+    {
+        std::error_code ec;
+        const auto normalized = std::filesystem::weakly_canonical(candidate, ec);
+        const auto &path = ec ? candidate : normalized;
+        if (std::filesystem::exists(path))
+            return path.string();
+    }
+    return "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf";
+}
+
 bool test_chat_only_model_returns_400()
 {
     const auto temp_dir = make_temp_dir();
@@ -173,22 +191,22 @@ bool test_local_llama_embeddings_returns_200()
     const auto config_path = temp_dir / "config.json";
 
     std::ofstream out(config_path);
-    out << R"json({
-  "default_model": "qwen3.5-2b",
-  "models": {
-    "qwen3.5-2b": {
-      "default_backend": "local",
-      "capabilities": ["chat", "embeddings"],
-      "backends": {
-        "local": {
-          "engine": "llama",
-          "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
-          "capabilities": ["chat", "embeddings"]
-        }
-      }
-    }
-  }
-})json";
+    out << "{\n"
+           "  \"default_model\": \"qwen3.5-2b\",\n"
+           "  \"models\": {\n"
+           "    \"qwen3.5-2b\": {\n"
+           "      \"default_backend\": \"local\",\n"
+           "      \"capabilities\": [\"chat\", \"embeddings\"],\n"
+           "      \"backends\": {\n"
+           "        \"local\": {\n"
+           "          \"engine\": \"llama\",\n"
+           "          \"model_path\": \"" << repo_model_path() << "\",\n"
+           "          \"capabilities\": [\"chat\", \"embeddings\"]\n"
+           "        }\n"
+           "      }\n"
+           "    }\n"
+           "  }\n"
+           "}\n";
     out.close();
 
     const ScopedEnvVar scoped_config("CONFIG_PATH", config_path.string());

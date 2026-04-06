@@ -185,7 +185,7 @@ bool test_non_chat_model_returns_400()
     EXPECT_EQ(res.status, 400);
 
     const auto response = json::parse(res.body);
-    EXPECT_EQ(response["error"]["code"].get<std::string>(), std::string("unsupported_capability"));
+    EXPECT_EQ(response["error"]["code"].get<std::string>(), std::string("capability_not_supported"));
     EXPECT_TRUE(response["error"]["message"].get<std::string>().find("chat") != std::string::npos);
 
     std::error_code ec;

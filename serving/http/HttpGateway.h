@@ -2,6 +2,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
+#include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -72,12 +74,37 @@ private:
     void WriteError(HttpResponse &res, int status, const std::string &message,
                     const std::string &type, const std::string &code = "",
                     const std::string &param = "");
+    void WriteError(HttpResponse &res, const PlatformError &error,
+                    const std::string &param = "");
     void WriteExperimentalApiDisabled(HttpResponse &res,
                                       const std::string &route,
                                       const std::string &env_name);
     void RecordFinish(FinishReason reason, int64_t dur_ms);
+    void RecordGovernedRequest(const std::string &request_id,
+                               const std::string &api,
+                               const std::string &model,
+                               const std::string &backend,
+                               ModelCapability capability,
+                               const std::string &session_id,
+                               FinishReason reason,
+                               int status_code,
+                               const std::string &error_code,
+                               int64_t queue_wait_ms,
+                               int64_t run_ms,
+                               bool stream);
     void RecordRagMetrics(const ServingContext &ctx);
     PlatformRuntimeSnapshot BuildPlatformRuntimeSnapshot() const;
+    std::vector<BackendRuntimeSnapshot> BuildBackendRuntimeSnapshots() const;
+
+    struct BackendGovernanceCounters
+    {
+        int64_t requests_total = 0;
+        int64_t requests_error_total = 0;
+        int64_t requests_cancelled_total = 0;
+        int64_t timeout_total = 0;
+        int64_t cancelled_total = 0;
+        std::string last_error;
+    };
 
     ThreadPool pool_;                        // 线程池
     StackFlowsClient *sf_client_{nullptr};   // 不持有所有权
@@ -112,6 +139,8 @@ private:
     std::atomic<int64_t> rag_injected_chars_total_{0};
     std::atomic<int64_t> rag_vector_search_latency_ms_total_{0};
     std::atomic<int64_t> rag_lexical_search_latency_ms_total_{0};
+    mutable std::mutex backend_governance_mu_;
+    std::unordered_map<std::string, BackendGovernanceCounters> backend_governance_;
     bool experimental_agent_api_enabled_{false};
     bool experimental_rag_api_enabled_{false};
     bool rag_retrieval_debug_api_enabled_{true};

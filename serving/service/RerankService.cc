@@ -85,6 +85,7 @@ RerankService::Result RerankService::Run(const RerankRequest &request) const
             "no backend is available for capability: " + std::string(ToString(request.capability))};
         return result;
     }
+    result.resolved_backend = spec.backend;
 
     auto engine = EngineFactory::Create(request.model, spec.backend);
     if (!engine)
@@ -111,7 +112,7 @@ RerankService::Result RerankService::Run(const RerankRequest &request) const
     {
         result.error = {
             RerankErrorKind::Internal,
-            "backend_execution_failed",
+            "internal_error",
             result.response.error_message.empty() ? "rerank execution failed" : result.response.error_message};
         return result;
     }

@@ -1,5 +1,6 @@
 #include "serving/service/AdminStatusService.h"
 
+#include <algorithm>
 #include <map>
 #include <string>
 
@@ -11,14 +12,40 @@ std::string to_gateway_backend_name(const std::string &backend)
         return "rpc";
     return backend;
 }
+
+std::vector<std::string> collect_available_backends(const ModelInfo &model,
+                                                    const std::map<std::string, BackendRuntimeSnapshot> &runtime_by_backend)
+{
+    if (runtime_by_backend.empty())
+        return model.backends;
+
+    std::vector<std::string> available;
+    for (const auto &backend : model.backends)
+    {
+        const auto it = runtime_by_backend.find(backend);
+        if (it == runtime_by_backend.end())
+        {
+            available.push_back(backend);
+            continue;
+        }
+        available.push_back(backend);
+    }
+    return available;
+}
 } // namespace
 
-nlohmann::json AdminStatusService::BuildModelsStatus(const std::vector<ModelInfo> &models) const
+nlohmann::json AdminStatusService::BuildModelsStatus(const std::vector<ModelInfo> &models,
+                                                     const std::vector<BackendRuntimeSnapshot> &backend_runtime) const
 {
+    std::map<std::string, BackendRuntimeSnapshot> runtime_by_backend;
+    for (const auto &item : backend_runtime)
+        runtime_by_backend[item.backend] = item;
+
     nlohmann::json items = nlohmann::json::array();
     for (const auto &model : models)
     {
-        const bool available = model.has_local || model.has_rpc;
+        const auto available_backends = collect_available_backends(model, runtime_by_backend);
+        const bool available = !available_backends.empty();
         items.push_back({
             {"id", model.id},
             {"registered", true},
@@ -27,6 +54,7 @@ nlohmann::json AdminStatusService::BuildModelsStatus(const std::vector<ModelInfo
             {"gateway_default_backend", to_gateway_backend_name(model.default_backend)},
             {"capabilities", model.capabilities},
             {"declared_backends", model.backends},
+            {"available_backends", available_backends},
             {"failure_summary", ""},
         });
     }
@@ -49,11 +77,13 @@ nlohmann::json AdminStatusService::BuildBackendsStatus(const std::vector<ModelIn
     {
         for (const auto &backend : model.backends)
         {
-            if (!runtime_by_backend.count(backend))
+            auto &snapshot = runtime_by_backend[backend];
+            snapshot.backend = backend;
+            snapshot.model_count += 1;
+            for (const auto &capability : model.capabilities)
             {
-                BackendRuntimeSnapshot snapshot;
-                snapshot.backend = backend;
-                runtime_by_backend.emplace(backend, snapshot);
+                if (std::find(snapshot.capabilities.begin(), snapshot.capabilities.end(), capability) == snapshot.capabilities.end())
+                    snapshot.capabilities.push_back(capability);
             }
         }
     }
@@ -65,8 +95,13 @@ nlohmann::json AdminStatusService::BuildBackendsStatus(const std::vector<ModelIn
             {"backend", backend},
             {"gateway_backend", to_gateway_backend_name(backend)},
             {"connected", true},
+            {"model_count", runtime.model_count},
+            {"capabilities", runtime.capabilities},
             {"loaded_engine_count", runtime.loaded_engine_count},
             {"queue_length", runtime.queue_length},
+            {"requests_total", runtime.requests_total},
+            {"requests_error_total", runtime.requests_error_total},
+            {"requests_cancelled_total", runtime.requests_cancelled_total},
             {"last_error", runtime.last_error},
             {"timeout_total", runtime.timeout_total},
             {"cancelled_total", runtime.cancelled_total},
