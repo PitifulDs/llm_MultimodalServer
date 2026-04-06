@@ -73,10 +73,16 @@ target_compile_features(serving_core
 # 2. serving_http 静态库（核心逻辑）
 # =====================================
 add_library(serving_http STATIC
+    AdminStatusHandler.cc
     ChatRequestParser.cc
+    EmbeddingsHandler.cc
+    HealthHandler.cc
     HttpGateway.cc
+    HttpGatewayInternal.cc
     HttpStreamSession.cc
+    ModelsHandler.cc
     OpenAIStreamWriter.cc 
+    RerankHandler.cc
     StackFlowsClient.cc
     NetworkHttpServer.cc
 )

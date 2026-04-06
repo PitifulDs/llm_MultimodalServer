@@ -1,24 +1,21 @@
 #include "HttpGateway.h"
 
-#include "http_types.h"
-#include "HttpStreamSession.h"
 #include "ChatRequestParser.h"
+#include "HttpGatewayInternal.h"
+#include "HttpStreamSession.h"
+#include "HttpUtils.h"
+#include "OpenAIStreamWriter.h"
+#include "http_types.h"
 #include "serving/core/ServingContext.h"
 #include "serving/core/SessionManager.h"
-#include "OpenAIStreamWriter.h"
-#include "HttpUtils.h"
 #include "serving/service/RequestLogging.h"
 
 #include "../../utils/json.hpp"
 #include <glog/logging.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
-#include <ctime>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -27,503 +24,10 @@
 #include <vector>
 
 using json = nlohmann::json;
-
-namespace
-{
-    size_t get_worker_threads()
-    {
-        const char *env = std::getenv("WORKER_THREADS");
-        if (!env || !*env)
-            return 4;
-        try
-        {
-            int v = std::stoi(env);
-            return v > 0 ? static_cast<size_t>(v) : 4;
-        }
-        catch (...)
-        {
-            return 4;
-        }
-    }
-
-    std::string get_default_model()
-    {
-        return ModelRegistry::GetDefaultModel();
-    }
-
-    int get_default_max_tokens()
-    {
-        const char *env = std::getenv("DEFAULT_MAX_TOKENS");
-        if (!env || !*env)
-            return 0;
-        try
-        {
-            int v = std::stoi(env);
-            return v > 0 ? v : 0;
-        }
-        catch (...)
-        {
-            return 0;
-        }
-    }
-
-    std::string get_env_string(const char *name, const char *def_val = "")
-    {
-        const char *env = std::getenv(name);
-        if (!env || !*env)
-            return std::string(def_val);
-        return std::string(env);
-    }
-
-    int get_env_int(const char *name, int def)
-    {
-        const char *env = std::getenv(name);
-        if (!env || !*env)
-            return def;
-        try
-        {
-            const int v = std::stoi(env);
-            return v > 0 ? v : def;
-        }
-        catch (...)
-        {
-            return def;
-        }
-    }
-
-    bool get_env_bool(const char *name, bool def)
-    {
-        const char *env = std::getenv(name);
-        if (!env || !*env)
-            return def;
-        std::string value(env);
-        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch)
-                       { return static_cast<char>(std::tolower(ch)); });
-        if (value == "1" || value == "true" || value == "yes")
-            return true;
-        if (value == "0" || value == "false" || value == "no")
-            return false;
-        return def;
-    }
-
-    std::string gen_request_id()
-    {
-        static std::atomic<uint64_t> seq{0};
-        return "req-" + std::to_string(++seq);
-    }
-
-    std::filesystem::path detect_repo_root()
-    {
-        if (const char *cfg = std::getenv("CONFIG_PATH"))
-        {
-            if (*cfg)
-            {
-                std::error_code ec;
-                auto cfg_path = std::filesystem::weakly_canonical(std::filesystem::path(cfg), ec);
-                if (ec)
-                    cfg_path = std::filesystem::path(cfg).lexically_normal();
-                if (cfg_path.has_parent_path())
-                    return cfg_path.parent_path();
-            }
-        }
-        return std::filesystem::current_path();
-    }
-
-    // FinishReason -> openai finish_reaso
-    const char *finish_reason_to_str(FinishReason r)
-    {
-        return http_utils::finish_reason_to_str(r);
-    }
-
-    std::string normalize_backend_name(std::string backend)
-    {
-        std::transform(backend.begin(), backend.end(), backend.begin(), [](unsigned char ch)
-                       { return static_cast<char>(std::tolower(ch)); });
-        if (backend == "rpc" || backend == "remote" || backend == "worker" || backend == "stackflow")
-            return "stackflow";
-        if (backend == "local" || backend == "llama")
-            return "local";
-        return "";
-    }
-
-    int64_t parse_int64_or_default(const std::string &value, int64_t default_value = 0)
-    {
-        if (value.empty())
-            return default_value;
-        try
-        {
-            return std::stoll(value);
-        }
-        catch (...)
-        {
-            return default_value;
-        }
-    }
-
-    bool has_deadline(std::chrono::steady_clock::time_point deadline)
-    {
-        return deadline != std::chrono::steady_clock::time_point::max();
-    }
-
-    void start_sync_cancel_watchdog(const std::shared_ptr<std::atomic<bool>> &cancel_flag,
-                                    const std::shared_ptr<std::atomic<bool>> &done,
-                                    const std::function<bool()> &is_client_alive)
-    {
-        if (!cancel_flag || !done)
-            return;
-
-        std::thread([cancel_flag, done, is_client_alive]
-        {
-            while (!done->load(std::memory_order_acquire))
-            {
-                if (!is_client_alive())
-                {
-                    cancel_flag->store(true, std::memory_order_release);
-                    return;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        }).detach();
-    }
-
-    struct ScopedWatchdogDone
-    {
-        std::shared_ptr<std::atomic<bool>> done;
-
-        ~ScopedWatchdogDone()
-        {
-            if (done)
-                done->store(true, std::memory_order_release);
-        }
-    };
-
-    PlatformError build_chat_platform_error(const ServingContext &ctx)
-    {
-        const std::string error_code =
-            ctx.params.count("error_code") ? ctx.params.at("error_code") : std::string();
-
-        if (error_code == "invalid_request" ||
-            error_code == "model_not_found" ||
-            error_code == "capability_not_supported" ||
-            error_code == "rag_invalid_request" ||
-            error_code == "rag_no_user_query")
-        {
-            return {
-                PlatformErrorKind::InvalidRequest,
-                error_code,
-                ctx.error_message.empty() ? "invalid chat request" : ctx.error_message};
-        }
-
-        if (error_code == "rag_index_missing" ||
-            error_code == "rag_unavailable")
-        {
-            return {
-                PlatformErrorKind::ServiceUnavailable,
-                error_code,
-                ctx.error_message.empty() ? "backend unavailable" : ctx.error_message};
-        }
-
-        if (IsPlatformRateLimitCode(error_code) ||
-            ctx.error_message.find("queue full") != std::string::npos)
-        {
-            return {
-                PlatformErrorKind::RateLimit,
-                error_code.empty() ? "queue_full" : error_code,
-                ctx.error_message.empty() ? "engine overloaded" : ctx.error_message};
-        }
-
-        return BuildPlatformErrorFromCode(error_code,
-                                          ctx.error_message,
-                                          "invalid chat request",
-                                          "chat request cancelled",
-                                          "request timed out",
-                                          "backend unavailable",
-                                          "engine overloaded",
-                                          "engine error");
-    }
-
-    FinishReason finish_reason_from_error(const PlatformError &error)
-    {
-        return error.kind == PlatformErrorKind::Cancelled ? FinishReason::cancelled : FinishReason::error;
-    }
-
-    struct EmbeddingsRequestParseResult
-    {
-        bool ok = false;
-        int status = 500;
-        std::string message;
-        std::string type;
-        std::string code;
-        EmbeddingsRequest request;
-    };
-
-    struct RerankRequestParseResult
-    {
-        bool ok = false;
-        int status = 500;
-        std::string message;
-        std::string type;
-        std::string code;
-        RerankRequest request;
-    };
-
-    EmbeddingsRequestParseResult ParseEmbeddingsRequestBody(const std::string &body_text,
-                                                           const std::string &default_model,
-                                                           const std::string &request_id)
-    {
-        EmbeddingsRequestParseResult result;
-        result.status = 400;
-        result.type = "invalid_request_error";
-
-        json body;
-        try
-        {
-            body = json::parse(body_text.empty() ? "{}" : body_text);
-        }
-        catch (...)
-        {
-            result.message = "invalid json";
-            result.code = "invalid_json";
-            return result;
-        }
-
-        if (!body.contains("input"))
-        {
-            result.message = "input is required";
-            result.code = "invalid_input";
-            return result;
-        }
-
-        if (body["input"].is_string())
-        {
-            result.request.input.push_back(body["input"].get<std::string>());
-        }
-        else if (body["input"].is_array())
-        {
-            for (const auto &item : body["input"])
-            {
-                if (!item.is_string())
-                {
-                    result.message = "input array must contain only strings";
-                    result.code = "invalid_input";
-                    return result;
-                }
-                result.request.input.push_back(item.get<std::string>());
-            }
-        }
-        else
-        {
-            result.message = "input must be a string or array of strings";
-            result.code = "invalid_input";
-            return result;
-        }
-
-        result.request.request_id = request_id;
-        result.request.model =
-            (body.contains("model") && body["model"].is_string())
-                ? body["model"].get<std::string>()
-                : default_model;
-
-        if (body.contains("encoding_format"))
-        {
-            if (!body["encoding_format"].is_string())
-            {
-                result.message = "encoding_format must be string";
-                result.code = "invalid_encoding_format";
-                return result;
-            }
-            result.request.encoding_format = body["encoding_format"].get<std::string>();
-            std::transform(result.request.encoding_format.begin(),
-                           result.request.encoding_format.end(),
-                           result.request.encoding_format.begin(),
-                           [](unsigned char ch)
-                           { return static_cast<char>(std::tolower(ch)); });
-        }
-
-        std::string preferred_backend;
-        if (body.contains("inference_backend") && body["inference_backend"].is_string())
-            preferred_backend = body["inference_backend"].get<std::string>();
-        else if (body.contains("backend") && body["backend"].is_string())
-            preferred_backend = body["backend"].get<std::string>();
-        result.request.inference_backend = normalize_backend_name(std::move(preferred_backend));
-
-        result.ok = true;
-        return result;
-    }
-
-    RerankRequestParseResult ParseRerankRequestBody(const std::string &body_text,
-                                                    const std::string &default_model,
-                                                    const std::string &request_id)
-    {
-        RerankRequestParseResult result;
-        result.status = 400;
-        result.type = "invalid_request_error";
-
-        json body;
-        try
-        {
-            body = json::parse(body_text.empty() ? "{}" : body_text);
-        }
-        catch (...)
-        {
-            result.message = "invalid json";
-            result.code = "invalid_json";
-            return result;
-        }
-
-        if (!body.contains("query") || !body["query"].is_string())
-        {
-            result.message = "query is required";
-            result.code = "invalid_query";
-            return result;
-        }
-
-        if (!body.contains("documents"))
-        {
-            result.message = "documents is required";
-            result.code = "invalid_documents";
-            return result;
-        }
-
-        if (!body["documents"].is_array())
-        {
-            result.message = "documents must be an array of strings";
-            result.code = "invalid_documents";
-            return result;
-        }
-
-        result.request.documents.reserve(body["documents"].size());
-        for (const auto &item : body["documents"])
-        {
-            if (!item.is_string())
-            {
-                result.message = "documents array must contain only strings";
-                result.code = "invalid_documents";
-                return result;
-            }
-            result.request.documents.push_back(item.get<std::string>());
-        }
-
-        result.request.request_id = request_id;
-        result.request.query = body["query"].get<std::string>();
-        result.request.model =
-            (body.contains("model") && body["model"].is_string())
-                ? body["model"].get<std::string>()
-                : default_model;
-
-        if (body.contains("top_n"))
-        {
-            if (!body["top_n"].is_number_integer())
-            {
-                result.message = "top_n must be integer";
-                result.code = "invalid_top_n";
-                return result;
-            }
-            result.request.top_n = body["top_n"].get<int>();
-        }
-
-        std::string preferred_backend;
-        if (body.contains("inference_backend") && body["inference_backend"].is_string())
-            preferred_backend = body["inference_backend"].get<std::string>();
-        else if (body.contains("backend") && body["backend"].is_string())
-            preferred_backend = body["backend"].get<std::string>();
-        result.request.inference_backend = normalize_backend_name(std::move(preferred_backend));
-
-        result.ok = true;
-        return result;
-    }
-
-    json build_chat_completion_json(const std::string &request_id,
-                                    const ChatResponse &response)
-    {
-        json out = {
-            {"id", "chatcmpl-" + request_id},
-            {"object", "chat.completion"},
-            {"created", static_cast<int>(std::time(nullptr))},
-            {"model", response.model},
-            {"choices",
-             {{{"index", 0},
-               {"message", {{"role", "assistant"}, {"content", response.output_text}}},
-               {"logprobs", nullptr},
-               {"finish_reason", finish_reason_to_str(response.finish_reason)}}}},
-            {"usage",
-             {{"prompt_tokens", response.usage.prompt_tokens},
-              {"completion_tokens", response.usage.completion_tokens},
-              {"total_tokens", response.usage.total_tokens}}}
-        };
-
-        if (!response.references.is_null())
-            out["references"] = response.references;
-        if (!response.retrieval.is_null())
-            out["retrieval"] = response.retrieval;
-        if (!response.agent_result.is_null())
-            out["agent_result"] = response.agent_result;
-        if (!response.subqueries.is_null())
-            out["subqueries"] = response.subqueries;
-        if (!response.evidence.is_null())
-            out["evidence"] = response.evidence;
-        if (!response.agent_trace.is_null())
-            out["agent_trace"] = response.agent_trace;
-
-        return out;
-    }
-
-    std::string build_experimental_api_disabled_message(const std::string &route,
-                                                        const std::string &env_name)
-    {
-        return route + " is an experimental compatibility API and is disabled by default; set " +
-               env_name + "=1 to re-enable it explicitly";
-    }
-
-    json build_embeddings_json(const EmbeddingsResponse &response)
-    {
-        json data = json::array();
-        for (const auto &item : response.data)
-        {
-            data.push_back({
-                {"object", "embedding"},
-                {"index", item.index},
-                {"embedding", item.embedding},
-            });
-        }
-
-        return {
-            {"object", "list"},
-            {"data", data},
-            {"model", response.model},
-            {"usage",
-             {{"prompt_tokens", response.usage.prompt_tokens},
-              {"total_tokens", response.usage.total_tokens}}}
-        };
-    }
-
-    json build_rerank_json(const RerankResponse &response)
-    {
-        json data = json::array();
-        for (const auto &item : response.data)
-        {
-            data.push_back({
-                {"object", "rerank_result"},
-                {"index", item.index},
-                {"document", item.document},
-                {"relevance_score", item.relevance_score},
-            });
-        }
-
-        return {
-            {"object", "list"},
-            {"data", data},
-            {"model", response.model},
-            {"usage",
-             {{"prompt_tokens", response.usage.prompt_tokens},
-              {"total_tokens", response.usage.total_tokens}}}
-        };
-    }
-
-} // namespace
+using namespace http_gateway_internal;
 
 HttpGateway::HttpGateway()
-    : pool_(get_worker_threads()),
+    : pool_(GetWorkerThreads()),
       executor_(pool_),
       session_executor_(pool_),
       start_time_(std::chrono::steady_clock::now())
@@ -535,28 +39,28 @@ HttpGateway::HttpGateway()
 
     session_mgr_ = std::make_unique<SessionManager>(opt);
 
-    const auto repo_root = detect_repo_root();
+    const auto repo_root = DetectRepoRoot();
 
     RAGExecutor::Options rag_opt;
-    rag_opt.index_path = get_env_string("RAG_INDEX_PATH", (repo_root / "data/rag_index.sqlite").string().c_str());
-    rag_opt.vector_index_path = get_env_string("RAG_VECTOR_INDEX_PATH", (repo_root / "data/rag_faiss.index").string().c_str());
-    rag_opt.chunk_metadata_path = get_env_string("RAG_CHUNK_METADATA_PATH", (repo_root / "data/rag_chunks.jsonl").string().c_str());
-    rag_opt.vector_embeddings_path = get_env_string("RAG_EMBEDDINGS_PATH", (repo_root / "data/rag_embeddings.npy").string().c_str());
-    rag_opt.vector_id_map_path = get_env_string("RAG_ID_MAP_PATH", (repo_root / "data/rag_id_map.json").string().c_str());
-    rag_opt.default_top_k = get_env_int("RAG_DEFAULT_TOP_K", 6);
-    rag_opt.max_context_chars = static_cast<size_t>(get_env_int("RAG_MAX_CONTEXT_CHARS", 6000));
-    rag_opt.default_mode = get_env_string("RAG_DEFAULT_MODE", "lexical");
-    rag_opt.default_fusion = get_env_string("RAG_DEFAULT_FUSION", "rrf");
-    rag_opt.enable_neighbor_expand = get_env_bool("RAG_ENABLE_NEIGHBOR_EXPAND", true);
-    rag_opt.max_neighbor_count = get_env_int("RAG_MAX_NEIGHBOR_COUNT", 1);
+    rag_opt.index_path = GetEnvString("RAG_INDEX_PATH", (repo_root / "data/rag_index.sqlite").string().c_str());
+    rag_opt.vector_index_path = GetEnvString("RAG_VECTOR_INDEX_PATH", (repo_root / "data/rag_faiss.index").string().c_str());
+    rag_opt.chunk_metadata_path = GetEnvString("RAG_CHUNK_METADATA_PATH", (repo_root / "data/rag_chunks.jsonl").string().c_str());
+    rag_opt.vector_embeddings_path = GetEnvString("RAG_EMBEDDINGS_PATH", (repo_root / "data/rag_embeddings.npy").string().c_str());
+    rag_opt.vector_id_map_path = GetEnvString("RAG_ID_MAP_PATH", (repo_root / "data/rag_id_map.json").string().c_str());
+    rag_opt.default_top_k = GetEnvInt("RAG_DEFAULT_TOP_K", 6);
+    rag_opt.max_context_chars = static_cast<size_t>(GetEnvInt("RAG_MAX_CONTEXT_CHARS", 6000));
+    rag_opt.default_mode = GetEnvString("RAG_DEFAULT_MODE", "lexical");
+    rag_opt.default_fusion = GetEnvString("RAG_DEFAULT_FUSION", "rrf");
+    rag_opt.enable_neighbor_expand = GetEnvBool("RAG_ENABLE_NEIGHBOR_EXPAND", true);
+    rag_opt.max_neighbor_count = GetEnvInt("RAG_MAX_NEIGHBOR_COUNT", 1);
     rag_executor_ = std::make_unique<RAGExecutor>(std::move(rag_opt));
-    experimental_agent_api_enabled_ = get_env_bool("EXPERIMENTAL_AGENT_API_ENABLED", false);
-    experimental_rag_api_enabled_ = get_env_bool("EXPERIMENTAL_RAG_API_ENABLED", false);
-    rag_retrieval_debug_api_enabled_ = get_env_bool("RAG_ENABLE_RETRIEVAL_DEBUG_API", true);
-    max_concurrent_requests_ = get_env_int("MAX_CONCURRENT_REQUESTS", 0);
-    max_model_concurrency_ = get_env_int("MAX_MODEL_CONCURRENCY", 0);
-    max_session_concurrency_ = get_env_int("MAX_SESSION_CONCURRENCY", 0);
-    request_timeout_ms_ = get_env_int("HTTP_REQUEST_TIMEOUT_MS", 0);
+    experimental_agent_api_enabled_ = GetEnvBool("EXPERIMENTAL_AGENT_API_ENABLED", false);
+    experimental_rag_api_enabled_ = GetEnvBool("EXPERIMENTAL_RAG_API_ENABLED", false);
+    rag_retrieval_debug_api_enabled_ = GetEnvBool("RAG_ENABLE_RETRIEVAL_DEBUG_API", true);
+    max_concurrent_requests_ = GetEnvInt("MAX_CONCURRENT_REQUESTS", 0);
+    max_model_concurrency_ = GetEnvInt("MAX_MODEL_CONCURRENCY", 0);
+    max_session_concurrency_ = GetEnvInt("MAX_SESSION_CONCURRENCY", 0);
+    request_timeout_ms_ = GetEnvInt("HTTP_REQUEST_TIMEOUT_MS", 0);
 
     AgentExecutor::Options agent_opt;
     agent_opt.repo_root = repo_root.string();
@@ -763,7 +267,7 @@ HttpGateway::HttpGateway()
             },
             [this](const ServingContext &ctx, FinishReason reason, int64_t run_ms)
             {
-                const auto queue_wait_ms = parse_int64_or_default(
+                const auto queue_wait_ms = ParseInt64OrDefault(
                     ctx.params.count("queue_wait_ms") ? ctx.params.at("queue_wait_ms") : std::string(),
                     0);
                 const std::string error_code =
@@ -771,7 +275,7 @@ HttpGateway::HttpGateway()
                 const int status_code = reason == FinishReason::cancelled
                                             ? 499
                                             : (reason == FinishReason::error
-                                                   ? build_chat_platform_error(ctx).HttpStatus()
+                                                   ? BuildChatPlatformError(ctx).HttpStatus()
                                                    : 200);
 
                 RecordGovernedRequest(ctx.request_id,
@@ -910,7 +414,7 @@ void HttpGateway::RecordGovernedRequest(const std::string &request_id,
                                      session_id,
                                      queue_wait_ms,
                                      run_ms,
-                                     finish_reason_to_str(reason),
+                                     FinishReasonToStr(reason),
                                      status_code,
                                      error_code,
                                      prompt_tokens,
@@ -1031,593 +535,15 @@ std::vector<BackendRuntimeSnapshot> HttpGateway::BuildBackendRuntimeSnapshots() 
     return out;
 }
 
-void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
-{
-    (void)req;
-    const json out = health_service_.BuildHealth(BuildPlatformRuntimeSnapshot());
-
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("X-EdgeLLM-Compat-Route", "/healthz");
-    res.SetHeader("X-EdgeLLM-Route-Status", "compatibility-alias");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump());
-    res.End();
-}
-
-void HttpGateway::HandleHealthz(const HttpRequest &req, HttpResponse &res)
-{
-    (void)req;
-    const json out = health_service_.BuildHealth(BuildPlatformRuntimeSnapshot());
-
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump());
-    res.End();
-}
-
-void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
-{
-    (void)req;
-    const int64_t total = total_requests_.load(std::memory_order_relaxed);
-    const int64_t latency = total_latency_ms_.load(std::memory_order_relaxed);
-    const double avg_latency_ms = total > 0 ? static_cast<double>(latency) / static_cast<double>(total) : 0.0;
-
-    json out = {
-        {"requests_total", total},
-        {"requests_in_flight", in_flight_.load(std::memory_order_relaxed)},
-        {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
-        {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
-        {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)},
-        {"requests_timeout_total", timeout_requests_.load(std::memory_order_relaxed)},
-        {"requests_rate_limited_total", rate_limited_requests_.load(std::memory_order_relaxed)},
-        {"prompt_tokens_total", prompt_tokens_total_.load(std::memory_order_relaxed)},
-        {"completion_tokens_total", completion_tokens_total_.load(std::memory_order_relaxed)},
-        {"total_tokens_total", total_tokens_total_.load(std::memory_order_relaxed)},
-        {"avg_latency_ms", avg_latency_ms},
-        {"rag_requests_total", rag_requests_total_.load(std::memory_order_relaxed)},
-        {"rag_requests_total_by_kb",
-         {
-             {"docs", rag_requests_docs_total_.load(std::memory_order_relaxed)},
-             {"repo_code", rag_requests_repo_code_total_.load(std::memory_order_relaxed)},
-         }},
-        {"rag_mode_total",
-         {
-             {"lexical", rag_mode_lexical_total_.load(std::memory_order_relaxed)},
-             {"vector", rag_mode_vector_total_.load(std::memory_order_relaxed)},
-             {"hybrid", rag_mode_hybrid_total_.load(std::memory_order_relaxed)},
-         }},
-        {"rag_retrieval_latency_ms", rag_retrieval_latency_ms_total_.load(std::memory_order_relaxed)},
-        {"rag_hit_count", rag_hit_count_total_.load(std::memory_order_relaxed)},
-        {"rag_empty_hit_total", rag_empty_hit_total_.load(std::memory_order_relaxed)},
-        {"rag_injected_chars", rag_injected_chars_total_.load(std::memory_order_relaxed)},
-        {"rag_vector_search_latency_ms", rag_vector_search_latency_ms_total_.load(std::memory_order_relaxed)},
-        {"rag_lexical_search_latency_ms", rag_lexical_search_latency_ms_total_.load(std::memory_order_relaxed)}};
-
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump());
-    res.End();
-}
-
 void HttpGateway::WriteExperimentalApiDisabled(HttpResponse &res,
                                                const std::string &route,
                                                const std::string &env_name)
 {
     WriteError(res,
                404,
-               build_experimental_api_disabled_message(route, env_name),
+               BuildExperimentalApiDisabledMessage(route, env_name),
                "invalid_request_error",
                "experimental_api_disabled");
-}
-
-void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
-{
-    (void)req;
-    json items = json::array();
-    const auto models = model_catalog_service_.ListModels();
-
-    for (const auto &model : models)
-    {
-        json configured_backends = json::array();
-        if (model.has_local)
-            configured_backends.push_back("local");
-        if (model.has_rpc)
-            configured_backends.push_back("rpc");
-
-        items.push_back({
-            {"id", model.id},
-            {"object", "model"},
-            {"owned_by", "edge-llm-serving"},
-            {"default", model.is_default},
-            {"default_backend", model.default_backend},
-            {"capabilities", model.capabilities},
-            {"declared_backends", model.backends},
-            // 真实配置能力（模型级）
-            {"backends", configured_backends},
-            // 网关支持的请求级后端切换能力（路由级）
-            {"gateway_backends", json::array({"local", "rpc"})}
-        });
-    }
-
-    json out = {
-        {"object", "list"},
-        {"data", items}
-    };
-
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump());
-    res.End();
-}
-
-void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
-{
-    const auto start_time = std::chrono::steady_clock::now();
-    total_requests_.fetch_add(1, std::memory_order_relaxed);
-    in_flight_.fetch_add(1, std::memory_order_relaxed);
-
-    const std::string request_id = gen_request_id();
-    auto parsed = ParseEmbeddingsRequestBody(req.body, get_default_model(), request_id);
-    if (!parsed.ok)
-    {
-        WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(request_id,
-                              "/v1/embeddings",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              ModelCapability::Embeddings,
-                              "",
-                              FinishReason::error,
-                              parsed.status,
-                              parsed.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-    LogPlatformRequest("start", RequestLogRecord{
-                                    parsed.request.request_id,
-                                    "/v1/embeddings",
-                                    parsed.request.model,
-                                    parsed.request.inference_backend,
-                                    std::string(ToString(parsed.request.capability)),
-                                    "",
-                                    -1,
-                                    -1,
-                                    "",
-                                    0,
-                                    "",
-                                    0,
-                                    0,
-                                    0,
-                                    false});
-
-    if (!embeddings_service_)
-    {
-        const PlatformError error{
-            PlatformErrorKind::Internal,
-            "embeddings_service_unavailable",
-            "embeddings service unavailable"};
-        WriteError(res, error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/embeddings",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::error,
-                              error.HttpStatus(),
-                              error.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    const EmbeddingsError validation_error = embeddings_service_->ValidateRequest(parsed.request);
-    if (validation_error.HasError())
-    {
-        WriteError(res, validation_error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/embeddings",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::error,
-                              validation_error.HttpStatus(),
-                              validation_error.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    std::shared_ptr<void> request_lease;
-    const PlatformError limit_error = AcquireRequestLease(parsed.request.model, "", request_lease);
-    if (limit_error.HasError())
-    {
-        WriteError(res, limit_error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/embeddings",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::error,
-                              limit_error.HttpStatus(),
-                              limit_error.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    parsed.request.cancelled = std::make_shared<std::atomic<bool>>(false);
-    if (request_timeout_ms_ > 0)
-        parsed.request.deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
-    const auto watchdog_done = std::make_shared<std::atomic<bool>>(false);
-    ScopedWatchdogDone stop_watchdog{watchdog_done};
-    start_sync_cancel_watchdog(parsed.request.cancelled, watchdog_done, [&res]()
-    {
-        return res.IsAlive();
-    });
-
-    const auto result = embeddings_service_->Run(parsed.request);
-    if (!res.IsAlive())
-    {
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/embeddings",
-                              parsed.request.model,
-                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::cancelled,
-                              499,
-                              "request_cancelled",
-                              0,
-                              dur_ms,
-                              result.response.usage.prompt_tokens,
-                              result.response.usage.completion_tokens,
-                              result.response.usage.total_tokens,
-                              false);
-        RecordFinish(FinishReason::cancelled, dur_ms);
-        return;
-    }
-    if (result.error.HasError())
-    {
-        WriteError(res, result.error);
-        const FinishReason finish_reason = finish_reason_from_error(result.error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/embeddings",
-                              parsed.request.model,
-                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
-                              parsed.request.capability,
-                              "",
-                              finish_reason,
-                              result.error.HttpStatus(),
-                              result.error.code,
-                              0,
-                              dur_ms,
-                              result.response.usage.prompt_tokens,
-                              result.response.usage.completion_tokens,
-                              result.response.usage.total_tokens,
-                              false);
-        RecordFinish(finish_reason, dur_ms);
-        return;
-    }
-
-    const json out = build_embeddings_json(result.response);
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));
-    res.End();
-
-    const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - start_time)
-                            .count();
-    RecordGovernedRequest(parsed.request.request_id,
-                          "/v1/embeddings",
-                          result.response.model,
-                          result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
-                          parsed.request.capability,
-                          "",
-                          FinishReason::stop,
-                          200,
-                          "",
-                          0,
-                          dur_ms,
-                          result.response.usage.prompt_tokens,
-                          result.response.usage.completion_tokens,
-                          result.response.usage.total_tokens,
-                          false);
-    RecordFinish(FinishReason::stop, dur_ms);
-}
-
-void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
-{
-    const auto start_time = std::chrono::steady_clock::now();
-    total_requests_.fetch_add(1, std::memory_order_relaxed);
-    in_flight_.fetch_add(1, std::memory_order_relaxed);
-
-    const std::string request_id = gen_request_id();
-    auto parsed = ParseRerankRequestBody(req.body, get_default_model(), request_id);
-    if (!parsed.ok)
-    {
-        WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(request_id,
-                              "/v1/rerank",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              ModelCapability::Rerank,
-                              "",
-                              FinishReason::error,
-                              parsed.status,
-                              parsed.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-    LogPlatformRequest("start", RequestLogRecord{
-                                    parsed.request.request_id,
-                                    "/v1/rerank",
-                                    parsed.request.model,
-                                    parsed.request.inference_backend,
-                                    std::string(ToString(parsed.request.capability)),
-                                    "",
-                                    -1,
-                                    -1,
-                                    "",
-                                    0,
-                                    "",
-                                    0,
-                                    0,
-                                    0,
-                                    false});
-
-    if (!rerank_service_)
-    {
-        const PlatformError error{
-            PlatformErrorKind::Internal,
-            "rerank_service_unavailable",
-            "rerank service unavailable"};
-        WriteError(res, error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/rerank",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::error,
-                              error.HttpStatus(),
-                              error.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    const RerankError validation_error = rerank_service_->ValidateRequest(parsed.request);
-    if (validation_error.HasError())
-    {
-        WriteError(res, validation_error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/rerank",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::error,
-                              validation_error.HttpStatus(),
-                              validation_error.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    std::shared_ptr<void> request_lease;
-    const PlatformError limit_error = AcquireRequestLease(parsed.request.model, "", request_lease);
-    if (limit_error.HasError())
-    {
-        WriteError(res, limit_error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/rerank",
-                              parsed.request.model,
-                              parsed.request.inference_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::error,
-                              limit_error.HttpStatus(),
-                              limit_error.code,
-                              0,
-                              dur_ms,
-                              0,
-                              0,
-                              0,
-                              false);
-        RecordFinish(FinishReason::error, dur_ms);
-        return;
-    }
-
-    parsed.request.cancelled = std::make_shared<std::atomic<bool>>(false);
-    if (request_timeout_ms_ > 0)
-        parsed.request.deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
-    const auto watchdog_done = std::make_shared<std::atomic<bool>>(false);
-    ScopedWatchdogDone stop_watchdog{watchdog_done};
-    start_sync_cancel_watchdog(parsed.request.cancelled, watchdog_done, [&res]()
-    {
-        return res.IsAlive();
-    });
-
-    const auto result = rerank_service_->Run(parsed.request);
-    if (!res.IsAlive())
-    {
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/rerank",
-                              parsed.request.model,
-                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
-                              parsed.request.capability,
-                              "",
-                              FinishReason::cancelled,
-                              499,
-                              "request_cancelled",
-                              0,
-                              dur_ms,
-                              result.response.usage.prompt_tokens,
-                              result.response.usage.completion_tokens,
-                              result.response.usage.total_tokens,
-                              false);
-        RecordFinish(FinishReason::cancelled, dur_ms);
-        return;
-    }
-    if (result.error.HasError())
-    {
-        WriteError(res, result.error);
-        const FinishReason finish_reason = finish_reason_from_error(result.error);
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordGovernedRequest(parsed.request.request_id,
-                              "/v1/rerank",
-                              parsed.request.model,
-                              result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
-                              parsed.request.capability,
-                              "",
-                              finish_reason,
-                              result.error.HttpStatus(),
-                              result.error.code,
-                              0,
-                              dur_ms,
-                              result.response.usage.prompt_tokens,
-                              result.response.usage.completion_tokens,
-                              result.response.usage.total_tokens,
-                              false);
-        RecordFinish(finish_reason, dur_ms);
-        return;
-    }
-
-    const json out = build_rerank_json(result.response);
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));
-    res.End();
-
-    const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - start_time)
-                            .count();
-    RecordGovernedRequest(parsed.request.request_id,
-                          "/v1/rerank",
-                          result.response.model,
-                          result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
-                          parsed.request.capability,
-                          "",
-                          FinishReason::stop,
-                          200,
-                          "",
-                          0,
-                          dur_ms,
-                          result.response.usage.prompt_tokens,
-                          result.response.usage.completion_tokens,
-                          result.response.usage.total_tokens,
-                          false);
-    RecordFinish(FinishReason::stop, dur_ms);
-}
-
-void HttpGateway::HandleAdminModelsStatus(const HttpRequest &req, HttpResponse &res)
-{
-    (void)req;
-    const json out = admin_status_service_.BuildModelsStatus(model_catalog_service_.ListModels(),
-                                                             BuildBackendRuntimeSnapshots());
-
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump());
-    res.End();
-}
-
-void HttpGateway::HandleAdminBackendsStatus(const HttpRequest &req, HttpResponse &res)
-{
-    (void)req;
-    const json out = admin_status_service_.BuildBackendsStatus(
-        model_catalog_service_.ListModels(),
-        BuildBackendRuntimeSnapshots(),
-        BuildPlatformRuntimeSnapshot());
-
-    res.SetStatus(200, "OK");
-    res.SetHeader("Content-Type", "application/json");
-    res.SetHeader("Connection", "close");
-    res.Write(out.dump());
-    res.End();
 }
 
 void HttpGateway::HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res)
@@ -1781,11 +707,11 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
         return;
     }
 
-    const std::string request_id = gen_request_id();
+    const std::string request_id = GenRequestId();
     auto ctx = std::make_shared<ServingContext>();
     ctx->request_id = request_id;
     ctx->session_id = body.value("session_id", request_id);
-    ctx->model = body.value("model", get_default_model());
+    ctx->model = body.value("model", GetDefaultModel());
     ctx->is_chat = true;
     ctx->stream = false;
     ctx->use_agent = true;
@@ -1814,7 +740,7 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
         RecordFinish(r, dur_ms);
         LOG(INFO) << "[agent-debug] done req=" << ctx->request_id
                   << " dur_ms=" << dur_ms
-                  << " reason=" << finish_reason_to_str(r);
+                  << " reason=" << FinishReasonToStr(r);
     };
 
     res.SetOnClose([ctx]
@@ -1973,8 +899,8 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     total_requests_.fetch_add(1, std::memory_order_relaxed);
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
-    const std::string request_id = gen_request_id();
-    auto parsed = ParseChatRequestBody(req.body, false, *session_mgr_, get_default_model(), get_default_max_tokens(), request_id);
+    const std::string request_id = GenRequestId();
+    auto parsed = ParseChatRequestBody(req.body, false, *session_mgr_, GetDefaultModel(), GetDefaultMaxTokens(), request_id);
     if (!parsed.ok)
     {
         WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
@@ -2088,7 +1014,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     ctx->request_state = request_lease;
     if (request_timeout_ms_ > 0)
         ctx->deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
-    if (has_deadline(ctx->deadline))
+    if (HasDeadline(ctx->deadline))
     {
         std::weak_ptr<ServingContext> weak_ctx = ctx;
         std::thread([weak_ctx]
@@ -2134,7 +1060,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     }
 
     const ChatResponse response = chat_service_->BuildResponse(ctx);
-    json out = build_chat_completion_json(ctx->request_id, response);
+    json out = BuildChatCompletionJson(ctx->request_id, response);
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
@@ -2150,8 +1076,8 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     stream_requests_.fetch_add(1, std::memory_order_relaxed);
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
-    const std::string request_id = gen_request_id();
-    auto parsed = ParseChatRequestBody(req.body, true, *session_mgr_, get_default_model(), get_default_max_tokens(), request_id);
+    const std::string request_id = GenRequestId();
+    auto parsed = ParseChatRequestBody(req.body, true, *session_mgr_, GetDefaultModel(), GetDefaultMaxTokens(), request_id);
     if (!parsed.ok)
     {
         WriteError(*res_ptr, parsed.status, parsed.message, parsed.type, parsed.code);
@@ -2265,7 +1191,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     ctx->request_state = request_lease;
     if (request_timeout_ms_ > 0)
         ctx->deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
-    if (has_deadline(ctx->deadline))
+    if (HasDeadline(ctx->deadline))
     {
         std::weak_ptr<ServingContext> weak_ctx = ctx;
         std::thread([weak_ctx]
