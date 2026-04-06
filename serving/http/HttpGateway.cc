@@ -378,23 +378,36 @@ void HttpGateway::RecordRagMetrics(const ServingContext &ctx)
         rag_empty_hit_total_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
+PlatformRuntimeSnapshot HttpGateway::BuildPlatformRuntimeSnapshot() const
 {
-    (void)req;
-    const auto uptime_ms =
+    PlatformRuntimeSnapshot snapshot;
+    snapshot.uptime_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time_)
             .count();
+    snapshot.requests_total = total_requests_.load(std::memory_order_relaxed);
+    snapshot.requests_in_flight = in_flight_.load(std::memory_order_relaxed);
+    snapshot.requests_stream_total = stream_requests_.load(std::memory_order_relaxed);
+    snapshot.requests_error_total = error_requests_.load(std::memory_order_relaxed);
+    snapshot.requests_cancelled_total = cancelled_requests_.load(std::memory_order_relaxed);
+    return snapshot;
+}
 
-    json out = {
-        {"status", "ok"},
-        {"uptime_ms", uptime_ms}};
+void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    const json out = health_service_.BuildHealth(BuildPlatformRuntimeSnapshot());
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
     res.Write(out.dump());
     res.End();
+}
+
+void HttpGateway::HandleHealthz(const HttpRequest &req, HttpResponse &res)
+{
+    HandleHealth(req, res);
 }
 
 void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
@@ -456,6 +469,9 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
             {"object", "model"},
             {"owned_by", "edge-llm-serving"},
             {"default", model.is_default},
+            {"default_backend", model.default_backend},
+            {"capabilities", model.capabilities},
+            {"declared_backends", model.backends},
             // 真实配置能力（模型级）
             {"backends", configured_backends},
             // 网关支持的请求级后端切换能力（路由级）
@@ -467,6 +483,33 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
         {"object", "list"},
         {"data", items}
     };
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
+void HttpGateway::HandleAdminModelsStatus(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    const json out = admin_status_service_.BuildModelsStatus(model_catalog_service_.ListModels());
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
+}
+
+void HttpGateway::HandleAdminBackendsStatus(const HttpRequest &req, HttpResponse &res)
+{
+    (void)req;
+    const json out = admin_status_service_.BuildBackendsStatus(
+        model_catalog_service_.ListModels(),
+        executor_.GetBackendRuntimeSnapshots(),
+        BuildPlatformRuntimeSnapshot());
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");

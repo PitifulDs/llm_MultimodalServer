@@ -2,6 +2,7 @@
 #include "serving/core/ServingContext.h"
 #include "serving/core/ModelEngine.h"
 #include "engine/EngineFactory.h"
+#include "engine/ModelRegistry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,11 +13,20 @@
 // ================= EngineExecutor =================
 namespace
 {
-std::string build_route_key(const std::shared_ptr<ServingContext> &ctx)
+std::string build_route_key(ModelCapability capability,
+                            const std::string &model,
+                            const std::string &backend)
 {
-    if (!ctx)
-        return {};
-    return std::string(ToString(ctx->capability)) + "||" + ctx->model + "||" + ctx->inference_backend;
+    return std::string(ToString(capability)) + "||" + model + "||" + backend;
+}
+
+std::string backend_from_route_key(const std::string &route_key)
+{
+    constexpr const char *kSep = "||";
+    const size_t pos = route_key.rfind(kSep);
+    if (pos == std::string::npos)
+        return route_key;
+    return route_key.substr(pos + 2);
 }
 }
 
@@ -38,7 +48,16 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         return false;
 
     // 2) per-model 串行投递
-    const std::string route_key = build_route_key(ctx);
+    const ModelSpec spec = ModelRegistry::Resolve(ctx->model, ctx->inference_backend);
+    if (!spec.valid)
+    {
+        ctx->error_message = "EngineExecutor: model resolve failed, model=" + ctx->model;
+        ctx->EmitFinish(FinishReason::error);
+        return false;
+    }
+
+    const std::string resolved_backend = spec.backend.empty() ? ctx->inference_backend : spec.backend;
+    const std::string route_key = build_route_key(ctx->capability, ctx->model, resolved_backend);
 
     auto get_env_int = [](const char *name, int def) -> int {
         const char *v = std::getenv(name);
@@ -60,7 +79,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 
     const auto enqueued_at = std::chrono::steady_clock::now();
 
-    bool ok = SubmitPerModel(route_key, [this, ctx, enqueued_at, max_queue_wait_ms]
+    bool ok = SubmitPerModel(route_key, [this, ctx, enqueued_at, max_queue_wait_ms, route_key, resolved_backend]
     {
         // 任务开始时再检查一次
         if (ctx->finished.load(std::memory_order_acquire))
@@ -84,7 +103,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
 
         LOG(INFO) << "[execQ] start model=" << ctx->model
                   << " capability=" << ToString(ctx->capability)
-                  << " backend=" << (ctx->inference_backend.empty() ? "auto" : ctx->inference_backend)
+                  << " backend=" << (resolved_backend.empty() ? "auto" : resolved_backend)
                   << " req=" << ctx->request_id
                   << " wait_ms=" << wait_ms;
 
@@ -92,9 +111,9 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         std::shared_ptr<ModelEngine> engine;
         {
             std::lock_guard<std::mutex> lk(map_mu_);
-            auto &slot = engines_[build_route_key(ctx)];
+            auto &slot = engines_[route_key];
             if (!slot)
-                slot = EngineFactory::Create(ctx->model, ctx->inference_backend);
+                slot = EngineFactory::Create(ctx->model, resolved_backend);
             engine = slot;
         }
 
@@ -129,6 +148,37 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
     }
 
     return true;
+}
+
+std::vector<BackendRuntimeSnapshot> EngineExecutor::GetBackendRuntimeSnapshots()
+{
+    std::unordered_map<std::string, BackendRuntimeSnapshot> snapshots;
+
+    std::lock_guard<std::mutex> lk(map_mu_);
+    for (const auto &[route_key, engine] : engines_)
+    {
+        (void)engine;
+        const std::string backend = backend_from_route_key(route_key);
+        auto &snapshot = snapshots[backend];
+        snapshot.backend = backend;
+        snapshot.loaded_engine_count += 1;
+    }
+
+    for (const auto &[route_key, queue] : queues_)
+    {
+        const std::string backend = backend_from_route_key(route_key);
+        auto &snapshot = snapshots[backend];
+        snapshot.backend = backend;
+
+        std::lock_guard<std::mutex> qlk(queue->mu);
+        snapshot.queue_length += queue->tasks.size();
+    }
+
+    std::vector<BackendRuntimeSnapshot> out;
+    out.reserve(snapshots.size());
+    for (auto &[_, snapshot] : snapshots)
+        out.push_back(snapshot);
+    return out;
 }
 
 void EngineExecutor::ExecuteAndWait(std::shared_ptr<ServingContext> ctx)

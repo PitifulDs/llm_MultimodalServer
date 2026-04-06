@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "ThreadPool.h"
+#include "serving/service/StatusTypes.h"
 
 struct ServingContext;
 class ModelEngine;
@@ -25,6 +26,7 @@ public:
 
     // 同步：用于 non-stream（内部 Execute + wait）
     void ExecuteAndWait(std::shared_ptr<ServingContext> ctx);
+    std::vector<BackendRuntimeSnapshot> GetBackendRuntimeSnapshots();
 
 private:
     // ===== per-model queue =====

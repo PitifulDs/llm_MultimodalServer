@@ -13,7 +13,10 @@
 #include "serving/core/EngineExecutor.h"
 #include "serving/core/SessionExecutor.h"
 #include "serving/core/ThreadPool.h"
+#include "serving/service/AdminStatusService.h"
+#include "serving/service/HealthService.h"
 #include "serving/service/ModelCatalogService.h"
+#include "serving/service/StatusTypes.h"
 #include "serving/rag/RAGExecutor.h"
 
 // 前向声明
@@ -50,8 +53,11 @@ public:
 
     // 健康检查 / 指标
     void HandleHealth(const HttpRequest &req, HttpResponse &res);
+    void HandleHealthz(const HttpRequest &req, HttpResponse &res);
     void HandleMetrics(const HttpRequest &req, HttpResponse &res);
     void HandleModels(const HttpRequest &req, HttpResponse &res);
+    void HandleAdminModelsStatus(const HttpRequest &req, HttpResponse &res);
+    void HandleAdminBackendsStatus(const HttpRequest &req, HttpResponse &res);
     void HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res);
     void HandleAgentDebug(const HttpRequest &req, HttpResponse &res);
     void HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse &res);
@@ -63,6 +69,7 @@ private:
                     const std::string &param = "");
     void RecordFinish(FinishReason reason, int64_t dur_ms);
     void RecordRagMetrics(const ServingContext &ctx);
+    PlatformRuntimeSnapshot BuildPlatformRuntimeSnapshot() const;
 
     ThreadPool pool_;                        // 线程池
     StackFlowsClient *sf_client_{nullptr};   // 不持有所有权
@@ -70,6 +77,8 @@ private:
     EngineExecutor executor_; // 共享一个 executor，所有请求都走这里
     std::unique_ptr<AgentExecutor> agent_executor_;
     std::unique_ptr<RAGExecutor> rag_executor_;
+    HealthService health_service_;
+    AdminStatusService admin_status_service_;
     ModelCatalogService model_catalog_service_;
     SessionExecutor session_executor_;
 

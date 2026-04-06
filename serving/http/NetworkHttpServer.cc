@@ -351,6 +351,12 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
+    if (method == "GET" && url == "/healthz")
+    {
+        gateway_->HandleHealthz(req, *res_ptr);
+        return;
+    }
+
     if (method == "GET" && url == "/metrics")
     {
         gateway_->HandleMetrics(req, *res_ptr);
@@ -360,6 +366,18 @@ void NetworkHttpServer::handleHttpRequest(
     if (method == "GET" && url == "/v1/models")
     {
         gateway_->HandleModels(req, *res_ptr);
+        return;
+    }
+
+    if (method == "GET" && url == "/admin/models/status")
+    {
+        gateway_->HandleAdminModelsStatus(req, *res_ptr);
+        return;
+    }
+
+    if (method == "GET" && url == "/admin/backends/status")
+    {
+        gateway_->HandleAdminBackendsStatus(req, *res_ptr);
         return;
     }
 
