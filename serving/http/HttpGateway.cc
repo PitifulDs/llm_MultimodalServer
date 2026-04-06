@@ -469,6 +469,13 @@ namespace
         return out;
     }
 
+    std::string build_experimental_api_disabled_message(const std::string &route,
+                                                        const std::string &env_name)
+    {
+        return route + " is an experimental compatibility API and is disabled by default; set " +
+               env_name + "=1 to re-enable it explicitly";
+    }
+
     json build_embeddings_json(const EmbeddingsResponse &response)
     {
         json data = json::array();
@@ -544,6 +551,8 @@ HttpGateway::HttpGateway()
     rag_opt.enable_neighbor_expand = get_env_bool("RAG_ENABLE_NEIGHBOR_EXPAND", true);
     rag_opt.max_neighbor_count = get_env_int("RAG_MAX_NEIGHBOR_COUNT", 1);
     rag_executor_ = std::make_unique<RAGExecutor>(std::move(rag_opt));
+    experimental_agent_api_enabled_ = get_env_bool("EXPERIMENTAL_AGENT_API_ENABLED", false);
+    experimental_rag_api_enabled_ = get_env_bool("EXPERIMENTAL_RAG_API_ENABLED", false);
     rag_retrieval_debug_api_enabled_ = get_env_bool("RAG_ENABLE_RETRIEVAL_DEBUG_API", true);
 
     AgentExecutor::Options agent_opt;
@@ -701,7 +710,11 @@ HttpGateway::HttpGateway()
                 if (!ctx->use_agent)
                     return;
 
-                if (!ctx->agent_structured_output.empty())
+                const bool expose_agent_result = ctx->agent_debug || ctx->agent_output_format == "structured";
+                const bool expose_agent_debug_payload = ctx->agent_debug;
+                const bool expose_agent_trace = ctx->agent_debug || ctx->agent_include_trace;
+
+                if (!ctx->agent_structured_output.empty() && expose_agent_result)
                     response.agent_result = ctx->agent_structured_output;
 
                 if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("references"))
@@ -717,17 +730,19 @@ HttpGateway::HttpGateway()
                     }
                 }
 
-                if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("subqueries"))
+                if (!ctx->agent_structured_output.empty() &&
+                    ctx->agent_structured_output.contains("subqueries") &&
+                    expose_agent_debug_payload)
                     response.subqueries = ctx->agent_structured_output["subqueries"];
 
-                if (!ctx->agent_evidence.empty())
+                if (!ctx->agent_evidence.empty() && expose_agent_debug_payload)
                 {
                     response.evidence = nlohmann::json::array();
                     for (const auto &item : ctx->agent_evidence)
                         response.evidence.push_back(ToJson(item));
                 }
 
-                if (ctx->agent_debug || ctx->agent_include_trace)
+                if (expose_agent_trace)
                 {
                     response.agent_trace = nlohmann::json::array();
                     for (const auto &item : ctx->agent_trace)
@@ -875,6 +890,8 @@ void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("X-EdgeLLM-Compat-Route", "/healthz");
+    res.SetHeader("X-EdgeLLM-Route-Status", "compatibility-alias");
     res.SetHeader("Connection", "close");
     res.Write(out.dump());
     res.End();
@@ -882,7 +899,14 @@ void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
 
 void HttpGateway::HandleHealthz(const HttpRequest &req, HttpResponse &res)
 {
-    HandleHealth(req, res);
+    (void)req;
+    const json out = health_service_.BuildHealth(BuildPlatformRuntimeSnapshot());
+
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump());
+    res.End();
 }
 
 void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
@@ -923,6 +947,17 @@ void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
     res.SetHeader("Connection", "close");
     res.Write(out.dump());
     res.End();
+}
+
+void HttpGateway::WriteExperimentalApiDisabled(HttpResponse &res,
+                                               const std::string &route,
+                                               const std::string &env_name)
+{
+    WriteError(res,
+               404,
+               build_experimental_api_disabled_message(route, env_name),
+               "invalid_request_error",
+               "experimental_api_disabled");
 }
 
 void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
@@ -1138,6 +1173,11 @@ void HttpGateway::HandleAdminBackendsStatus(const HttpRequest &req, HttpResponse
 void HttpGateway::HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
+    if (!experimental_rag_api_enabled_)
+    {
+        WriteExperimentalApiDisabled(res, "/v1/retrieval/search", "EXPERIMENTAL_RAG_API_ENABLED");
+        return;
+    }
     if (!rag_retrieval_debug_api_enabled_)
     {
         WriteError(res, 404, "retrieval debug api disabled", "invalid_request_error", "retrieval_debug_api_disabled");
@@ -1235,6 +1275,16 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
     const auto start_time = std::chrono::steady_clock::now();
     total_requests_.fetch_add(1, std::memory_order_relaxed);
     in_flight_.fetch_add(1, std::memory_order_relaxed);
+
+    if (!experimental_agent_api_enabled_)
+    {
+        WriteExperimentalApiDisabled(res, "/v1/agent/debug", "EXPERIMENTAL_AGENT_API_ENABLED");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
 
     json body;
     try
@@ -1385,6 +1435,11 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
 void HttpGateway::HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
+    if (!experimental_rag_api_enabled_)
+    {
+        WriteExperimentalApiDisabled(res, "/admin/rag/reload-index", "EXPERIMENTAL_RAG_API_ENABLED");
+        return;
+    }
     if (!rag_executor_)
     {
         WriteError(res, 503, "rag executor unavailable", "service_unavailable_error", "rag_unavailable");
@@ -1417,6 +1472,11 @@ void HttpGateway::HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse
 void HttpGateway::HandleAdminRagStatus(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
+    if (!experimental_rag_api_enabled_)
+    {
+        WriteExperimentalApiDisabled(res, "/admin/rag/status", "EXPERIMENTAL_RAG_API_ENABLED");
+        return;
+    }
     if (!rag_executor_)
     {
         WriteError(res, 503, "rag executor unavailable", "service_unavailable_error", "rag_unavailable");

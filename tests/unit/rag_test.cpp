@@ -133,6 +133,32 @@ struct FakeResponse : HttpResponse
     }
 };
 
+struct ScopedEnvVar
+{
+    std::string name;
+    bool had_old = false;
+    std::string old_value;
+
+    ScopedEnvVar(std::string env_name, const std::string &value)
+        : name(std::move(env_name))
+    {
+        if (const char *existing = std::getenv(name.c_str()))
+        {
+            had_old = true;
+            old_value = existing;
+        }
+        setenv(name.c_str(), value.c_str(), 1);
+    }
+
+    ~ScopedEnvVar()
+    {
+        if (had_old)
+            setenv(name.c_str(), old_value.c_str(), 1);
+        else
+            unsetenv(name.c_str());
+    }
+};
+
 std::filesystem::path make_temp_dir()
 {
     static int seq = 0;
@@ -433,10 +459,21 @@ int main(int argc, char **argv)
     setenv("RAG_EMBEDDINGS_PATH", artifacts.embeddings_path.c_str(), 1);
     setenv("RAG_ID_MAP_PATH", artifacts.id_map_path.c_str(), 1);
     setenv("RAG_ENABLE_RETRIEVAL_DEBUG_API", "1", 1);
-    HttpGateway gateway;
 
     FakeRequest req;
     req.body = R"json({"kb":"repo_code","query":"stream metadata","mode":"hybrid","top_k":2,"debug":true})json";
+
+    unsetenv("EXPERIMENTAL_RAG_API_ENABLED");
+    HttpGateway disabled_gateway;
+    FakeResponse disabled_res;
+    disabled_gateway.HandleRetrievalSearch(req, disabled_res);
+    EXPECT_EQ(disabled_res.status, 404);
+    const auto disabled_json = json::parse(disabled_res.body);
+    EXPECT_EQ(disabled_json["error"]["code"].get<std::string>(), std::string("experimental_api_disabled"));
+
+    const ScopedEnvVar scoped_rag_api("EXPERIMENTAL_RAG_API_ENABLED", "1");
+    HttpGateway gateway;
+
     FakeResponse res;
     gateway.HandleRetrievalSearch(req, res);
     EXPECT_EQ(res.status, 200);

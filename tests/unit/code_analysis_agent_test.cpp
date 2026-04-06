@@ -131,6 +131,32 @@ struct FakeResponse : HttpResponse
     }
 };
 
+struct ScopedEnvVar
+{
+    std::string name;
+    bool had_old = false;
+    std::string old_value;
+
+    ScopedEnvVar(std::string env_name, const std::string &value)
+        : name(std::move(env_name))
+    {
+        if (const char *existing = std::getenv(name.c_str()))
+        {
+            had_old = true;
+            old_value = existing;
+        }
+        setenv(name.c_str(), value.c_str(), 1);
+    }
+
+    ~ScopedEnvVar()
+    {
+        if (had_old)
+            setenv(name.c_str(), old_value.c_str(), 1);
+        else
+            unsetenv(name.c_str());
+    }
+};
+
 std::filesystem::path make_temp_dir()
 {
     static int seq = 0;
@@ -536,8 +562,58 @@ bool test_gateway_search_code_read_file_response()
     return true;
 }
 
+bool test_gateway_non_debug_agent_response_is_trimmed()
+{
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({
+        "model":"llama",
+        "agent":true,
+        "agent_mode":"code_analysis",
+        "max_tokens":64,
+        "tools":["search_code","read_file"],
+        "messages":[{"role":"user","content":"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的"}]
+    })json";
+    FakeResponse res;
+    gateway.HandleChatCompletion(req, res);
+    if (res.status != 200)
+        std::cerr << "non-debug agent response status=" << res.status << " body=" << res.body << "\n";
+    EXPECT_EQ(res.status, 200);
+
+    const auto out = json::parse(res.body);
+    EXPECT_TRUE(!out.contains("agent_result"));
+    EXPECT_TRUE(!out.contains("evidence"));
+    EXPECT_TRUE(!out.contains("agent_trace"));
+    EXPECT_TRUE(!out.contains("subqueries"));
+    EXPECT_TRUE(out["choices"][0]["message"]["content"].get<std::string>().find("证据") != std::string::npos);
+    return true;
+}
+
+bool test_agent_debug_endpoint_requires_flag()
+{
+    unsetenv("EXPERIMENTAL_AGENT_API_ENABLED");
+
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({
+        "model":"llama",
+        "mode":"code_analysis",
+        "debug":true,
+        "tools":["search_code","read_file"],
+        "query":"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的"
+    })json";
+    FakeResponse res;
+    gateway.HandleAgentDebug(req, res);
+    EXPECT_EQ(res.status, 404);
+    const auto out = json::parse(res.body);
+    EXPECT_EQ(out["error"]["code"].get<std::string>(), std::string("experimental_api_disabled"));
+    return true;
+}
+
 bool test_agent_debug_endpoint()
 {
+    const ScopedEnvVar scoped_agent_api("EXPERIMENTAL_AGENT_API_ENABLED", "1");
+
     HttpGateway gateway;
     FakeRequest req;
     req.body = R"json({
@@ -560,6 +636,8 @@ bool test_agent_debug_endpoint()
 
 bool test_agent_debug_web_research_endpoint_local_only()
 {
+    const ScopedEnvVar scoped_agent_api("EXPERIMENTAL_AGENT_API_ENABLED", "1");
+
     HttpGateway gateway;
     FakeRequest req;
     req.body = R"json({
@@ -612,6 +690,8 @@ int main(int argc, char **argv)
     ok = ok && test_web_research_evidence_formatting();
     ok = ok && test_gateway_structured_debug_response(artifacts);
     ok = ok && test_gateway_search_code_read_file_response();
+    ok = ok && test_gateway_non_debug_agent_response_is_trimmed();
+    ok = ok && test_agent_debug_endpoint_requires_flag();
     ok = ok && test_agent_debug_endpoint();
     ok = ok && test_agent_debug_web_research_endpoint_local_only();
     ok = ok && test_gateway_invalid_chat_request_status();

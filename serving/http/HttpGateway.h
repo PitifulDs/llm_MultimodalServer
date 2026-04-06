@@ -72,6 +72,9 @@ private:
     void WriteError(HttpResponse &res, int status, const std::string &message,
                     const std::string &type, const std::string &code = "",
                     const std::string &param = "");
+    void WriteExperimentalApiDisabled(HttpResponse &res,
+                                      const std::string &route,
+                                      const std::string &env_name);
     void RecordFinish(FinishReason reason, int64_t dur_ms);
     void RecordRagMetrics(const ServingContext &ctx);
     PlatformRuntimeSnapshot BuildPlatformRuntimeSnapshot() const;
@@ -109,6 +112,8 @@ private:
     std::atomic<int64_t> rag_injected_chars_total_{0};
     std::atomic<int64_t> rag_vector_search_latency_ms_total_{0};
     std::atomic<int64_t> rag_lexical_search_latency_ms_total_{0};
+    bool experimental_agent_api_enabled_{false};
+    bool experimental_rag_api_enabled_{false};
     bool rag_retrieval_debug_api_enabled_{true};
 
     std::mutex gc_mu_;

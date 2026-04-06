@@ -1,9 +1,12 @@
 # EdgeLLM-Serving
 
-一个轻量的 LLM Serving 系统，覆盖 **本地 llama.cpp 推理** + **StackFlow 远程推理**，提供 OpenAI 兼容的 HTTP/SSE 接口。当前代码已经支持请求级后端切换、只读分析 agent、`/v1/models` 模型发现，以及 demo 前端的 finish reason 展示与自动续写。
+一个轻量的模型 API 平台，覆盖 **本地 llama.cpp 推理** + **StackFlow 远程推理**，提供 OpenAI 风格 HTTP/SSE 接口。当前主线聚焦 `chat`、`embeddings`、`rerank` 三类能力，以及 `/v1/models`、`/healthz`、admin status 等平台治理接口。
 
 **项目展示点**
 - OpenAI 兼容 `/v1/chat/completions`（流式 / 非流式）
+- OpenAI 兼容 `/v1/embeddings`
+- OpenAI 兼容 `/v1/rerank`
+- `GET /v1/models`、`GET /healthz`、admin status
 - HTTP 正确解析与 SSE 推流
 - 本地 / 远程双后端统一抽象
 - 配置化启动与可运维脚本
@@ -75,8 +78,9 @@ EdgeLLM-Serving/
 ```
 
 当前说明文档:
+- `docs/模型API平台化改造文档.md`
 - `docs/系统架构.md`
-- `docs/智能体使用说明.md`
+- `docs/API调用示例.md`
 - `docs/本地推理与RPC推理.md`
 - `serving/http/使用说明.md`
 
@@ -84,7 +88,7 @@ EdgeLLM-Serving/
 1. `NetworkHttpServer` 严格按 `Content-Length` 组包（不猜测 body 长度，不支持 `Transfer-Encoding: chunked`）。
 2. `HttpGateway + ChatRequestParser` 构造 `ServingContext`。
 3. `SessionExecutor` 保证同一 `session_id` 串行。
-4. 普通 chat 直接进入 `EngineExecutor`；agent 请求先进入 `AgentExecutor` 再调用 `EngineExecutor`。
+4. 普通 chat 直接进入 `EngineExecutor`；agent/rag 仍保留兼容扩展，但不再作为主线入口。
 5. `EngineExecutor` 按 `model + inference_backend` 维度排队并复用 engine。
 6. `LlamaEngine` 或 `StackFlowEngine` 执行推理。
 7. `OpenAIStreamWriter` 输出 SSE，或 `HttpGateway` 输出普通 JSON。
@@ -111,6 +115,11 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -d "{\"model\":\"qwen3.5-2b\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}" | jq
 ```
 
+Health:
+```bash
+curl -s "http://127.0.0.1:8080/healthz" | jq
+```
+
 流式（OpenAI 兼容写法，body 带 `"stream": true`）:
 ```bash
 curl -sS -N -X POST "http://127.0.0.1:8080/v1/chat/completions" \
@@ -118,9 +127,28 @@ curl -sS -N -X POST "http://127.0.0.1:8080/v1/chat/completions" \
   -d "{\"model\":\"qwen3.5-2b\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
 ```
 
-列出当前可用模型:
+Embeddings:
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/embeddings" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"qwen3.5-2b\",\"input\":\"hello embeddings\"}" | jq
+```
+
+Rerank:
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/rerank" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"qwen3.5-2b\",\"query\":\"hello rerank\",\"documents\":[\"totally unrelated weather report\",\"hello rerank\"],\"top_n\":1}" | jq
+```
+
+列出当前模型目录:
 ```bash
 curl -s "http://127.0.0.1:8080/v1/models" | jq
+```
+
+主线 smoke：
+```bash
+bash scripts/smoke_test.sh
 ```
 
 ---
@@ -148,14 +176,9 @@ curl -s "http://127.0.0.1:8080/v1/models" | jq
 bash scripts/start_all.sh
 ```
 
-只验证 analysis agent 的真实模型工具调用链路：
+主线自检：
 ```bash
-bash scripts/smoke_test_analysis_agent.sh
-```
-
-如果要一键启动后端 + demo web，并自动尝试打开浏览器：
-```bash
-bash scripts/start_agent_demo.sh
+bash scripts/smoke_test.sh
 ```
 
 `start_all.sh` 会读取 `config.json`，解析相对路径为绝对路径，导出 `STACKFLOW_MODEL_PATH` / `LLAMA_MODEL_PATH` / `LLM_MODEL_PATH` / `STACKFLOW_MAX_CONCURRENCY`，并自动设置 `LD_LIBRARY_PATH`；随后清理旧 socket，将日志写到 `/tmp/llm_serving`。
@@ -182,6 +205,7 @@ bash scripts/start_agent_demo.sh
 - `rag_embeddings_path`, `rag_id_map_path`
 - `rag_default_top_k`, `rag_default_mode`, `rag_default_fusion`, `rag_max_context_chars`
 - `rag_enable_neighbor_expand`, `rag_max_neighbor_count`, `rag_enable_retrieval_debug_api`
+- `experimental_agent_api_enabled`, `experimental_rag_api_enabled`
 - `serving_backend`（`local` 或 `stackflow`）
 - `stackflow_host`, `stackflow_port`, `stackflow_unit`
 - `stackflow_timeout_ms`, `stackflow_infer_timeout_ms`
@@ -225,267 +249,20 @@ bash scripts/start_agent_demo.sh
 - `ModelRegistry` 仍暂时保留 `*-remote` 的兼容解析分支，保证历史请求不立即中断
 - 后续会在一次单独迁移中移除这层兼容逻辑
 
-**RAG v2**
+**扩展能力（兼容保留，默认不占主线）**
 
-当前 `POST /v1/chat/completions` 支持三种模式，且保持 v1 `mode=lexical` 兼容：
-- `lexical`：沿用 SQLite FTS5
-- `vector`：在线 query embedding + 离线向量索引
-- `hybrid`：lexical + vector 检索后做融合，默认 `fusion=rrf`
+agent/rag 仍保留兼容能力，但已经退出主 README 的默认操作路径：
+- `POST /v1/chat/completions` 仍兼容 `agent=true` 与 `rag` 扩展字段
+- `GET /health` 保留为兼容别名，主入口改为 `GET /healthz`
+- `POST /v1/agent/debug`、`POST /v1/retrieval/search`、`GET /admin/rag/status`、`POST /admin/rag/reload-index`
+  默认关闭；需要显式设置 `EXPERIMENTAL_AGENT_API_ENABLED=1` 或 `EXPERIMENTAL_RAG_API_ENABLED=1`
 
-RAG v2 额外接入了：
-- `/v1/retrieval/search`：只做检索、不调模型，便于前端和调试
-- Agent 工具：`search_kb`、`open_chunk`
-- 流式 metadata：stream 结束前返回 references / retrieval summary
-- 检索增强：exact symbol/path boost、same-file dedup、same-symbol dedup、neighbor expansion
-
-配置项（`config.json`）：
-- `rag_index_path`：SQLite lexical 索引
-- `rag_vector_index_path`：向量索引清单路径，默认 `data/rag_faiss.index`
-- `rag_chunk_metadata_path`：chunk metadata jsonl
-- `rag_embeddings_path`：离线 embedding 矩阵
-- `rag_id_map_path`：chunk id 映射
-- `rag_default_top_k` / `rag_default_mode` / `rag_default_fusion`
-- `rag_enable_neighbor_expand` / `rag_max_neighbor_count`
-- `rag_enable_retrieval_debug_api`
-- `rag_max_context_chars`
-
-构建 lexical + vector 索引：
-```bash
-python3 tools/rag/build_index.py --rebuild
-python3 tools/rag/build_vector_index.py --rebuild
-```
-
-只重建单个知识库也支持：
-```bash
-python3 tools/rag/build_index.py --kb repo_code
-python3 tools/rag/build_vector_index.py --kb docs --rebuild
-```
-
-知识库仍为两个：
-- `docs`：`README.md`、`docs/**/*.md`、`serving/http/使用说明.md`
-- `repo_code`：`.h/.hpp/.cc/.cpp/.c/.py/.sh/.json/.md`
-
-RAG 请求示例：
-```bash
-curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"qwen3.5-2b",
-    "messages":[{"role":"user","content":"references 字段是在什么地方拼出来的？"}],
-    "rag":{
-      "enabled":true,
-      "kb":"repo_code",
-      "top_k":6,
-      "mode":"hybrid",
-      "lexical_top_k":8,
-      "vector_top_k":8,
-      "fusion":"rrf",
-      "debug":true,
-      "return_references":true
-    }
-  }' | jq
-```
-
-检索调试接口：
-```bash
-curl -s -X POST "http://127.0.0.1:8080/v1/retrieval/search" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "kb":"repo_code",
-    "query":"stream metadata references",
-    "mode":"hybrid",
-    "top_k":4,
-    "debug":true
-  }' | jq
-```
-
-Agent 可显式只开检索工具：
-```bash
-curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"qwen3.5-2b",
-    "agent":true,
-    "tools":["search_kb","open_chunk"],
-    "messages":[{"role":"user","content":"先检索知识库，说明 stream metadata references 在哪里。"}]
-  }' | jq
-```
-
-非流式返回会继续携带 `references`，并在 `rag.debug=true` 时增加 `retrieval` summary。流式请求会在 `[DONE]` 前多发一个带 `metadata.references` 和 `metadata.retrieval` 的 chunk。
-
-管理接口：
-- `GET /admin/rag/status`
-- `POST /admin/rag/reload-index`
-
-评测脚本：
-```bash
-python3 tools/rag/eval_retrieval.py --base-url http://127.0.0.1:8080
-python3 tools/rag/eval_answer.py --base-url http://127.0.0.1:8080 --model llama
-```
-
-若索引文件缺失，请求会返回明确错误，不会导致服务崩溃；`mode=lexical` 的旧请求格式仍可直接复用。
-
-**Read-only Code Analysis Agent**
-
-当前对外主能力不是通用自治 agent，而是只读、证据优先的 code-analysis agent。稳定主链路是 `planner + evidence + formatter`，目标是基于仓库和本地证据稳定回答代码、配置、接口和排障问题。
-
-对外模式边界：
-- `code_analysis`：主推模式，也是默认模式；优先仓库、本地文档、配置和运行时证据
-- `web_research`：增强模式；仅在需要外部资料交叉验证时补充受控 `search_web / fetch_url`
-- `generic`：保留内部实验用途，不作为对外宣传能力，也不是公开接口模式
-
-当前特性：
-- 支持模块职责、调用链、函数/类行为、接口/配置定位、流式链路定位、排障类问题
-- 优先走 deterministic tool strategy，先检索再精读，最后输出结构化结论
-- 所有证据统一映射为 `CodeEvidence`
-- 非流式 debug 可直接返回 `agent_trace / evidence / agent_result`
-- `POST /v1/agent/debug` 便于前端、smoke test 和评测脚本直接调试 planner 过程
-
-当前迭代边界：
-- 优先做稳定性修正，不继续扩展新工具、新模式或新的 planner 分支
-- 允许继续收敛的问题范围：bug、trace、references、返回格式、评测、文档
-
-`code_analysis` 默认工具优先级：
-- `search_kb`
-- `open_chunk`
-- `search_code`
-- `read_file`
-- `list_files`
-- `search_docs`
-- `get_config`
-- `get_server_status`
-
-`web_research` 额外工具：
-- `search_web`
-- `fetch_url`
-
-支持的问题类型：
-- 模块职责
-- 调用链 / 依赖关系
-- 函数 / 类做什么
-- 接口 / 配置 / 流式逻辑在哪里
-- 带证据的排障问题
-
-默认执行原则：
-- 不一上来读整文件
-- 先粗召回，再精读上下文
-- 先拿证据，再给结论
-- 没证据不下强结论
-- `web_research` 也先优先本地证据，再做外部交叉验证
-- 回答里尽量先给结论，再给分析、证据、风险和下一步
-
-与普通 chat / RAG 的区别：
-- 普通 chat 直接走模型
-- RAG 是把检索结果注入 prompt
-- `code_analysis` 是 agent 先多步取证，再输出结构化结论，且响应里保留 `evidence`
-- `web_research` 复用同一套 evidence/formatter 收口，但会补充 web 侧证据和 references
-
-请求字段：
-- `agent_debug`: 返回 `agent_trace`
-- `agent_output_format`: `text | structured`
-- `agent_include_trace`: 非 debug 模式下也可显式返回 trace
-- `agent_mode`: 对外仅推荐 `code_analysis` 和 `web_research`；未传默认 `code_analysis`
-- `tools`: 可选工具白名单；如果不传，会按 `agent_mode` 自动填默认工具集
-- `max_steps`: 最大 planner 步数，解析阶段会限制在 `8` 以内
-
-structured output 示例：
-```json
-{
-  "summary": "针对“HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的”，最相关实现位于 serving/http/HttpGateway.cc:642-700。",
-  "analysis": [
-    "工具链：search_code -> read_file",
-    "serving/http/HttpGateway.cc:642-700 展示了请求如何进入 AgentExecutor。"
-  ],
-  "evidence": [
-    {
-      "path": "serving/http/HttpGateway.cc",
-      "start_line": 642,
-      "end_line": 700,
-      "symbol": "HttpGateway::HandleChatCompletion",
-      "why_relevant": "这里展示了 agent 请求如何进入 AgentExecutor。"
-    }
-  ],
-  "risks": [
-    "如果没有继续 read_file，结论可能只停留在搜索命中。"
-  ],
-  "next_steps": [
-    "继续围绕首个证据文件扩展上下文。"
-  ]
-}
-```
-
-非流式 `chat/completions` debug 返回里会额外附带：
-- `agent_result`
-- `evidence`
-- `agent_trace`
-
-`chat/completions` 示例：
-```bash
-curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"llama",
-    "agent":true,
-    "agent_mode":"code_analysis",
-    "agent_debug":true,
-    "agent_output_format":"structured",
-    "tools":["search_kb","open_chunk","search_code","read_file"],
-    "messages":[
-      {"role":"user","content":"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？"}
-    ]
-  }' | jq
-```
-
-调试接口：
-```bash
-curl -s -X POST "http://127.0.0.1:8080/v1/agent/debug" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"llama",
-    "mode":"code_analysis",
-    "debug":true,
-    "query":"references 是在哪里拼出来的"
-  }' | jq
-```
-
-返回里会包含：
-- `planner_steps`
-- `evidence`
-- `final_answer`
-- `content`
-
-`web_research` 交叉验证示例：
-```bash
-curl -s -X POST "http://127.0.0.1:8080/v1/agent/debug" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"llama",
-    "mode":"web_research",
-    "debug":true,
-    "tools":["search_kb","open_chunk","search_code","read_file","search_docs","search_web","fetch_url"],
-    "query":"结合仓库和 http://example.com/ 页面，说明 web_research 的 references 是否会保留外部 URL。"
-  }' | jq
-```
-
-可直接跑的验证脚本：
-```bash
-bash scripts/smoke_test_agent_code_analysis.sh
-bash scripts/smoke_test_agent_web_research.sh
-python3 tools/agent/eval_code_analysis.py --base-url http://127.0.0.1:8080 --model llama
-python3 tools/agent/eval_code_analysis.py --mode web_research --base-url http://127.0.0.1:8080 --model llama
-```
-
-当前内置评测集：
-- 位置：`tools/agent/eval_dataset.jsonl`
-- 样例数：20
-- 覆盖：`HttpGateway` / `SessionExecutor` 关系、`references` 拼装位置、`stream metadata` 输出层、`search_kb/open_chunk` 使用方式、`rag mode=hybrid` 主链路等
-- 位置：`tools/agent/eval_dataset_web_research.jsonl`
-- 样例数：4
-- 覆盖：SSE、`Transfer-Encoding: chunked`、`Content-Length`、`411 Length Required` 等“仓库实现 + 外部资料交叉验证”问题
-
-更多说明见：
+扩展验证脚本与说明：
+- `bash scripts/smoke_test_agent_code_analysis.sh`
+- `bash scripts/smoke_test_agent_web_research.sh`
+- `bash scripts/smoke_test_rag.sh`
+- `bash scripts/smoke_test_rag_v2.sh`
 - `docs/智能体使用说明.md`
-- `docs/API调用示例.md`
 - `docs/调试说明.md`
 
 **流式请求兼容说明**

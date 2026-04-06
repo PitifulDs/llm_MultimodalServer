@@ -107,8 +107,8 @@
 
         <details class="panel collapsible" id="agentSection">
           <summary>
-            <span>Agent Settings</span>
-            <span id="agentStatus" class="summary-meta">Disabled. Requests go directly to the model.</span>
+            <span>Experimental Agent Settings</span>
+            <span id="agentStatus" class="summary-meta">Disabled. Mainline requests go directly to the model.</span>
           </summary>
           <div class="panel-body">
             <label class="checkbox-row checkbox-row-strong">
@@ -117,7 +117,7 @@
             </label>
 
             <p id="agentDisabledState" class="microcopy">
-              Agent is off. Turn it on when the answer should come from tools, repo context, docs, or server status.
+              Agent is off. Leave it off for the mainline chat flow; turn it on only when you explicitly need tool, repo, docs, or server-status evidence.
             </p>
 
             <div id="agentConfig" hidden>

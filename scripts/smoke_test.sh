@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
-MODEL="${MODEL:-llama}"
+MODEL="${MODEL:-qwen3.5-2b}"
 TIMEOUT="${TIMEOUT:-40}"
 
 pass() { echo "[PASS] $1"; }
@@ -25,23 +25,34 @@ models_body="$(curl_json GET "$BASE_URL/v1/models")" || fail "GET /v1/models fai
 echo "$models_body" | rg -q '"object"\s*:\s*"list"' || fail "GET /v1/models response invalid"
 pass "GET /v1/models"
 
-health_body="$(curl_json GET "$BASE_URL/health")" || fail "GET /health failed"
-echo "$health_body" | rg -q '"status"\s*:\s*"ok"' || fail "GET /health response invalid"
-pass "GET /health"
+health_body="$(curl_json GET "$BASE_URL/healthz")" || fail "GET /healthz failed"
+echo "$health_body" | rg -q '"status"\s*:\s*"ok"' || fail "GET /healthz response invalid"
+pass "GET /healthz"
 
-metrics_body="$(curl_json GET "$BASE_URL/metrics")" || fail "GET /metrics failed"
-echo "$metrics_body" | rg -q 'requests_total|avg_latency_ms' || fail "GET /metrics response invalid"
-pass "GET /metrics"
+admin_models_body="$(curl_json GET "$BASE_URL/admin/models/status")" || fail "GET /admin/models/status failed"
+echo "$admin_models_body" | rg -q '"object"\s*:\s*"list"' || fail "GET /admin/models/status response invalid"
+pass "GET /admin/models/status"
+
+admin_backends_body="$(curl_json GET "$BASE_URL/admin/backends/status")" || fail "GET /admin/backends/status failed"
+echo "$admin_backends_body" | rg -q '"object"\s*:\s*"list"' || fail "GET /admin/backends/status response invalid"
+pass "GET /admin/backends/status"
 
 non_stream_payload="{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":64}"
 non_stream_body="$(curl_json POST "$BASE_URL/v1/chat/completions" "$non_stream_payload")" || fail "non-stream request failed"
 echo "$non_stream_body" | rg -q '"choices"|"error"' || fail "non-stream response invalid"
 pass "POST /v1/chat/completions (non-stream)"
 
-analysis_payload="{\"model\":\"$MODEL\",\"agent\":true,\"agent_mode\":\"code_analysis\",\"max_steps\":4,\"tools\":[\"search_code\",\"read_file\",\"list_files\",\"search_docs\",\"get_config\",\"get_server_status\"],\"messages\":[{\"role\":\"user\",\"content\":\"HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？\"}],\"max_tokens\":128}"
-analysis_body="$(curl_json POST "$BASE_URL/v1/chat/completions" "$analysis_payload")" || fail "analysis agent request failed"
-echo "$analysis_body" | rg -q '"choices"|"error"' || fail "analysis agent response invalid"
-pass "POST /v1/chat/completions (analysis agent)"
+embeddings_payload="{\"model\":\"$MODEL\",\"input\":\"hello embeddings\"}"
+embeddings_body="$(curl_json POST "$BASE_URL/v1/embeddings" "$embeddings_payload")" || fail "embeddings request failed"
+echo "$embeddings_body" | rg -q '"object"\s*:\s*"list"' || fail "embeddings response invalid"
+echo "$embeddings_body" | rg -q '"embedding"\s*:' || fail "embeddings data missing"
+pass "POST /v1/embeddings"
+
+rerank_payload="{\"model\":\"$MODEL\",\"query\":\"hello rerank\",\"documents\":[\"totally unrelated weather report\",\"hello rerank\"],\"top_n\":1}"
+rerank_body="$(curl_json POST "$BASE_URL/v1/rerank" "$rerank_payload")" || fail "rerank request failed"
+echo "$rerank_body" | rg -q '"object"\s*:\s*"list"' || fail "rerank response invalid"
+echo "$rerank_body" | rg -q '"relevance_score"\s*:' || fail "rerank data missing"
+pass "POST /v1/rerank"
 
 stream_payload="{\"model\":\"$MODEL\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"介绍一下你自己\"}],\"max_tokens\":64}"
 stream_tmp="$(mktemp)"

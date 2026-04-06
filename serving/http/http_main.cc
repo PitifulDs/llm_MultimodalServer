@@ -99,6 +99,8 @@ namespace
             set_env_from_json(cfg, "rag_enable_neighbor_expand", "RAG_ENABLE_NEIGHBOR_EXPAND");
             set_env_from_json(cfg, "rag_max_neighbor_count", "RAG_MAX_NEIGHBOR_COUNT");
             set_env_from_json(cfg, "rag_enable_retrieval_debug_api", "RAG_ENABLE_RETRIEVAL_DEBUG_API");
+            set_env_from_json(cfg, "experimental_agent_api_enabled", "EXPERIMENTAL_AGENT_API_ENABLED");
+            set_env_from_json(cfg, "experimental_rag_api_enabled", "EXPERIMENTAL_RAG_API_ENABLED");
             std::cerr << "[serving-http] config loaded: " << cfg_path << std::endl;
         }
         catch (const std::exception &e)

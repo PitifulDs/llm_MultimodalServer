@@ -45,6 +45,8 @@
   "rag_enable_neighbor_expand": 1,
   "rag_max_neighbor_count": 1,
   "rag_enable_retrieval_debug_api": 1,
+  "experimental_agent_api_enabled": 0,
+  "experimental_rag_api_enabled": 0,
   "rag_max_context_chars": 6000,
   "serving_backend": "local",
   "stackflow_host": "127.0.0.1",

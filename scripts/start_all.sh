@@ -124,7 +124,7 @@ wait_for_pid_alive "node_test" "$(cat "${LOG_DIR}/node_test.pid")" "${LOG_DIR}/n
 
 nohup "${ROOT}/build/serving/http/serving_http_server" "${HTTP_PORT}" > "${LOG_DIR}/serving_http.log" 2>&1 &
 echo $! > "${LOG_DIR}/serving_http.pid"
-wait_for_http_ready "serving_http" "$(cat "${LOG_DIR}/serving_http.pid")" "${LOG_DIR}/serving_http.log" "http://127.0.0.1:${HTTP_PORT}/health"
+wait_for_http_ready "serving_http" "$(cat "${LOG_DIR}/serving_http.pid")" "${LOG_DIR}/serving_http.log" "http://127.0.0.1:${HTTP_PORT}/healthz"
 
 echo "started: unit_manager pid=$(cat "${LOG_DIR}/unit_manager.pid")"
 echo "started: node_test   pid=$(cat "${LOG_DIR}/node_test.pid")"
