@@ -30,7 +30,15 @@
     }
 
     if (err && err.httpStatus) {
-      return 'HTTP ' + err.httpStatus;
+      const detail = [];
+      detail.push('HTTP ' + err.httpStatus);
+      if (err.httpCode) {
+        detail.push('error.code=' + err.httpCode);
+      }
+      if (err.httpMessage) {
+        detail.push(err.httpMessage);
+      }
+      return detail.join('\n');
     }
 
     const raw = err && err.message ? err.message : String(err);
@@ -46,21 +54,43 @@
     return '[error] ' + raw;
   }
 
-  function createHttpError(status) {
-    const err = new Error('HTTP ' + status);
+  function createHttpError(status, message, code) {
+    const err = new Error(message || ('HTTP ' + status));
     err.httpStatus = status;
+    err.httpMessage = message || '';
+    err.httpCode = code || '';
     return err;
   }
 
-  async function loadModels(baseUrl) {
-    const resp = await fetch(baseUrl + '/v1/models', { cache: 'no-store' });
+  async function parseJsonSafe(resp) {
+    try {
+      return await resp.json();
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function fetchJson(baseUrl, path, options) {
+    const start = performance.now();
+    const requestOptions = Object.assign({ cache: 'no-store' }, options || {});
+    const resp = await fetch(baseUrl + path, requestOptions);
+    const responseAt = performance.now();
+    const json = await parseJsonSafe(resp);
+
     if (!resp.ok) {
-      throw createHttpError(resp.status);
+      const errorObject = json && json.error ? json.error : {};
+      throw createHttpError(resp.status, errorObject.message || ('HTTP ' + resp.status), errorObject.code || '');
     }
 
-    const json = await resp.json();
-    const items = Array.isArray(json && json.data) ? json.data : [];
-    return items;
+    return {
+      json: json,
+      ttfbMs: Math.round(responseAt - start),
+    };
+  }
+
+  async function loadModels(baseUrl) {
+    const result = await fetchJson(baseUrl, '/v1/models');
+    return Array.isArray(result.json && result.json.data) ? result.json.data : [];
   }
 
   function getModelInfo(modelCatalog, modelId) {
@@ -91,9 +121,43 @@
     return Array.from(new Set(backends));
   }
 
-  function buildPayload(options) {
-    const messages = [];
+  function parseDocumentsInput(value) {
+    return String(value || '')
+      .split(/\n+/)
+      .map(function (item) {
+        return item.trim();
+      })
+      .filter(Boolean);
+  }
 
+  function buildPayload(options) {
+    const requestMode = options.requestMode || 'chat';
+
+    if (requestMode === 'embeddings') {
+      return {
+        model: options.model,
+        inference_backend: options.inferenceBackend,
+        input: options.prompt,
+        request_id: ns.genId('req'),
+      };
+    }
+
+    if (requestMode === 'rerank') {
+      return {
+        model: options.model,
+        inference_backend: options.inferenceBackend,
+        query: options.prompt,
+        documents: options.documents || [],
+        top_n: options.rerankTopN,
+        request_id: ns.genId('req'),
+      };
+    }
+
+    if (requestMode !== 'chat') {
+      return null;
+    }
+
+    const messages = [];
     if (options.system) {
       messages.push({ role: 'system', content: options.system });
     }
@@ -118,6 +182,16 @@
     return payload;
   }
 
+  function buildRequestTarget(baseUrl, requestMode) {
+    if (requestMode === 'embeddings') return baseUrl + '/v1/embeddings';
+    if (requestMode === 'rerank') return baseUrl + '/v1/rerank';
+    if (requestMode === 'models') return baseUrl + '/v1/models';
+    if (requestMode === 'healthz') return baseUrl + '/healthz';
+    if (requestMode === 'admin_models_status') return baseUrl + '/admin/models/status';
+    if (requestMode === 'admin_backends_status') return baseUrl + '/admin/backends/status';
+    return baseUrl + '/v1/chat/completions';
+  }
+
   async function sendStreamChat(options) {
     const start = performance.now();
     let firstByteAt = null;
@@ -131,7 +205,9 @@
     });
 
     if (!resp.ok || !resp.body) {
-      throw createHttpError(resp.status);
+      const json = await parseJsonSafe(resp);
+      const errorObject = json && json.error ? json.error : {};
+      throw createHttpError(resp.status, errorObject.message || ('HTTP ' + resp.status), errorObject.code || '');
     }
 
     const reader = resp.body.getReader();
@@ -195,25 +271,17 @@
   }
 
   async function sendNonStreamChat(options) {
-    const start = performance.now();
-    const resp = await fetch(options.baseUrl + '/v1/chat/completions', {
+    const result = await fetchJson(options.baseUrl, '/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(options.payload),
-      cache: 'no-store',
       signal: options.signal,
     });
-    const responseAt = performance.now();
-
-    if (!resp.ok) {
-      throw createHttpError(resp.status);
-    }
-
-    const json = await resp.json();
+    const json = result.json;
     const choice = json && json.choices && json.choices[0] ? json.choices[0] : null;
 
     return {
-      ttfbMs: Math.round(responseAt - start),
+      ttfbMs: result.ttfbMs,
       json: json,
       content: choice && choice.message ? choice.message.content || '' : '',
       finishReason: choice ? choice.finish_reason || '-' : '-',
@@ -221,14 +289,33 @@
     };
   }
 
+  async function sendJsonRequest(options) {
+    const target = buildRequestTarget(options.baseUrl, options.requestMode);
+    const requestOptions = {
+      method: options.method || 'GET',
+      signal: options.signal,
+    };
+
+    if (options.payload) {
+      requestOptions.headers = { 'Content-Type': 'application/json' };
+      requestOptions.body = JSON.stringify(options.payload);
+    }
+
+    const path = target.slice(options.baseUrl.length);
+    return fetchJson(options.baseUrl, path, requestOptions);
+  }
+
   ns.Api = {
     buildPayload: buildPayload,
+    buildRequestTarget: buildRequestTarget,
     ensureBaseUrlDefault: ensureBaseUrlDefault,
     formatFetchError: formatFetchError,
     getGatewayBackends: getGatewayBackends,
     getSuggestedBaseUrl: getSuggestedBaseUrl,
     getSupportedBackends: getSupportedBackends,
     loadModels: loadModels,
+    parseDocumentsInput: parseDocumentsInput,
+    sendJsonRequest: sendJsonRequest,
     sendNonStreamChat: sendNonStreamChat,
     sendStreamChat: sendStreamChat,
   };

@@ -121,7 +121,7 @@ EmbeddingsService::Result EmbeddingsService::Run(const EmbeddingsRequest &reques
         if (request_cancelled)
         {
             result.error = {
-                EmbeddingsErrorKind::Internal,
+                EmbeddingsErrorKind::Cancelled,
                 "request_cancelled",
                 result.response.error_message.empty() ? "embeddings request cancelled" : result.response.error_message};
             return result;

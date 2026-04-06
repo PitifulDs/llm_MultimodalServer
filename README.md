@@ -34,7 +34,7 @@ flowchart TB
     G[HttpGateway\n路由/会话/SSE]
     P[ChatRequestParser\n请求转 ServingContext]
     SX[SessionExecutor\n同 session 串行]
-    AX[AgentExecutor\n只读分析 agent]
+    AX[AgentExecutor\n扩展 agent]
     E[EngineExecutor\n按 model+backend 排队]
     L[LlamaEngine\n本地 llama.cpp]
     SF[StackFlowEngine\n远程 RPC 客户端]
@@ -67,7 +67,7 @@ flowchart TB
 EdgeLLM-Serving/
 ├─ serving/
 │  ├─ http/              # OpenAI 协议接入、SSE 输出
-│  └─ core/              # session、调度、agent、ServingContext
+│  └─ core/              # session、调度、ServingContext（含 agent/rag 兼容逻辑）
 ├─ engine/               # LlamaEngine / StackFlowEngine / Factory
 ├─ network/              # Reactor 网络库（EventLoop/Poller/Channel）
 ├─ unit-manager/         # 远程调度与 worker 管理
@@ -88,8 +88,8 @@ EdgeLLM-Serving/
 1. `NetworkHttpServer` 严格按 `Content-Length` 组包（不猜测 body 长度，不支持 `Transfer-Encoding: chunked`）。
 2. `HttpGateway + ChatRequestParser` 构造 `ServingContext`。
 3. `SessionExecutor` 保证同一 `session_id` 串行。
-4. 普通 chat 直接进入 `EngineExecutor`；agent/rag 仍保留兼容扩展，但不再作为主线入口。
-5. `EngineExecutor` 按 `model + inference_backend` 维度排队并复用 engine。
+4. chat 主链路直接进入 `EngineExecutor`；embeddings / rerank 走各自 service；agent/rag 仅作为兼容扩展保留。
+5. `EngineExecutor` 按 `capability + model + inference_backend` 维度排队并复用 engine。
 6. `LlamaEngine` 或 `StackFlowEngine` 执行推理。
 7. `OpenAIStreamWriter` 输出 SSE，或 `HttpGateway` 输出普通 JSON。
 
@@ -118,6 +118,12 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 Health:
 ```bash
 curl -s "http://127.0.0.1:8080/healthz" | jq
+```
+
+Admin status:
+```bash
+curl -s "http://127.0.0.1:8080/admin/models/status" | jq
+curl -s "http://127.0.0.1:8080/admin/backends/status" | jq
 ```
 
 流式（OpenAI 兼容写法，body 带 `"stream": true`）:
@@ -150,6 +156,11 @@ curl -s "http://127.0.0.1:8080/v1/models" | jq
 ```bash
 bash scripts/smoke_test.sh
 ```
+
+治理口径（chat / embeddings / rerank 共用）：
+- 日志统一字段：`request_id`、`api`、`model`、`backend`、`capability`、`session_id`、`queue_wait_ms`、`run_ms`、`finish_reason`、`status_code`、`error_code`
+- 主线错误码：`model_required`、`invalid_input`、`invalid_query`、`invalid_documents`、`invalid_top_n`、`model_not_found`、`capability_not_supported`、`backend_not_available`、`request_timeout`、`backend_timeout`、`request_cancelled`、`queue_full`、`queue_timeout`、`rate_limit_global`、`rate_limit_model`、`rate_limit_session`、`internal_error`
+- `/metrics`、`/admin/models/status`、`/admin/backends/status` 统一累计三条主链路的错误、超时、取消、限流与 token 统计
 
 ---
 
@@ -392,12 +403,22 @@ rm -f /tmp/llm/*.sock*
 
 **单元测试**
 
-当前提供最小单元测试（不依赖模型文件），用于验证 HTTP 工具函数与参数解析逻辑。
+当前提供主线治理与接口测试；其中 embeddings / rerank 治理测试会校验 timeout、cancelled、metrics、admin status 等平台口径。
 
 ```bash
 cmake -S . -B build
-cmake --build build --target http_utils_test rag_test -j
+cmake --build build --target \
+  http_utils_test \
+  http_gateway_governance_test \
+  embeddings_gateway_test \
+  rerank_gateway_test \
+  admin_status_gateway_test \
+  rag_test -j
 ./build/tests/unit/http_utils_test
+./build/tests/unit/http_gateway_governance_test
+./build/tests/unit/embeddings_gateway_test
+./build/tests/unit/rerank_gateway_test
+./build/tests/unit/admin_status_gateway_test
 ./build/tests/unit/rag_test
 python3 tests/unit/rag_chunkers_test.py
 ```
@@ -406,11 +427,15 @@ python3 tests/unit/rag_chunkers_test.py
 
 ```bash
 BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test.sh
-BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag.sh
-BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag_v2.sh
 ```
 
 可选参数：`BASE_URL` / `MODEL` / `TIMEOUT`。
+
+扩展 smoke：
+```bash
+BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag.sh
+BASE_URL=http://127.0.0.1:8080 MODEL=llama bash scripts/smoke_test_rag_v2.sh
+```
 
 ---
 

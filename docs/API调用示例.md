@@ -11,6 +11,10 @@
 - `GET /admin/models/status`
 - `GET /admin/backends/status`
 
+统一治理口径：
+- 主线错误码统一使用：`model_required`、`invalid_input`、`invalid_query`、`invalid_documents`、`invalid_top_n`、`model_not_found`、`capability_not_supported`、`backend_not_available`、`request_timeout`、`backend_timeout`、`request_cancelled`、`queue_full`、`queue_timeout`、`rate_limit_global`、`rate_limit_model`、`rate_limit_session`、`internal_error`
+- `/metrics`、`/admin/models/status`、`/admin/backends/status` 会累计 chat、embeddings、rerank 三条主链路的超时、取消、限流和 token 统计
+
 ## 1. 健康检查
 ```bash
 curl -s http://127.0.0.1:8080/healthz | jq
@@ -117,12 +121,36 @@ curl -s -X POST "http://127.0.0.1:8080/v1/chat/completions" \
 备注：
 - 远程 `stackflow` 返回里的 `usage` 当前为近似值。
 
-## 11. 主线自检脚本
+## 11. 治理示例
+超时：
+```bash
+HTTP_REQUEST_TIMEOUT_MS=1 ./build/serving/http/serving_http_server
+curl -i -s -X POST "http://127.0.0.1:8080/v1/embeddings" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.5-2b","input":"hello embeddings"}'
+```
+
+预期：`HTTP 504`，错误码 `request_timeout`。
+
+限流：
+```bash
+curl -s "http://127.0.0.1:8080/metrics" | jq
+curl -s "http://127.0.0.1:8080/admin/backends/status" | jq
+```
+
+关注字段：
+- `requests_error_total`
+- `requests_cancelled_total`
+- `requests_timeout_total`
+- `requests_rate_limited_total`
+- `last_error`
+
+## 12. 主线自检脚本
 ```bash
 bash scripts/smoke_test.sh
 ```
 
-## 12. 扩展能力与兼容入口
+## 13. 扩展能力与兼容入口
 
 agent/rag 仍保留兼容能力，但不再作为默认 API 路径：
 - `POST /v1/chat/completions` 仍兼容 `agent=true` 与 `rag` 扩展字段。

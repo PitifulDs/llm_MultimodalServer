@@ -317,6 +317,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     if (fd < 0)
     {
         ctx->error_message = "StackFlowEngine: connect failed host=" + host_ + " port=" + std::to_string(port_);
+        ctx->params["error_code"] = "backend_not_available";
         ctx->EmitFinish(FinishReason::error);
         return;
     }
@@ -427,6 +428,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         {
             ::close(fd);
             ctx->error_message = "StackFlowEngine: send setup failed";
+            ctx->params["error_code"] = "backend_not_available";
             ctx->EmitFinish(FinishReason::error);
             return;
         }
@@ -452,6 +454,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                     {
                         ctx->params["error_code"] = "queue_full";
                     }
+                    else
+                    {
+                        ctx->params["error_code"] = "backend_not_available";
+                    }
                     ctx->EmitFinish(FinishReason::error);
                     ::close(fd);
                     return;
@@ -463,6 +469,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         catch (...)
         {
             ctx->error_message = "StackFlowEngine: setup response parse failed";
+            ctx->params["error_code"] = "internal_error";
             ctx->EmitFinish(FinishReason::error);
             ::close(fd);
             return;
@@ -471,6 +478,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
         if (work_id.empty())
         {
             ctx->error_message = "StackFlowEngine: empty work_id";
+            ctx->params["error_code"] = "backend_not_available";
             ctx->EmitFinish(FinishReason::error);
             ::close(fd);
             return;
@@ -517,6 +525,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
     {
         ::close(fd);
         ctx->error_message = "StackFlowEngine: send inference failed";
+        ctx->params["error_code"] = "backend_not_available";
         ctx->EmitFinish(FinishReason::error);
         return;
     }
@@ -558,6 +567,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                         {
                             ctx->params["error_code"] = "queue_full";
                         }
+                        else
+                        {
+                            ctx->params["error_code"] = "backend_not_available";
+                        }
                         ctx->EmitFinish(FinishReason::error);
                         break;
                     }
@@ -598,6 +611,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
             catch (...)
             {
                 ctx->error_message = "StackFlowEngine: response parse failed";
+                ctx->params["error_code"] = "internal_error";
                 ctx->EmitFinish(FinishReason::error);
                 break;
             }
@@ -619,6 +633,10 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
                         if (code == -21 || code == -26)
                         {
                             ctx->params["error_code"] = "queue_full";
+                        }
+                        else
+                        {
+                            ctx->params["error_code"] = "backend_not_available";
                         }
                         ctx->EmitFinish(FinishReason::error);
                     }
@@ -650,6 +668,7 @@ void StackFlowEngine::Run(std::shared_ptr<ServingContext> ctx)
             catch (...)
             {
                 ctx->error_message = "StackFlowEngine: response parse failed";
+                ctx->params["error_code"] = "internal_error";
                 ctx->EmitFinish(FinishReason::error);
             }
         }

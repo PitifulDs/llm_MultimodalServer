@@ -54,8 +54,45 @@ textarea {
   margin-bottom: 24px;
 }
 
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  gap: 20px;
+  align-items: start;
+}
+
 .hero-copy {
   max-width: 720px;
+}
+
+.hero-panel .panel-body {
+  padding-top: 18px;
+}
+
+.api-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.api-chip {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.api-chip strong {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.api-chip span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .eyebrow {
@@ -151,6 +188,10 @@ textarea {
 .field,
 .field-grid {
   min-width: 0;
+}
+
+.field[hidden] {
+  display: none !important;
 }
 
 .field-grid {
@@ -508,6 +549,7 @@ textarea {
 }
 
 @media (max-width: 960px) {
+  .hero-grid,
   .layout,
   .field-grid,
   .debug-grid {
@@ -525,6 +567,10 @@ textarea {
 }
 
 @media (max-width: 640px) {
+  .api-grid {
+    grid-template-columns: 1fr;
+  }
+
   .app-shell {
     width: min(100% - 24px, 1180px);
     padding-top: 24px;

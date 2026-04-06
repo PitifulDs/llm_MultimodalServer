@@ -10,6 +10,10 @@
       return ns.AgentConfig.parseToolsInput(els.agentTools.value);
     }
 
+    function parseDocuments() {
+      return ns.Api.parseDocumentsInput(els.documents.value);
+    }
+
     function renderReferences() {
       ns.References.renderReferences(els, state.lastReferences);
     }
@@ -21,11 +25,19 @@
         agentTools: parseAgentTools(),
         inferenceBackend: els.inferenceBackend.value,
         payload: state.lastPayload,
+        requestMode: els.requestMode.value,
         target: state.lastDebugTarget,
       });
     }
 
     function syncBackendOptions() {
+      const requestMode = els.requestMode.value || 'chat';
+      if (requestMode === 'healthz') {
+        els.inferenceBackend.value = 'local';
+        els.backendSupportHint.textContent = 'Healthz is platform-level and does not depend on request backend selection.';
+        return;
+      }
+
       const configuredBackends = ns.Api.getSupportedBackends(state.modelCatalog, els.model.value);
       const gatewayBackends = ns.Api.getGatewayBackends(state.modelCatalog, els.model.value);
       let nextValue = els.inferenceBackend.value;
@@ -87,6 +99,7 @@
       }
 
       syncBackendOptions();
+      renderDebugPanel();
     }
 
     function syncAgentModeDefaults(force) {
@@ -103,6 +116,14 @@
       }
     }
 
+    function syncRequestModeUI() {
+      const requestMode = els.requestMode.value || 'chat';
+      ui.syncRequestMode({ requestMode: requestMode });
+      ui.syncSendButton(els.streamMode.value, els.enableAgent.checked, requestMode);
+      syncBackendOptions();
+      renderDebugPanel();
+    }
+
     function updateAgentUI() {
       const enabled = els.enableAgent.checked;
 
@@ -111,7 +132,7 @@
       }
 
       syncAgentModeDefaults(false);
-      ui.syncSendButton(els.streamMode.value, enabled);
+      ui.syncSendButton(els.streamMode.value, enabled, els.requestMode.value || 'chat');
       ui.syncAgentSection({
         enabled: enabled,
         maxSteps: parseInt(els.agentMaxSteps.value, 10) || 4,
@@ -129,6 +150,8 @@
         return;
       }
 
+      els.requestMode.value = 'chat';
+      syncRequestModeUI();
       els.enableAgent.checked = !!preset.enableAgent;
       if (preset.mode) {
         els.agentMode.value = preset.mode;
@@ -157,34 +180,47 @@
     }
 
     function buildRequestContext() {
+      const requestMode = els.requestMode.value || 'chat';
       const baseUrl = String(els.baseUrl.value || '').trim();
       const prompt = String(els.prompt.value || '').trim();
       let sessionId = String(els.sessionId.value || '').trim();
 
-      if (!baseUrl || !prompt) {
+      if (!baseUrl) {
         return null;
       }
 
-      if (els.newSessionEach.checked || !sessionId) {
+      if ((requestMode === 'chat' || requestMode === 'embeddings' || requestMode === 'rerank') && !prompt) {
+        return null;
+      }
+
+      if (requestMode === 'rerank' && !parseDocuments().length) {
+        return null;
+      }
+
+      if (requestMode === 'chat' && (els.newSessionEach.checked || !sessionId)) {
         sessionId = ns.genId('sess');
         els.sessionId.value = sessionId;
       }
 
       const context = {
-        agentEnabled: els.enableAgent.checked,
+        agentEnabled: requestMode === 'chat' && els.enableAgent.checked,
         agentMaxSteps: els.agentMaxSteps.value,
         agentMode: els.agentMode.value || 'code_analysis',
         agentTools: parseAgentTools(),
         baseUrl: baseUrl,
+        documents: parseDocuments(),
         inferenceBackend: els.inferenceBackend.value,
-        maxTokens: ns.AgentConfig.getEffectiveMaxTokens(els.maxTokens.value, els.enableAgent.checked),
+        maxTokens: ns.AgentConfig.getEffectiveMaxTokens(els.maxTokens.value, requestMode === 'chat' && els.enableAgent.checked),
         model: String(els.model.value || '').trim(),
         prompt: prompt,
+        requestMode: requestMode,
+        rerankTopN: parseInt(els.rerankTopN.value, 10) || 0,
         sessionId: sessionId,
         system: String(els.system.value || '').trim(),
       };
 
       context.payload = ns.Api.buildPayload(context);
+      context.target = ns.Api.buildRequestTarget(baseUrl, requestMode);
       return context;
     }
 
@@ -231,7 +267,7 @@
       });
     }
 
-    async function runNonStreamRequest(context, startedAt) {
+    async function runNonStreamChatRequest(context, startedAt) {
       const result = await ns.Api.sendNonStreamChat({
         baseUrl: context.baseUrl,
         payload: context.payload,
@@ -268,6 +304,26 @@
       });
     }
 
+    async function runJsonRequest(context, startedAt) {
+      const result = await ns.Api.sendJsonRequest({
+        baseUrl: context.baseUrl,
+        method: context.payload ? 'POST' : 'GET',
+        payload: context.payload,
+        requestMode: context.requestMode,
+        signal: state.aborter.signal,
+      });
+
+      state.lastFinishReason = '-';
+      state.rawResponseText = JSON.stringify(result.json, null, 2);
+      ui.setMetrics({
+        finishReason: '-',
+        ttfb: String(result.ttfbMs) + ' ms',
+        duration: String(Math.round(performance.now() - startedAt)) + ' ms',
+      });
+      ui.renderAssistantText(state);
+      ui.setStatus('DONE');
+    }
+
     async function handleSend() {
       const context = buildRequestContext();
       if (!context) {
@@ -275,26 +331,31 @@
       }
 
       resetRequestState();
+      state.lastRequestMode = context.requestMode;
 
-      if (els.streamMode.value === 'stream') {
+      if (context.requestMode === 'chat' && els.streamMode.value === 'stream') {
         context.payload.stream = true;
       }
 
-      state.lastDebugTarget = context.baseUrl + '/v1/chat/completions';
+      state.lastDebugTarget = context.target;
       state.lastPayload = context.payload;
       renderDebugPanel();
 
-      ui.setBusy(true);
-      ui.setStatus(els.streamMode.value === 'stream' ? 'STREAMING' : 'SENDING');
+      ui.setBusy(true, context.requestMode);
+      ui.setStatus(context.requestMode === 'chat'
+        ? (els.streamMode.value === 'stream' ? 'STREAMING' : 'SENDING')
+        : 'FETCHING');
       state.aborter = new AbortController();
 
       const startedAt = performance.now();
 
       try {
-        if (els.streamMode.value === 'stream') {
+        if (context.requestMode === 'chat' && els.streamMode.value === 'stream') {
           await runStreamRequest(context, startedAt);
+        } else if (context.requestMode === 'chat') {
+          await runNonStreamChatRequest(context, startedAt);
         } else {
-          await runNonStreamRequest(context, startedAt);
+          await runJsonRequest(context, startedAt);
         }
       } catch (err) {
         const aborted = err && err.name === 'AbortError';
@@ -304,7 +365,7 @@
           : ns.Api.formatFetchError(context.baseUrl, err);
         ui.renderAssistantText(state);
       } finally {
-        ui.setBusy(false);
+        ui.setBusy(false, context.requestMode);
         state.aborter = null;
       }
     }
@@ -320,9 +381,10 @@
         state.shouldStickOutputToBottom = ui.isOutputNearBottom();
       });
       els.streamMode.addEventListener('change', function () {
-        ui.syncSendButton(els.streamMode.value, els.enableAgent.checked);
+        ui.syncSendButton(els.streamMode.value, els.enableAgent.checked, els.requestMode.value || 'chat');
         renderDebugPanel();
       });
+      els.requestMode.addEventListener('change', syncRequestModeUI);
       els.model.addEventListener('change', function () {
         syncBackendOptions();
         renderDebugPanel();
@@ -344,6 +406,8 @@
       els.agentTools.addEventListener('input', updateAgentUI);
       els.system.addEventListener('input', renderDebugPanel);
       els.prompt.addEventListener('input', renderDebugPanel);
+      els.documents.addEventListener('input', renderDebugPanel);
+      els.rerankTopN.addEventListener('input', renderDebugPanel);
       els.sessionId.addEventListener('input', renderDebugPanel);
       els.newSessionEach.addEventListener('change', renderDebugPanel);
     }
@@ -352,8 +416,10 @@
       ns.Api.ensureBaseUrlDefault(els.baseUrl);
       bindEvents();
       renderReferences();
+      syncRequestModeUI();
       updateAgentUI();
       ui.setStatus('IDLE');
+      ui.setBusy(false, els.requestMode.value || 'chat');
       renderDebugPanel();
       loadModels();
     }

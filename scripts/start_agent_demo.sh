@@ -55,6 +55,15 @@ wait_for_http_ready "demo_web" "$(cat "${LOG_DIR}/demo_web.pid")" "${LOG_DIR}/de
 echo "started: demo_web     pid=$(cat "${LOG_DIR}/demo_web.pid")"
 echo "demo url: ${DEMO_URL}"
 echo "api url : http://127.0.0.1:${HTTP_PORT}"
+echo "mainline endpoints:"
+echo "  - POST /v1/chat/completions"
+echo "  - GET  /v1/models"
+echo "  - POST /v1/embeddings"
+echo "  - POST /v1/rerank"
+echo "  - GET  /healthz"
+echo "  - GET  /admin/models/status"
+echo "  - GET  /admin/backends/status"
+echo "compatibility extensions: agent/rag stay available behind EXPERIMENTAL_AGENT_API_ENABLED=1 and EXPERIMENTAL_RAG_API_ENABLED=1"
 echo "logs    : ${LOG_DIR}"
 
 if command -v xdg-open >/dev/null 2>&1; then

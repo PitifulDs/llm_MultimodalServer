@@ -11,6 +11,7 @@
       lastFinishReason: '-',
       lastDebugTarget: '',
       lastPayload: null,
+      lastRequestMode: 'chat',
       shouldStickOutputToBottom: true,
       isAutoContinuing: false,
     };

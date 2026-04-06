@@ -692,16 +692,20 @@ agent 逻辑本次不直接删除，但要明确降级：
 
 要建立平台统一错误码表，而不是继续由各 handler 临时拼接。
 
-建议覆盖：
+当前主线已经统一到以下错误码集合：
 
-- 参数错误
-- 模型不存在
-- capability 不支持
-- backend 不可用
-- backend 超时
-- 队列拥塞
-- 客户端取消
-- 内部执行异常
+- 参数错误：`model_required`、`invalid_input`、`invalid_query`、`invalid_documents`、`invalid_top_n`
+- 模型与 capability：`model_not_found`、`capability_not_supported`
+- backend：`backend_not_available`、`backend_timeout`
+- 请求治理：`request_timeout`、`request_cancelled`
+- 队列与限流：`queue_full`、`queue_timeout`、`rate_limit_global`、`rate_limit_model`、`rate_limit_session`
+- 兜底：`internal_error`
+
+补充说明：
+
+- `request_cancelled` 现在作为独立治理语义保留，不再混入 `internal_error`
+- chat、embeddings、rerank 已共享同一套错误分类函数
+- backend status 的 `last_error` 与 `/metrics` 的 timeout / cancelled / rate_limited 统计都基于同一套错误码判定
 
 ### 16.3 超时
 
@@ -750,6 +754,11 @@ agent 逻辑本次不直接删除，但要明确降级：
 - `rate_limit_global`
 - `rate_limit_model`
 - `rate_limit_session`
+
+补充：
+
+- session 维度限流只对带 `session_id` 的 chat 链路生效
+- embeddings / rerank 仍统一接入全局与模型维度限流
 
 ### 16.6 状态接口
 

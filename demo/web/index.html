@@ -9,10 +9,29 @@
 <body>
   <div class="app-shell">
     <header class="hero">
-      <div class="hero-copy">
-        <div class="eyebrow">Native Demo</div>
-        <h1>LLM Multimodal Server</h1>
-        <p>Send a chat request first. Expand advanced, agent, references, or debug only when needed.</p>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <div class="eyebrow">Model API Platform Demo</div>
+          <h1>LLM Multimodal Server</h1>
+          <p>Use the mainline APIs from one screen: chat, models, embeddings, rerank, healthz, and admin status. Agent and RAG stay available as compatibility extensions.</p>
+        </div>
+
+        <section class="panel hero-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Mainline APIs</h2>
+              <p class="panel-copy">Default entry points for platform usage and regression checks.</p>
+            </div>
+          </div>
+          <div class="panel-body api-grid">
+            <div class="api-chip"><strong>Chat</strong><span>`POST /v1/chat/completions`</span></div>
+            <div class="api-chip"><strong>Models</strong><span>`GET /v1/models`</span></div>
+            <div class="api-chip"><strong>Embeddings</strong><span>`POST /v1/embeddings`</span></div>
+            <div class="api-chip"><strong>Rerank</strong><span>`POST /v1/rerank`</span></div>
+            <div class="api-chip"><strong>Healthz</strong><span>`GET /healthz`</span></div>
+            <div class="api-chip"><strong>Admin Status</strong><span>`GET /admin/models/status` / `GET /admin/backends/status`</span></div>
+          </div>
+        </section>
       </div>
     </header>
 
@@ -34,12 +53,27 @@
 
             <div class="field-grid">
               <div class="field">
+                <label for="requestMode">Request Type</label>
+                <select id="requestMode">
+                  <option value="chat" selected>Chat Completion</option>
+                  <option value="embeddings">Embeddings</option>
+                  <option value="rerank">Rerank</option>
+                  <option value="models">Models Catalog</option>
+                  <option value="healthz">Healthz</option>
+                  <option value="admin_models_status">Admin Models Status</option>
+                  <option value="admin_backends_status">Admin Backends Status</option>
+                </select>
+              </div>
+              <div class="field">
                 <label for="model">Model</label>
                 <select id="model">
                   <option value="qwen2.5-1.5b" selected>qwen2.5-1.5b</option>
                 </select>
               </div>
-              <div class="field">
+            </div>
+
+            <div class="field-grid">
+              <div class="field" id="streamModeField">
                 <label for="streamMode">Response Mode</label>
                 <select id="streamMode">
                   <option value="stream" selected>Stream (SSE)</option>
@@ -49,11 +83,22 @@
             </div>
 
             <div class="field">
-              <label for="prompt">User Prompt</label>
+              <label id="promptLabel" for="prompt">User Prompt</label>
               <textarea
                 id="prompt"
                 placeholder="Ask the model something useful."
               >Introduce yourself in one sentence.</textarea>
+              <p id="promptHelp" class="microcopy">Chat uses messages, embeddings use `input`, rerank uses this field as `query`, and GET endpoints ignore it.</p>
+            </div>
+
+            <div class="field" id="documentsField" hidden>
+              <label for="documents">Rerank Documents</label>
+              <textarea
+                id="documents"
+                placeholder="One document per line."
+              >totally unrelated weather report
+hello rerank</textarea>
+              <p class="microcopy">Each non-empty line becomes one rerank document.</p>
             </div>
           </div>
 
@@ -77,7 +122,7 @@
                   <option value="rpc">RPC / Worker</option>
                 </select>
               </div>
-              <div class="field">
+              <div class="field" id="maxTokensField">
                 <label for="maxTokens">Max Tokens</label>
                 <input id="maxTokens" type="number" min="1" max="4096" value="512" />
               </div>
@@ -85,13 +130,19 @@
 
             <p id="backendSupportHint" class="microcopy"></p>
 
-            <div class="field">
+            <div class="field" id="rerankTopNField" hidden>
+              <label for="rerankTopN">Rerank Top N</label>
+              <input id="rerankTopN" type="number" min="0" max="64" value="1" />
+              <p class="microcopy">Only used for `POST /v1/rerank`.</p>
+            </div>
+
+            <div class="field" id="systemField">
               <label for="system">System Prompt</label>
               <input id="system" placeholder="You are a helpful assistant." />
               <p class="microcopy">Leave empty unless you need a specific role or answer style.</p>
             </div>
 
-            <div class="field">
+            <div class="field" id="sessionField">
               <label for="sessionId">Session</label>
               <div class="field-grid session-grid">
                 <input id="sessionId" placeholder="Auto-generate per request" />
@@ -187,7 +238,7 @@
           <div
             id="output"
             class="output"
-            data-placeholder="Model output will appear here."
+            data-placeholder="API response will appear here."
           ></div>
 
           <div class="meta-line">

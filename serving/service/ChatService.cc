@@ -187,33 +187,7 @@ ChatError ChatService::BuildError(const std::shared_ptr<ServingContext> &ctx) co
         return extension_error;
 
     const std::string error_code = ctx->params.count("error_code") ? ctx->params.at("error_code") : std::string();
-    if (error_code == "invalid_request" ||
-        error_code == "model_not_found" ||
-        error_code == "capability_not_supported")
-    {
-        return {
-            ChatErrorKind::InvalidRequest,
-            error_code,
-            ctx->error_message.empty() ? "invalid chat request" : ctx->error_message};
-    }
-
-    if (error_code == "backend_timeout" || error_code == "request_timeout")
-    {
-        return {
-            ChatErrorKind::Timeout,
-            error_code,
-            ctx->error_message.empty() ? "request timed out" : ctx->error_message};
-    }
-
-    if (error_code == "backend_not_available")
-    {
-        return {
-            ChatErrorKind::ServiceUnavailable,
-            error_code,
-            ctx->error_message.empty() ? "backend unavailable" : ctx->error_message};
-    }
-
-    if (error_code == "queue_full" || error_code == "queue_timeout" ||
+    if (IsPlatformRateLimitCode(error_code) ||
         ctx->error_message.find("queue full") != std::string::npos)
     {
         return {
@@ -222,10 +196,14 @@ ChatError ChatService::BuildError(const std::shared_ptr<ServingContext> &ctx) co
             ctx->error_message.empty() ? "engine overloaded" : ctx->error_message};
     }
 
-    return {
-        ChatErrorKind::Internal,
-        error_code.empty() ? "internal_error" : error_code,
-        ctx->error_message.empty() ? "engine error" : ctx->error_message};
+    return BuildPlatformErrorFromCode(error_code,
+                                      ctx->error_message,
+                                      "invalid chat request",
+                                      "chat request cancelled",
+                                      "request timed out",
+                                      "backend unavailable",
+                                      "engine overloaded",
+                                      "engine error");
 }
 
 ChatResponse ChatService::BuildResponse(const std::shared_ptr<ServingContext> &ctx) const

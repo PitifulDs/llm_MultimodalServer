@@ -214,17 +214,7 @@ namespace
                 ctx.error_message.empty() ? "invalid chat request" : ctx.error_message};
         }
 
-        if (error_code == "backend_timeout" ||
-            error_code == "request_timeout")
-        {
-            return {
-                PlatformErrorKind::Timeout,
-                error_code,
-                ctx.error_message.empty() ? "request timed out" : ctx.error_message};
-        }
-
-        if (error_code == "backend_not_available" ||
-            error_code == "rag_index_missing" ||
+        if (error_code == "rag_index_missing" ||
             error_code == "rag_unavailable")
         {
             return {
@@ -233,7 +223,7 @@ namespace
                 ctx.error_message.empty() ? "backend unavailable" : ctx.error_message};
         }
 
-        if (error_code == "queue_full" || error_code == "queue_timeout" ||
+        if (IsPlatformRateLimitCode(error_code) ||
             ctx.error_message.find("queue full") != std::string::npos)
         {
             return {
@@ -242,10 +232,19 @@ namespace
                 ctx.error_message.empty() ? "engine overloaded" : ctx.error_message};
         }
 
-        return {
-            PlatformErrorKind::Internal,
-            error_code.empty() ? "internal_error" : error_code,
-            ctx.error_message.empty() ? "engine error" : ctx.error_message};
+        return BuildPlatformErrorFromCode(error_code,
+                                          ctx.error_message,
+                                          "invalid chat request",
+                                          "chat request cancelled",
+                                          "request timed out",
+                                          "backend unavailable",
+                                          "engine overloaded",
+                                          "engine error");
+    }
+
+    FinishReason finish_reason_from_error(const PlatformError &error)
+    {
+        return error.kind == PlatformErrorKind::Cancelled ? FinishReason::cancelled : FinishReason::error;
     }
 
     struct EmbeddingsRequestParseResult
@@ -922,11 +921,9 @@ void HttpGateway::RecordGovernedRequest(const std::string &request_id,
     prompt_tokens_total_.fetch_add(prompt_tokens, std::memory_order_relaxed);
     completion_tokens_total_.fetch_add(completion_tokens, std::memory_order_relaxed);
     total_tokens_total_.fetch_add(total_tokens, std::memory_order_relaxed);
-    if (error_code == "backend_timeout" || error_code == "request_timeout")
+    if (IsPlatformTimeoutCode(error_code))
         timeout_requests_.fetch_add(1, std::memory_order_relaxed);
-    if (error_code == "queue_full" || error_code == "queue_timeout" ||
-        error_code == "rate_limit_global" || error_code == "rate_limit_model" ||
-        error_code == "rate_limit_session")
+    if (IsPlatformRateLimitCode(error_code))
         rate_limited_requests_.fetch_add(1, std::memory_order_relaxed);
 
     if (backend.empty())
@@ -942,14 +939,12 @@ void HttpGateway::RecordGovernedRequest(const std::string &request_id,
     {
         stats.requests_error_total += 1;
         stats.last_error = error_code.empty() ? "internal_error" : error_code;
-        if (error_code == "backend_timeout" || error_code == "request_timeout")
+        if (IsPlatformTimeoutCode(error_code))
         {
             stats.requests_timeout_total += 1;
             stats.timeout_total += 1;
         }
-        if (error_code == "queue_full" || error_code == "queue_timeout" ||
-            error_code == "rate_limit_global" || error_code == "rate_limit_model" ||
-            error_code == "rate_limit_session")
+        if (IsPlatformRateLimitCode(error_code))
             stats.requests_rate_limited_total += 1;
     }
     else if (reason == FinishReason::cancelled)
@@ -1327,6 +1322,7 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
     if (result.error.HasError())
     {
         WriteError(res, result.error);
+        const FinishReason finish_reason = finish_reason_from_error(result.error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
@@ -1336,7 +1332,7 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                               result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
                               parsed.request.capability,
                               "",
-                              FinishReason::error,
+                              finish_reason,
                               result.error.HttpStatus(),
                               result.error.code,
                               0,
@@ -1345,7 +1341,7 @@ void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
                               result.response.usage.completion_tokens,
                               result.response.usage.total_tokens,
                               false);
-        RecordFinish(FinishReason::error, dur_ms);
+        RecordFinish(finish_reason, dur_ms);
         return;
     }
 
@@ -1545,6 +1541,7 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
     if (result.error.HasError())
     {
         WriteError(res, result.error);
+        const FinishReason finish_reason = finish_reason_from_error(result.error);
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
@@ -1554,7 +1551,7 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                               result.resolved_backend.empty() ? parsed.request.inference_backend : result.resolved_backend,
                               parsed.request.capability,
                               "",
-                              FinishReason::error,
+                              finish_reason,
                               result.error.HttpStatus(),
                               result.error.code,
                               0,
@@ -1563,7 +1560,7 @@ void HttpGateway::HandleRerank(const HttpRequest &req, HttpResponse &res)
                               result.response.usage.completion_tokens,
                               result.response.usage.total_tokens,
                               false);
-        RecordFinish(FinishReason::error, dur_ms);
+        RecordFinish(finish_reason, dur_ms);
         return;
     }
 

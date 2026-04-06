@@ -129,7 +129,7 @@ RerankService::Result RerankService::Run(const RerankRequest &request) const
         if (request_cancelled)
         {
             result.error = {
-                RerankErrorKind::Internal,
+                RerankErrorKind::Cancelled,
                 "request_cancelled",
                 result.response.error_message.empty() ? "rerank request cancelled" : result.response.error_message};
             return result;

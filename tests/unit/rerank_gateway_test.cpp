@@ -10,6 +10,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <atomic>
 #include <string>
 #include <unordered_map>
 
@@ -60,6 +61,7 @@ struct FakeResponse : HttpResponse
     std::string body;
     bool ended = false;
     std::function<void()> on_close;
+    std::atomic<bool> alive{true};
 
     void SetHeader(const std::string &key, const std::string &value) override
     {
@@ -73,7 +75,7 @@ struct FakeResponse : HttpResponse
 
     bool IsAlive() const override
     {
-        return true;
+        return alive.load(std::memory_order_acquire);
     }
 
     void SetStatus(int code, const std::string &reason = "") override
@@ -147,6 +149,50 @@ std::string repo_model_path()
     return "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf";
 }
 
+json read_metrics(HttpGateway &gateway)
+{
+    FakeRequest req;
+    FakeResponse res;
+    gateway.HandleMetrics(req, res);
+    EXPECT_EQ(res.status, 200);
+    return json::parse(res.body);
+}
+
+json read_backend_status(HttpGateway &gateway)
+{
+    FakeRequest req;
+    FakeResponse res;
+    gateway.HandleAdminBackendsStatus(req, res);
+    EXPECT_EQ(res.status, 200);
+    return json::parse(res.body);
+}
+
+std::filesystem::path write_rerank_config()
+{
+    const auto temp_dir = make_temp_dir();
+    const auto config_path = temp_dir / "config.json";
+
+    std::ofstream out(config_path);
+    out << "{\n"
+           "  \"default_model\": \"rerank-local\",\n"
+           "  \"models\": {\n"
+           "    \"rerank-local\": {\n"
+           "      \"default_backend\": \"local\",\n"
+           "      \"capabilities\": [\"chat\", \"embeddings\", \"rerank\"],\n"
+           "      \"backends\": {\n"
+           "        \"local\": {\n"
+           "          \"engine\": \"llama\",\n"
+           "          \"model_path\": \"" << repo_model_path() << "\",\n"
+           "          \"capabilities\": [\"chat\", \"embeddings\", \"rerank\"]\n"
+           "        }\n"
+           "      }\n"
+           "    }\n"
+           "  }\n"
+           "}\n";
+    out.close();
+    return config_path;
+}
+
 bool test_chat_only_model_returns_400()
 {
     const auto temp_dir = make_temp_dir();
@@ -184,34 +230,13 @@ bool test_chat_only_model_returns_400()
     EXPECT_EQ(response["error"]["code"].get<std::string>(), std::string("capability_not_supported"));
 
     std::error_code ec;
-    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::remove_all(config_path.parent_path(), ec);
     return true;
 }
 
 bool test_local_llama_rerank_returns_200()
 {
-    const auto temp_dir = make_temp_dir();
-    const auto config_path = temp_dir / "config.json";
-
-    std::ofstream out(config_path);
-    out << "{\n"
-           "  \"default_model\": \"rerank-local\",\n"
-           "  \"models\": {\n"
-           "    \"rerank-local\": {\n"
-           "      \"default_backend\": \"local\",\n"
-           "      \"capabilities\": [\"chat\", \"embeddings\", \"rerank\"],\n"
-           "      \"backends\": {\n"
-           "        \"local\": {\n"
-           "          \"engine\": \"llama\",\n"
-           "          \"model_path\": \"" << repo_model_path() << "\",\n"
-           "          \"capabilities\": [\"chat\", \"embeddings\", \"rerank\"]\n"
-           "        }\n"
-           "      }\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
-    out.close();
-
+    const auto config_path = write_rerank_config();
     const ScopedEnvVar scoped_config("CONFIG_PATH", config_path.string());
     EngineFactory::ClearCache();
 
@@ -241,7 +266,95 @@ bool test_local_llama_rerank_returns_200()
     EXPECT_EQ(response["usage"]["total_tokens"].get<int>(), response["usage"]["prompt_tokens"].get<int>());
 
     std::error_code ec;
-    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::remove_all(config_path.parent_path(), ec);
+    return true;
+}
+
+bool test_rerank_timeout_updates_governance()
+{
+    const auto config_path = write_rerank_config();
+    const ScopedEnvVar scoped_config("CONFIG_PATH", config_path.string());
+    const ScopedEnvVar scoped_timeout("HTTP_REQUEST_TIMEOUT_MS", "1");
+    EngineFactory::ClearCache();
+
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({
+        "model":"rerank-local",
+        "backend":"local",
+        "query":"rerank governance timeout",
+        "documents":["first document","second document"]
+    })json";
+
+    FakeResponse res;
+    gateway.HandleRerank(req, res);
+    EXPECT_EQ(res.status, 504);
+
+    const auto response = json::parse(res.body);
+    EXPECT_EQ(response["error"]["code"].get<std::string>(), std::string("request_timeout"));
+
+    const auto metrics = read_metrics(gateway);
+    EXPECT_EQ(metrics["requests_total"].get<int>(), 1);
+    EXPECT_EQ(metrics["requests_error_total"].get<int>(), 1);
+    EXPECT_EQ(metrics["requests_timeout_total"].get<int>(), 1);
+    EXPECT_EQ(metrics["requests_cancelled_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_rate_limited_total"].get<int>(), 0);
+
+    const auto backends = read_backend_status(gateway);
+    EXPECT_EQ(backends["data"].size(), static_cast<size_t>(1));
+    EXPECT_EQ(backends["data"][0]["requests_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["requests_error_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["requests_timeout_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["requests_cancelled_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["requests_rate_limited_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["timeout_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["cancelled_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["last_error"].get<std::string>(), std::string("request_timeout"));
+
+    std::error_code ec;
+    std::filesystem::remove_all(config_path.parent_path(), ec);
+    return true;
+}
+
+bool test_rerank_disconnect_records_cancelled()
+{
+    const auto config_path = write_rerank_config();
+    const ScopedEnvVar scoped_config("CONFIG_PATH", config_path.string());
+    EngineFactory::ClearCache();
+
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({
+        "model":"rerank-local",
+        "backend":"local",
+        "query":"rerank governance cancelled",
+        "documents":["first document","second document"]
+    })json";
+
+    FakeResponse res;
+    res.alive.store(false, std::memory_order_release);
+    gateway.HandleRerank(req, res);
+
+    const auto metrics = read_metrics(gateway);
+    EXPECT_EQ(metrics["requests_total"].get<int>(), 1);
+    EXPECT_EQ(metrics["requests_error_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_timeout_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_cancelled_total"].get<int>(), 1);
+    EXPECT_EQ(metrics["requests_rate_limited_total"].get<int>(), 0);
+
+    const auto backends = read_backend_status(gateway);
+    EXPECT_EQ(backends["data"].size(), static_cast<size_t>(1));
+    EXPECT_EQ(backends["data"][0]["requests_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["requests_error_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["requests_timeout_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["requests_cancelled_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["requests_rate_limited_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["timeout_total"].get<int>(), 0);
+    EXPECT_EQ(backends["data"][0]["cancelled_total"].get<int>(), 1);
+    EXPECT_EQ(backends["data"][0]["last_error"].get<std::string>(), std::string(""));
+
+    std::error_code ec;
+    std::filesystem::remove_all(config_path.parent_path(), ec);
     return true;
 }
 } // namespace
@@ -251,6 +364,8 @@ int main()
     bool ok = true;
     ok = ok && test_chat_only_model_returns_400();
     ok = ok && test_local_llama_rerank_returns_200();
+    ok = ok && test_rerank_timeout_updates_governance();
+    ok = ok && test_rerank_disconnect_records_cancelled();
 
     if (!ok)
         return 1;
