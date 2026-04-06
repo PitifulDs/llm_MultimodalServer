@@ -10,7 +10,9 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
+#include <numeric>
 #include <unordered_map>
 
 namespace
@@ -190,6 +192,14 @@ void normalize_embedding(std::vector<float> &embedding)
     const double inv_norm = 1.0 / std::sqrt(squared_norm);
     for (float &value : embedding)
         value = static_cast<float>(static_cast<double>(value) * inv_norm);
+}
+
+double dot_product(const std::vector<float> &lhs, const std::vector<float> &rhs)
+{
+    if (lhs.size() != rhs.size())
+        return -std::numeric_limits<double>::infinity();
+
+    return std::inner_product(lhs.begin(), lhs.end(), rhs.begin(), 0.0);
 }
 } // namespace
 
@@ -419,6 +429,79 @@ std::shared_ptr<ModelContext> LlamaEngine::EnsureContext(const std::shared_ptr<S
     }
 
     return s->model_ctx;
+}
+
+bool LlamaEngine::EncodeTextEmbedding(const std::string &text,
+                                      std::vector<float> &embedding,
+                                      int &token_count,
+                                      std::string &error_message)
+{
+    embedding.clear();
+    token_count = 0;
+
+    if (!model_)
+    {
+        error_message = "LlamaEngine: model unavailable";
+        return false;
+    }
+
+    const llama_vocab *vocab = llama_model_get_vocab(model_);
+    if (!vocab)
+    {
+        error_message = "LlamaEngine: vocab null";
+        return false;
+    }
+
+    const int embedding_dim = get_embedding_dimension(model_);
+    if (embedding_dim <= 0)
+    {
+        error_message = "LlamaEngine: invalid embedding dimension";
+        return false;
+    }
+
+    auto mc = CreateNewContext(true, LLAMA_POOLING_TYPE_NONE);
+    if (!mc || !mc->ctx)
+    {
+        error_message = "LlamaEngine: failed to create embeddings context";
+        return false;
+    }
+
+    std::vector<llama_token> toks;
+    if (!tokenize_text(vocab, text, toks, true))
+    {
+        error_message = "LlamaEngine: tokenize failed for embeddings";
+        return false;
+    }
+
+    if (toks.empty())
+    {
+        error_message = "LlamaEngine: embeddings input produced no tokens";
+        return false;
+    }
+
+    token_count = static_cast<int>(toks.size());
+
+    if (!decode_tokens(mc->ctx, toks))
+    {
+        error_message = "LlamaEngine: llama_decode failed (embeddings)";
+        return false;
+    }
+
+    llama_synchronize(mc->ctx);
+
+    float *embedding_ptr = llama_get_embeddings_ith(mc->ctx, -1);
+    if (!embedding_ptr)
+        embedding_ptr = llama_get_embeddings(mc->ctx);
+
+    if (!embedding_ptr)
+    {
+        error_message = "LlamaEngine: failed to read embeddings";
+        return false;
+    }
+
+    embedding.assign(embedding_ptr, embedding_ptr + embedding_dim);
+    normalize_embedding(embedding);
+    return true;
 }
 
 // ============================================================
@@ -668,75 +751,80 @@ bool LlamaEngine::RunEmbeddings(const EmbeddingsRequest &request,
         return false;
     }
 
-    const llama_vocab *vocab = llama_model_get_vocab(model_);
-    if (!vocab)
-    {
-        error_message = "LlamaEngine: vocab null";
-        response.error_message = error_message;
-        return false;
-    }
-
-    const int embedding_dim = get_embedding_dimension(model_);
-    if (embedding_dim <= 0)
-    {
-        error_message = "LlamaEngine: invalid embedding dimension";
-        response.error_message = error_message;
-        return false;
-    }
-
     response.data.reserve(request.input.size());
     for (size_t index = 0; index < request.input.size(); ++index)
     {
-        auto mc = CreateNewContext(true, LLAMA_POOLING_TYPE_NONE);
-        if (!mc || !mc->ctx)
+        std::vector<float> embedding;
+        int token_count = 0;
+        if (!EncodeTextEmbedding(request.input[index], embedding, token_count, error_message))
         {
-            error_message = "LlamaEngine: failed to create embeddings context";
             response.error_message = error_message;
             return false;
         }
 
-        std::vector<llama_token> toks;
-        if (!tokenize_text(vocab, request.input[index], toks, true))
-        {
-            error_message = "LlamaEngine: tokenize failed for embeddings";
-            response.error_message = error_message;
-            return false;
-        }
-
-        if (toks.empty())
-        {
-            error_message = "LlamaEngine: embeddings input produced no tokens";
-            response.error_message = error_message;
-            return false;
-        }
-
-        response.usage.prompt_tokens += static_cast<int>(toks.size());
-
-        if (!decode_tokens(mc->ctx, toks))
-        {
-            error_message = "LlamaEngine: llama_decode failed (embeddings)";
-            response.error_message = error_message;
-            return false;
-        }
-
-        llama_synchronize(mc->ctx);
-
-        float *embedding_ptr = llama_get_embeddings_ith(mc->ctx, -1);
-        if (!embedding_ptr)
-            embedding_ptr = llama_get_embeddings(mc->ctx);
-
-        if (!embedding_ptr)
-        {
-            error_message = "LlamaEngine: failed to read embeddings";
-            response.error_message = error_message;
-            return false;
-        }
-
-        std::vector<float> embedding(embedding_ptr, embedding_ptr + embedding_dim);
-        normalize_embedding(embedding);
-
+        response.usage.prompt_tokens += token_count;
         response.data.push_back(EmbeddingData{index, std::move(embedding)});
     }
+
+    response.usage.total_tokens = response.usage.prompt_tokens;
+    return true;
+}
+
+bool LlamaEngine::RunRerank(const RerankRequest &request,
+                            RerankResponse &response,
+                            std::string &error_message)
+{
+    std::lock_guard<std::mutex> lk(run_mu_);
+
+    response.model = request.model;
+    response.data.clear();
+    response.usage = {};
+    response.error_message.clear();
+
+    if (!model_)
+    {
+        error_message = "LlamaEngine: model unavailable";
+        response.error_message = error_message;
+        return false;
+    }
+
+    std::vector<float> query_embedding;
+    int query_tokens = 0;
+    if (!EncodeTextEmbedding(request.query, query_embedding, query_tokens, error_message))
+    {
+        response.error_message = error_message;
+        return false;
+    }
+
+    response.usage.prompt_tokens += query_tokens;
+
+    response.data.reserve(request.documents.size());
+    for (size_t index = 0; index < request.documents.size(); ++index)
+    {
+        std::vector<float> document_embedding;
+        int document_tokens = 0;
+        if (!EncodeTextEmbedding(request.documents[index], document_embedding, document_tokens, error_message))
+        {
+            response.error_message = error_message;
+            return false;
+        }
+
+        response.usage.prompt_tokens += document_tokens;
+        response.data.push_back(RerankResultItem{
+            index,
+            request.documents[index],
+            dot_product(query_embedding, document_embedding)});
+    }
+
+    std::sort(response.data.begin(), response.data.end(), [](const RerankResultItem &lhs, const RerankResultItem &rhs)
+              {
+                  if (lhs.relevance_score != rhs.relevance_score)
+                      return lhs.relevance_score > rhs.relevance_score;
+                  return lhs.index < rhs.index;
+              });
+
+    if (request.top_n > 0 && static_cast<size_t>(request.top_n) < response.data.size())
+        response.data.resize(static_cast<size_t>(request.top_n));
 
     response.usage.total_tokens = response.usage.prompt_tokens;
     return true;

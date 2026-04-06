@@ -416,6 +416,10 @@ void NetworkHttpServer::handleHttpRequest(
     {
         gateway_->HandleEmbeddings(req, *res_ptr);
     }
+    else if (method == "POST" && url == "/v1/rerank")
+    {
+        gateway_->HandleRerank(req, *res_ptr);
+    }
     else if (method == "POST" && url == "/v1/agent/debug")
     {
         gateway_->HandleAgentDebug(req, *res_ptr);

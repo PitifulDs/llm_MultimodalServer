@@ -18,6 +18,7 @@
 #include "serving/service/EmbeddingsService.h"
 #include "serving/service/HealthService.h"
 #include "serving/service/ModelCatalogService.h"
+#include "serving/service/RerankService.h"
 #include "serving/service/StatusTypes.h"
 #include "serving/rag/RAGExecutor.h"
 
@@ -53,6 +54,7 @@ public:
     void HandleChatCompletion(const HttpRequest &req, HttpResponse &res);
     void HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr);
     void HandleEmbeddings(const HttpRequest &req, HttpResponse &res);
+    void HandleRerank(const HttpRequest &req, HttpResponse &res);
 
     // 健康检查 / 指标
     void HandleHealth(const HttpRequest &req, HttpResponse &res);
@@ -82,6 +84,7 @@ private:
     std::unique_ptr<RAGExecutor> rag_executor_;
     std::unique_ptr<ChatService> chat_service_;
     std::unique_ptr<EmbeddingsService> embeddings_service_;
+    std::unique_ptr<RerankService> rerank_service_;
     HealthService health_service_;
     AdminStatusService admin_status_service_;
     ModelCatalogService model_catalog_service_;

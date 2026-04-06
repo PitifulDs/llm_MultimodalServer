@@ -39,3 +39,9 @@ add_executable(embeddings_gateway_test
 )
 target_include_directories(embeddings_gateway_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
 target_link_libraries(embeddings_gateway_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
+
+add_executable(rerank_gateway_test
+    rerank_gateway_test.cpp
+)
+target_include_directories(rerank_gateway_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
+target_link_libraries(rerank_gateway_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})

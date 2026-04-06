@@ -2,6 +2,7 @@
 #include "serving/core/ServingContext.h"
 #include "serving/core/ModelEngine.h"
 #include "serving/service/EmbeddingsTypes.h"
+#include "serving/service/RerankTypes.h"
 
 #include <memory>
 #include <mutex>
@@ -23,6 +24,9 @@ public:
     bool RunEmbeddings(const EmbeddingsRequest &request,
                        EmbeddingsResponse &response,
                        std::string &error_message);
+    bool RunRerank(const RerankRequest &request,
+                   RerankResponse &response,
+                   std::string &error_message);
     bool IsReady() const;
 
 private:
@@ -36,4 +40,8 @@ private:
     std::shared_ptr<ModelContext> EnsureContext(const std::shared_ptr<Session> &s);
     std::shared_ptr<ModelContext> CreateNewContext(bool embeddings = false,
                                                    int pooling_type = -1);
+    bool EncodeTextEmbedding(const std::string &text,
+                             std::vector<float> &embedding,
+                             int &token_count,
+                             std::string &error_message);
 };
