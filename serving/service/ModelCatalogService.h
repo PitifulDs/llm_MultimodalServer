@@ -11,6 +11,9 @@ class ModelCatalogService
 public:
     std::vector<ModelInfo> ListModels() const;
     bool HasModel(const std::string &model_id) const;
+    ModelSpec ResolveModel(const std::string &model_id,
+                           ModelCapability capability,
+                           const std::string &preferred_backend = "") const;
     bool SupportsCapability(const std::string &model_id,
                             ModelCapability capability,
                             const std::string &preferred_backend = "") const;

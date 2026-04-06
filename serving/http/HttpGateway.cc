@@ -11,10 +11,11 @@
 #include "../../utils/json.hpp"
 #include <glog/logging.h>
 
+#include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <memory>
@@ -168,6 +169,145 @@ namespace
         }
     }
 
+    int status_from_embeddings_error_kind(EmbeddingsErrorKind kind)
+    {
+        switch (kind)
+        {
+        case EmbeddingsErrorKind::InvalidRequest:
+            return 400;
+        case EmbeddingsErrorKind::ServiceUnavailable:
+            return 503;
+        case EmbeddingsErrorKind::RateLimit:
+            return 429;
+        case EmbeddingsErrorKind::Internal:
+        case EmbeddingsErrorKind::None:
+        default:
+            return 500;
+        }
+    }
+
+    const char *type_from_embeddings_error_kind(EmbeddingsErrorKind kind)
+    {
+        switch (kind)
+        {
+        case EmbeddingsErrorKind::InvalidRequest:
+            return "invalid_request_error";
+        case EmbeddingsErrorKind::ServiceUnavailable:
+            return "service_unavailable_error";
+        case EmbeddingsErrorKind::RateLimit:
+            return "rate_limit_error";
+        case EmbeddingsErrorKind::Internal:
+        case EmbeddingsErrorKind::None:
+        default:
+            return "internal_error";
+        }
+    }
+
+    std::string normalize_backend_name(std::string backend)
+    {
+        std::transform(backend.begin(), backend.end(), backend.begin(), [](unsigned char ch)
+                       { return static_cast<char>(std::tolower(ch)); });
+        if (backend == "rpc" || backend == "remote" || backend == "worker" || backend == "stackflow")
+            return "stackflow";
+        if (backend == "local" || backend == "llama")
+            return "local";
+        return "";
+    }
+
+    struct EmbeddingsRequestParseResult
+    {
+        bool ok = false;
+        int status = 500;
+        std::string message;
+        std::string type;
+        std::string code;
+        EmbeddingsRequest request;
+    };
+
+    EmbeddingsRequestParseResult ParseEmbeddingsRequestBody(const std::string &body_text,
+                                                           const std::string &default_model,
+                                                           const std::string &request_id)
+    {
+        EmbeddingsRequestParseResult result;
+        result.status = 400;
+        result.type = "invalid_request_error";
+
+        json body;
+        try
+        {
+            body = json::parse(body_text.empty() ? "{}" : body_text);
+        }
+        catch (...)
+        {
+            result.message = "invalid json";
+            result.code = "invalid_json";
+            return result;
+        }
+
+        if (!body.contains("input"))
+        {
+            result.message = "input is required";
+            result.code = "invalid_input";
+            return result;
+        }
+
+        if (body["input"].is_string())
+        {
+            result.request.input.push_back(body["input"].get<std::string>());
+        }
+        else if (body["input"].is_array())
+        {
+            for (const auto &item : body["input"])
+            {
+                if (!item.is_string())
+                {
+                    result.message = "input array must contain only strings";
+                    result.code = "invalid_input";
+                    return result;
+                }
+                result.request.input.push_back(item.get<std::string>());
+            }
+        }
+        else
+        {
+            result.message = "input must be a string or array of strings";
+            result.code = "invalid_input";
+            return result;
+        }
+
+        result.request.request_id = request_id;
+        result.request.model =
+            (body.contains("model") && body["model"].is_string())
+                ? body["model"].get<std::string>()
+                : default_model;
+
+        if (body.contains("encoding_format"))
+        {
+            if (!body["encoding_format"].is_string())
+            {
+                result.message = "encoding_format must be string";
+                result.code = "invalid_encoding_format";
+                return result;
+            }
+            result.request.encoding_format = body["encoding_format"].get<std::string>();
+            std::transform(result.request.encoding_format.begin(),
+                           result.request.encoding_format.end(),
+                           result.request.encoding_format.begin(),
+                           [](unsigned char ch)
+                           { return static_cast<char>(std::tolower(ch)); });
+        }
+
+        std::string preferred_backend;
+        if (body.contains("inference_backend") && body["inference_backend"].is_string())
+            preferred_backend = body["inference_backend"].get<std::string>();
+        else if (body.contains("backend") && body["backend"].is_string())
+            preferred_backend = body["backend"].get<std::string>();
+        result.request.inference_backend = normalize_backend_name(std::move(preferred_backend));
+
+        result.ok = true;
+        return result;
+    }
+
     json build_chat_completion_json(const std::string &request_id,
                                     const ChatResponse &response)
     {
@@ -201,6 +341,28 @@ namespace
             out["agent_trace"] = response.agent_trace;
 
         return out;
+    }
+
+    json build_embeddings_json(const EmbeddingsResponse &response)
+    {
+        json data = json::array();
+        for (const auto &item : response.data)
+        {
+            data.push_back({
+                {"object", "embedding"},
+                {"index", item.index},
+                {"embedding", item.embedding},
+            });
+        }
+
+        return {
+            {"object", "list"},
+            {"data", data},
+            {"model", response.model},
+            {"usage",
+             {{"prompt_tokens", response.usage.prompt_tokens},
+              {"total_tokens", response.usage.total_tokens}}}
+        };
     }
 
 } // namespace
@@ -303,6 +465,7 @@ HttpGateway::HttpGateway()
         };
     }
     agent_executor_ = std::make_unique<AgentExecutor>(executor_, agent_opt);
+    embeddings_service_ = std::make_unique<EmbeddingsService>(model_catalog_service_);
     chat_service_ = std::make_unique<ChatService>(
         session_executor_,
         executor_,
@@ -651,6 +814,77 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
     res.SetHeader("Connection", "close");
     res.Write(out.dump());
     res.End();
+}
+
+void HttpGateway::HandleEmbeddings(const HttpRequest &req, HttpResponse &res)
+{
+    const auto start_time = std::chrono::steady_clock::now();
+    total_requests_.fetch_add(1, std::memory_order_relaxed);
+    in_flight_.fetch_add(1, std::memory_order_relaxed);
+
+    const std::string request_id = gen_request_id();
+    const auto parsed = ParseEmbeddingsRequestBody(req.body, get_default_model(), request_id);
+    if (!parsed.ok)
+    {
+        WriteError(res, parsed.status, parsed.message, parsed.type, parsed.code);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    if (!embeddings_service_)
+    {
+        WriteError(res, 500, "embeddings service unavailable", "internal_error", "embeddings_service_unavailable");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    const EmbeddingsError validation_error = embeddings_service_->ValidateRequest(parsed.request);
+    if (validation_error.HasError())
+    {
+        WriteError(res,
+                   status_from_embeddings_error_kind(validation_error.kind),
+                   validation_error.message,
+                   type_from_embeddings_error_kind(validation_error.kind),
+                   validation_error.code);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    const auto result = embeddings_service_->Run(parsed.request);
+    if (result.error.HasError())
+    {
+        WriteError(res,
+                   status_from_embeddings_error_kind(result.error.kind),
+                   result.error.message,
+                   type_from_embeddings_error_kind(result.error.kind),
+                   result.error.code);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    const json out = build_embeddings_json(result.response);
+    res.SetStatus(200, "OK");
+    res.SetHeader("Content-Type", "application/json");
+    res.SetHeader("Connection", "close");
+    res.Write(out.dump(-1, ' ', false, json::error_handler_t::replace));
+    res.End();
+
+    const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - start_time)
+                            .count();
+    RecordFinish(FinishReason::stop, dur_ms);
 }
 
 void HttpGateway::HandleAdminModelsStatus(const HttpRequest &req, HttpResponse &res)

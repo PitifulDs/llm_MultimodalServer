@@ -1,5 +1,7 @@
 #include "serving/service/ModelCatalogService.h"
 
+#include <algorithm>
+
 namespace
 {
 std::string normalize_model_id(std::string model_id)
@@ -12,6 +14,12 @@ std::string normalize_model_id(std::string model_id)
         model_id.resize(model_id.size() - kRemoteSuffixLen);
     }
     return model_id;
+}
+
+bool contains_capability(const std::vector<std::string> &capabilities, ModelCapability capability)
+{
+    const std::string target = ToString(capability);
+    return std::find(capabilities.begin(), capabilities.end(), target) != capabilities.end();
 }
 } // namespace
 
@@ -29,6 +37,48 @@ bool ModelCatalogService::HasModel(const std::string &model_id) const
             return true;
     }
     return false;
+}
+
+ModelSpec ModelCatalogService::ResolveModel(const std::string &model_id,
+                                            ModelCapability capability,
+                                            const std::string &preferred_backend) const
+{
+    const std::string normalized = normalize_model_id(model_id);
+
+    if (!preferred_backend.empty())
+    {
+        const ModelSpec preferred = ModelRegistry::Resolve(normalized, preferred_backend);
+        if (preferred.valid && contains_capability(preferred.capabilities, capability))
+            return preferred;
+        return {};
+    }
+
+    const ModelSpec resolved_default = ModelRegistry::Resolve(normalized);
+    if (resolved_default.valid && contains_capability(resolved_default.capabilities, capability))
+        return resolved_default;
+
+    for (const auto &model : ListModels())
+    {
+        if (model.id != normalized)
+            continue;
+
+        std::vector<std::string> backends = model.backends;
+        if (!model.default_backend.empty())
+        {
+            backends.erase(std::remove(backends.begin(), backends.end(), model.default_backend), backends.end());
+            backends.insert(backends.begin(), model.default_backend);
+        }
+
+        for (const auto &backend : backends)
+        {
+            const ModelSpec spec = ModelRegistry::Resolve(normalized, backend);
+            if (spec.valid && contains_capability(spec.capabilities, capability))
+                return spec;
+        }
+        break;
+    }
+
+    return {};
 }
 
 bool ModelCatalogService::SupportsCapability(const std::string &model_id,

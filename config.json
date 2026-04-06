@@ -13,9 +13,15 @@
       "model_path": "models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf"
     },
     "qwen3.5-2b": {
-      "backend": "local",
-      "engine": "llama",
-      "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf"
+      "default_backend": "local",
+      "capabilities": ["chat", "embeddings"],
+      "backends": {
+        "local": {
+          "engine": "llama",
+          "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
+          "capabilities": ["chat", "embeddings"]
+        }
+      }
     },
     "llama": {
       "backend": "local",

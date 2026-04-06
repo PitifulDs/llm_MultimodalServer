@@ -79,7 +79,7 @@ ChatError ChatService::ValidateRequest(const ChatExecutionRequest &request) cons
             "model not found: " + ctx->model};
     }
 
-    if (!model_catalog_service_.SupportsCapability(ctx->model, ctx->capability))
+    if (!model_catalog_service_.SupportsCapability(ctx->model, ctx->capability, ctx->inference_backend))
     {
         return {
             ChatErrorKind::InvalidRequest,

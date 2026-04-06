@@ -5,6 +5,7 @@
 #include "llama.h"
 
 #include <cassert>
+#include <cmath>
 #include <vector>
 #include <string>
 #include <cstring>
@@ -167,6 +168,28 @@ llama_sampler *build_sampler(const llama_vocab *vocab, const std::unordered_map<
     llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
     llama_sampler_chain_add(chain, llama_sampler_init_dist(has_seed ? seed : LLAMA_DEFAULT_SEED));
     return chain;
+}
+
+int get_embedding_dimension(const llama_model *model)
+{
+    const int dim = llama_model_n_embd(model);
+    if (dim > 0)
+        return dim;
+    return llama_model_n_embd_out(model);
+}
+
+void normalize_embedding(std::vector<float> &embedding)
+{
+    double squared_norm = 0.0;
+    for (float value : embedding)
+        squared_norm += static_cast<double>(value) * static_cast<double>(value);
+
+    if (squared_norm <= 0.0)
+        return;
+
+    const double inv_norm = 1.0 / std::sqrt(squared_norm);
+    for (float &value : embedding)
+        value = static_cast<float>(static_cast<double>(value) * inv_norm);
 }
 } // namespace
 
@@ -347,7 +370,8 @@ bool LlamaEngine::IsReady() const
     return model_ != nullptr;
 }
 
-std::shared_ptr<ModelContext> LlamaEngine::CreateNewContext()
+std::shared_ptr<ModelContext> LlamaEngine::CreateNewContext(bool embeddings,
+                                                            int pooling_type)
 {
     auto mc = std::make_shared<ModelContext>();
 
@@ -355,14 +379,21 @@ std::shared_ptr<ModelContext> LlamaEngine::CreateNewContext()
     cparams.n_ctx = get_env_int("LLAMA_N_CTX", 4096);
     cparams.n_threads = get_env_int("LLAMA_N_THREADS", 4);
     cparams.n_threads_batch = get_env_int("LLAMA_N_THREADS_BATCH", 4);
+    cparams.embeddings = embeddings;
+    if (embeddings)
+        cparams.pooling_type = static_cast<enum llama_pooling_type>(pooling_type);
 
     // llama_init_from_model
     mc->ctx = llama_init_from_model(model_, cparams);
     if (!mc->ctx)
         return nullptr;
 
-    // sampler：先用 greedy（稳定）
-    mc->sampler = llama_sampler_init_greedy();
+    llama_set_embeddings(mc->ctx, embeddings);
+    if (!embeddings)
+    {
+        // sampler：先用 greedy（稳定）
+        mc->sampler = llama_sampler_init_greedy();
+    }
     mc->n_past = 0;
     mc->initialized = true;
     return mc;
@@ -396,6 +427,8 @@ std::shared_ptr<ModelContext> LlamaEngine::EnsureContext(const std::shared_ptr<S
 // - KV 通过 mc->n_past 续写void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 {
+    std::lock_guard<std::mutex> lk(run_mu_);
+
     if (!ctx || !ctx->session)
     {
         if (ctx)
@@ -615,4 +648,96 @@ void LlamaEngine::Run(std::shared_ptr<ServingContext> ctx)
 
     finalize_usage();
     ctx->EmitFinish(FinishReason::length);
+}
+
+bool LlamaEngine::RunEmbeddings(const EmbeddingsRequest &request,
+                                EmbeddingsResponse &response,
+                                std::string &error_message)
+{
+    std::lock_guard<std::mutex> lk(run_mu_);
+
+    response.model = request.model;
+    response.data.clear();
+    response.usage = {};
+    response.error_message.clear();
+
+    if (!model_)
+    {
+        error_message = "LlamaEngine: model unavailable";
+        response.error_message = error_message;
+        return false;
+    }
+
+    const llama_vocab *vocab = llama_model_get_vocab(model_);
+    if (!vocab)
+    {
+        error_message = "LlamaEngine: vocab null";
+        response.error_message = error_message;
+        return false;
+    }
+
+    const int embedding_dim = get_embedding_dimension(model_);
+    if (embedding_dim <= 0)
+    {
+        error_message = "LlamaEngine: invalid embedding dimension";
+        response.error_message = error_message;
+        return false;
+    }
+
+    response.data.reserve(request.input.size());
+    for (size_t index = 0; index < request.input.size(); ++index)
+    {
+        auto mc = CreateNewContext(true, LLAMA_POOLING_TYPE_NONE);
+        if (!mc || !mc->ctx)
+        {
+            error_message = "LlamaEngine: failed to create embeddings context";
+            response.error_message = error_message;
+            return false;
+        }
+
+        std::vector<llama_token> toks;
+        if (!tokenize_text(vocab, request.input[index], toks, true))
+        {
+            error_message = "LlamaEngine: tokenize failed for embeddings";
+            response.error_message = error_message;
+            return false;
+        }
+
+        if (toks.empty())
+        {
+            error_message = "LlamaEngine: embeddings input produced no tokens";
+            response.error_message = error_message;
+            return false;
+        }
+
+        response.usage.prompt_tokens += static_cast<int>(toks.size());
+
+        if (!decode_tokens(mc->ctx, toks))
+        {
+            error_message = "LlamaEngine: llama_decode failed (embeddings)";
+            response.error_message = error_message;
+            return false;
+        }
+
+        llama_synchronize(mc->ctx);
+
+        float *embedding_ptr = llama_get_embeddings_ith(mc->ctx, -1);
+        if (!embedding_ptr)
+            embedding_ptr = llama_get_embeddings(mc->ctx);
+
+        if (!embedding_ptr)
+        {
+            error_message = "LlamaEngine: failed to read embeddings";
+            response.error_message = error_message;
+            return false;
+        }
+
+        std::vector<float> embedding(embedding_ptr, embedding_ptr + embedding_dim);
+        normalize_embedding(embedding);
+
+        response.data.push_back(EmbeddingData{index, std::move(embedding)});
+    }
+
+    response.usage.total_tokens = response.usage.prompt_tokens;
+    return true;
 }

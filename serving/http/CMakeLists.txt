@@ -33,9 +33,11 @@ add_library(serving_core STATIC
     ${CMAKE_SOURCE_DIR}/serving/core/agent/code_analysis/CodeAnalysisFormatter.cc
     ${CMAKE_SOURCE_DIR}/serving/core/ThreadPool.cc
     ${CMAKE_SOURCE_DIR}/serving/core/SessionExecutor.cc
+    ${CMAKE_SOURCE_DIR}/serving/backend/EmbeddingsEngineFacade.cc
     ${CMAKE_SOURCE_DIR}/serving/backend/LegacyChatEngineFacade.cc
     ${CMAKE_SOURCE_DIR}/serving/service/AdminStatusService.cc
     ${CMAKE_SOURCE_DIR}/serving/service/ChatService.cc
+    ${CMAKE_SOURCE_DIR}/serving/service/EmbeddingsService.cc
     ${CMAKE_SOURCE_DIR}/serving/service/HealthService.cc
     ${CMAKE_SOURCE_DIR}/serving/service/ModelCatalogService.cc
     ${CMAKE_SOURCE_DIR}/serving/rag/SqliteIndexStore.cc
