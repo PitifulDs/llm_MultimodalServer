@@ -133,36 +133,74 @@ namespace
         return http_utils::finish_reason_to_str(r);
     }
 
-    void prepare_session_delta(const std::shared_ptr<ServingContext> &ctx,
-                               const std::vector<Message> &incoming)
+    int status_from_chat_error_kind(ChatErrorKind kind)
     {
-        if (!ctx || !ctx->session)
-            return;
-
-        auto session = ctx->session;
-        std::lock_guard<std::mutex> lk(session->mu);
-        if (!session->history.empty())
+        switch (kind)
         {
-            if (http_utils::is_prefix(session->history, incoming))
-            {
-                ctx->messages = http_utils::diff_messages(session->history, incoming);
-            }
-            else
-            {
-                session->history.clear();
-                session->model_ctx.reset();
-                ctx->messages = incoming;
-            }
+        case ChatErrorKind::InvalidRequest:
+            return 400;
+        case ChatErrorKind::ServiceUnavailable:
+            return 503;
+        case ChatErrorKind::RateLimit:
+            return 429;
+        case ChatErrorKind::Internal:
+            return 500;
+        case ChatErrorKind::None:
+        default:
+            return 500;
         }
-        else
-        {
-            ctx->messages = incoming;
-        }
+    }
 
-        LOG(INFO) << "[auto-diff] session=" << session->session_id
-                  << " incoming=" << incoming.size()
-                  << " delta=" << ctx->messages.size()
-                  << " hist=" << session->history.size();
+    const char *type_from_chat_error_kind(ChatErrorKind kind)
+    {
+        switch (kind)
+        {
+        case ChatErrorKind::InvalidRequest:
+            return "invalid_request_error";
+        case ChatErrorKind::ServiceUnavailable:
+            return "service_unavailable_error";
+        case ChatErrorKind::RateLimit:
+            return "rate_limit_error";
+        case ChatErrorKind::Internal:
+        case ChatErrorKind::None:
+        default:
+            return "internal_error";
+        }
+    }
+
+    json build_chat_completion_json(const std::string &request_id,
+                                    const ChatResponse &response)
+    {
+        json out = {
+            {"id", "chatcmpl-" + request_id},
+            {"object", "chat.completion"},
+            {"created", static_cast<int>(std::time(nullptr))},
+            {"model", response.model},
+            {"choices",
+             {{{"index", 0},
+               {"message", {{"role", "assistant"}, {"content", response.output_text}}},
+               {"logprobs", nullptr},
+               {"finish_reason", finish_reason_to_str(response.finish_reason)}}}},
+            {"usage",
+             {{"prompt_tokens", response.usage.prompt_tokens},
+              {"completion_tokens", response.usage.completion_tokens},
+              {"total_tokens", response.usage.total_tokens}}}
+        };
+
+        if (!response.references.is_null())
+            out["references"] = response.references;
+        if (!response.retrieval.is_null())
+            out["retrieval"] = response.retrieval;
+        if (!response.agent_result.is_null())
+            out["agent_result"] = response.agent_result;
+        if (!response.subqueries.is_null())
+            out["subqueries"] = response.subqueries;
+        if (!response.evidence.is_null())
+            out["evidence"] = response.evidence;
+        if (!response.agent_trace.is_null())
+            out["agent_trace"] = response.agent_trace;
+
+        return out;
     }
 
 } // namespace
@@ -265,6 +303,133 @@ HttpGateway::HttpGateway()
         };
     }
     agent_executor_ = std::make_unique<AgentExecutor>(executor_, agent_opt);
+    chat_service_ = std::make_unique<ChatService>(
+        session_executor_,
+        executor_,
+        model_catalog_service_,
+        *session_mgr_,
+        ChatService::ExtensionHooks{
+            [this](const std::shared_ptr<ServingContext> &ctx)
+            {
+                if (!ctx || !ctx->rag_options.enabled)
+                    return true;
+                if (!rag_executor_)
+                {
+                    ctx->error_message = "rag executor unavailable";
+                    ctx->params["error_code"] = "rag_unavailable";
+                    return false;
+                }
+                return rag_executor_->Apply(ctx);
+            },
+            [this](const std::shared_ptr<ServingContext> &ctx)
+            {
+                if (!ctx || !ctx->use_agent)
+                    return false;
+                if (!agent_executor_)
+                {
+                    ctx->error_message = "agent executor unavailable";
+                    ctx->params["error_code"] = "agent_unavailable";
+                    ctx->EmitFinish(FinishReason::error);
+                    return true;
+                }
+                agent_executor_->Run(ctx);
+                return true;
+            },
+            [](const std::shared_ptr<ServingContext> &ctx, ChatError &error)
+            {
+                if (!ctx)
+                    return false;
+
+                const std::string error_code =
+                    ctx->params.count("error_code") ? ctx->params.at("error_code") : std::string();
+
+                if (error_code == "rag_invalid_request" || error_code == "rag_no_user_query")
+                {
+                    error = {
+                        ChatErrorKind::InvalidRequest,
+                        error_code,
+                        ctx->error_message.empty() ? "invalid rag request" : ctx->error_message};
+                    return true;
+                }
+
+                if (error_code == "rag_index_missing" || error_code == "rag_unavailable")
+                {
+                    error = {
+                        ChatErrorKind::ServiceUnavailable,
+                        error_code.empty() ? "rag_unavailable" : error_code,
+                        ctx->error_message.empty() ? "rag unavailable" : ctx->error_message};
+                    return true;
+                }
+
+                return false;
+            },
+            [](const std::shared_ptr<ServingContext> &ctx, ChatResponse &response)
+            {
+                if (!ctx)
+                    return;
+
+                if (ctx->rag_options.enabled && ctx->rag_options.return_references)
+                    response.references = http_utils::build_rag_references(ctx->rag_hits);
+
+                if (ctx->rag_options.enabled && ctx->rag_options.debug)
+                {
+                    response.retrieval = {
+                        {"normalized_query", ctx->rag_summary.normalized_query},
+                        {"mode", ctx->rag_summary.mode},
+                        {"fusion", ctx->rag_summary.fusion},
+                        {"lexical_hit_count", ctx->rag_summary.lexical_hit_count},
+                        {"vector_hit_count", ctx->rag_summary.vector_hit_count},
+                        {"final_hit_count", ctx->rag_summary.final_hit_count},
+                        {"injected_chars", ctx->rag_summary.injected_chars},
+                        {"retrieval_latency_ms", ctx->rag_summary.retrieval_latency_ms},
+                    };
+                }
+
+                if (!ctx->use_agent)
+                    return;
+
+                if (!ctx->agent_structured_output.empty())
+                    response.agent_result = ctx->agent_structured_output;
+
+                if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("references"))
+                {
+                    if (response.references.is_array() && ctx->agent_structured_output["references"].is_array())
+                    {
+                        for (const auto &item : ctx->agent_structured_output["references"])
+                            response.references.push_back(item);
+                    }
+                    else
+                    {
+                        response.references = ctx->agent_structured_output["references"];
+                    }
+                }
+
+                if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("subqueries"))
+                    response.subqueries = ctx->agent_structured_output["subqueries"];
+
+                if (!ctx->agent_evidence.empty())
+                {
+                    response.evidence = nlohmann::json::array();
+                    for (const auto &item : ctx->agent_evidence)
+                        response.evidence.push_back(ToJson(item));
+                }
+
+                if (ctx->agent_debug || ctx->agent_include_trace)
+                {
+                    response.agent_trace = nlohmann::json::array();
+                    for (const auto &item : ctx->agent_trace)
+                        response.agent_trace.push_back(ToJson(item));
+                }
+            }},
+        ChatService::Callbacks{
+            [this](FinishReason reason, int64_t dur_ms)
+            {
+                RecordFinish(reason, dur_ms);
+            },
+            [this](const ServingContext &ctx)
+            {
+                RecordRagMetrics(ctx);
+            }});
     agent_executor_->SetStatusProvider([this]()
     {
         const auto uptime_ms =
@@ -323,9 +488,6 @@ void HttpGateway::WriteError(HttpResponse &res, int status, const std::string &m
                              const std::string &param)
 {
     res.SetStatus(status);
-    res.SetStatus(200, "OK");
-    res.SetStatus(200, "OK");
-    res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
     res.SetHeader("Connection", "close");
 
@@ -858,205 +1020,61 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
         return;
     }
 
-    auto ctx = parsed.request.ctx;
-    const std::string model = ctx->model;
-
-    const char *mt_val = nullptr;
-    auto mt_it = ctx->params.find("max_tokens");
-    if (mt_it != ctx->params.end())
-        mt_val = mt_it->second.c_str();
-    LOG(INFO) << "[chat] start req=" << ctx->request_id
-              << " model=" << ctx->model
-              << " session=" << ctx->session_id
-              << " stream=0"
-              << " agent=" << (ctx->use_agent ? 1 : 0)
-              << " max_tokens=" << (mt_val ? mt_val : "default");
-
-    // 备份客户端全量 messages（用于更新 history）
-    const std::vector<Message> client_messages = parsed.request.client_messages;
-
-    auto session = ctx->session;
-
-    // on_finish：仅 stop/length 更新 history，避免 cancelled/error 污染 session
-    ctx->on_finish = [this, session, ctx, client_messages, start_time, mgr = session_mgr_.get()](FinishReason r)
+    if (!chat_service_)
     {
-        if (r == FinishReason::stop || r == FinishReason::length)
-        {
-            std::vector<Message> history_snapshot;
-            {
-                std::lock_guard<std::mutex> lk(session->mu);
-                session->history = client_messages;
-                session->history.push_back({"assistant", ctx->final_text});
-                session->touch();
-                history_snapshot = session->history;
-            }
-            if (mgr)
-            {
-                mgr->PersistHistory(session->session_id, history_snapshot);
-            }
-        }
-
+        WriteError(res, 500, "chat service unavailable", "internal_error", "chat_service_unavailable");
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();
-        RecordFinish(r, dur_ms);
-        LOG(INFO) << "[chat] done req=" << ctx->request_id
-                  << " model=" << ctx->model
-                  << " dur_ms=" << dur_ms
-                  << " prompt_tokens=" << ctx->usage.prompt_tokens
-                  << " completion_tokens=" << ctx->usage.completion_tokens
-                  << " reason=" << finish_reason_to_str(r);
-    };
-
-    // non-stream：连接断开立即取消，唤醒等待
-    res.SetOnClose([ctx]
-                   {
-                       ctx->cancelled.store(true, std::memory_order_release);
-                       ctx->EmitFinish(FinishReason::cancelled); });
-
-    // 同 session 串行执行（只 Execute 一次）
-    bool accepted = session_executor_.Submit(ctx->session, [this, ctx, client_messages]
-                                             {
-                                                 prepare_session_delta(ctx, client_messages);
-                                                 if (ctx->rag_options.enabled && rag_executor_ && !rag_executor_->Apply(ctx))
-                                                 {
-                                                     ctx->EmitFinish(FinishReason::error);
-                                                     return;
-                                                 }
-                                                 if (ctx->rag_options.enabled)
-                                                     RecordRagMetrics(*ctx);
-                                                 if (ctx->use_agent && agent_executor_)
-                                                 {
-                                                     agent_executor_->Run(ctx);
-                                                     return;
-                                                 }
-                                                 executor_.Execute(ctx);
-                                             });
-
-    if (!accepted)
-    {
-        ctx->error_message = "SessionExecutor: session queue full, session=" + ctx->session_id;
-        ctx->params["error_code"] = "overloaded";
-        ctx->EmitFinish(FinishReason::error);
-    }
-
-    // 等待完成 + 断连取消（res.IsAlive() == false 时自动 cancelled + EmitFinish）
-    ctx->WaitFinishOrCancel([&res]
-                            { return res.IsAlive(); }, std::chrono::milliseconds(100));
-
-    // 客户端已断开：无需再回包（避免写死 socket / 无意义日志）
-    if (!res.IsAlive())
-    {
+        RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
-    const FinishReason final_reason = ctx->finish_reason;
-
-    // 错误返回（包含 overloaded）
-    if (!ctx->error_message.empty() || final_reason == FinishReason::error)
+    const ChatExecutionRequest chat_request{parsed.request.ctx, parsed.request.client_messages};
+    const ChatError validation_error = chat_service_->ValidateRequest(chat_request);
+    if (validation_error.HasError())
     {
-        const std::string error_code = ctx->params.count("error_code") ? ctx->params["error_code"] : std::string();
-        const bool overloaded =
-            error_code == "overloaded" ||
-            (ctx->error_message.find("queue full") != std::string::npos);
-
-        if (error_code == "rag_invalid_request" || error_code == "rag_no_user_query")
-        {
-            WriteError(res,
-                       400,
-                       ctx->error_message.empty() ? "invalid rag request" : ctx->error_message,
-                       "invalid_request_error",
-                       error_code);
-            return;
-        }
-
-        if (error_code == "rag_index_missing")
-        {
-            WriteError(res,
-                       503,
-                       ctx->error_message.empty() ? "rag index missing" : ctx->error_message,
-                       "service_unavailable_error",
-                       error_code);
-            return;
-        }
-
         WriteError(res,
-                   overloaded ? 429 : 500,
-                   ctx->error_message.empty() ? "engine error" : ctx->error_message,
-                   overloaded ? "rate_limit_error" : "internal_error",
-                   overloaded ? "queue_full" : "internal_error");
+                   status_from_chat_error_kind(validation_error.kind),
+                   validation_error.message,
+                   type_from_chat_error_kind(validation_error.kind),
+                   validation_error.code);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
         return;
     }
 
-    // 正常返回
-    json out = {
-        {"id", "chatcmpl-" + ctx->request_id},
-        {"object", "chat.completion"},
-        {"created", static_cast<int>(std::time(nullptr))},
-        {"model", model},
-        {"choices",
-         {{{"index", 0},
-           {"message", {{"role", "assistant"}, {"content", ctx->final_text}}},
-           {"logprobs", nullptr},
-           {"finish_reason", finish_reason_to_str(final_reason)}}}},
-        {"usage",
-         {{"prompt_tokens", ctx->usage.prompt_tokens},
-          {"completion_tokens", ctx->usage.completion_tokens},
-          {"total_tokens", ctx->usage.total_tokens}
-         }
-        }
-    };
-    if (ctx->rag_options.enabled && ctx->rag_options.return_references)
-    {
-        out["references"] = http_utils::build_rag_references(ctx->rag_hits);
-    }
-    if (ctx->rag_options.enabled && ctx->rag_options.debug)
-    {
-        out["retrieval"] = {
-            {"normalized_query", ctx->rag_summary.normalized_query},
-            {"mode", ctx->rag_summary.mode},
-            {"fusion", ctx->rag_summary.fusion},
-            {"lexical_hit_count", ctx->rag_summary.lexical_hit_count},
-            {"vector_hit_count", ctx->rag_summary.vector_hit_count},
-            {"final_hit_count", ctx->rag_summary.final_hit_count},
-            {"injected_chars", ctx->rag_summary.injected_chars},
-            {"retrieval_latency_ms", ctx->rag_summary.retrieval_latency_ms},
-        };
-    }
-    if (ctx->use_agent)
-    {
-        if (!ctx->agent_structured_output.empty())
-            out["agent_result"] = ctx->agent_structured_output;
-        if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("references"))
+    auto run_result = chat_service_->RunNonStream(
+        chat_request,
+        [&res](std::function<void()> on_close)
         {
-            if (out.contains("references") && out["references"].is_array() &&
-                ctx->agent_structured_output["references"].is_array())
-            {
-                for (const auto &item : ctx->agent_structured_output["references"])
-                    out["references"].push_back(item);
-            }
-            else
-            {
-                out["references"] = ctx->agent_structured_output["references"];
-            }
-        }
-        if (!ctx->agent_structured_output.empty() && ctx->agent_structured_output.contains("subqueries"))
-            out["subqueries"] = ctx->agent_structured_output["subqueries"];
-        if (!ctx->agent_evidence.empty())
+            res.SetOnClose(std::move(on_close));
+        },
+        [&res]()
         {
-            json evidence = json::array();
-            for (const auto &item : ctx->agent_evidence)
-                evidence.push_back(ToJson(item));
-            out["evidence"] = evidence;
-        }
-        if (ctx->agent_debug || ctx->agent_include_trace)
-        {
-            json trace = json::array();
-            for (const auto &item : ctx->agent_trace)
-                trace.push_back(ToJson(item));
-            out["agent_trace"] = trace;
-        }
+            return res.IsAlive();
+        },
+        start_time);
+
+    if (run_result.client_closed || !run_result.ctx)
+        return;
+
+    auto ctx = run_result.ctx;
+    const ChatError error = chat_service_->BuildError(ctx);
+    if (error.HasError())
+    {
+        WriteError(res,
+                   status_from_chat_error_kind(error.kind),
+                   error.message,
+                   type_from_chat_error_kind(error.kind),
+                   error.code);
+        return;
     }
+
+    const ChatResponse response = chat_service_->BuildResponse(ctx);
+    json out = build_chat_completion_json(ctx->request_id, response);
 
     res.SetStatus(200, "OK");
     res.SetHeader("Content-Type", "application/json");
@@ -1072,8 +1090,6 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     stream_requests_.fetch_add(1, std::memory_order_relaxed);
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
-    LOG(INFO) << "[chat-stream] enter HandleChatCompletionStream";
-
     const std::string request_id = gen_request_id();
     auto parsed = ParseChatRequestBody(req.body, true, *session_mgr_, get_default_model(), get_default_max_tokens(), request_id);
     if (!parsed.ok)
@@ -1086,32 +1102,36 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         return;
     }
 
+    if (!chat_service_)
+    {
+        WriteError(*res_ptr, 500, "chat service unavailable", "internal_error", "chat_service_unavailable");
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
+    const ChatExecutionRequest chat_request{parsed.request.ctx, parsed.request.client_messages};
+    const ChatError validation_error = chat_service_->ValidateRequest(chat_request);
+    if (validation_error.HasError())
+    {
+        WriteError(*res_ptr,
+                   status_from_chat_error_kind(validation_error.kind),
+                   validation_error.message,
+                   type_from_chat_error_kind(validation_error.kind),
+                   validation_error.code);
+        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start_time)
+                                .count();
+        RecordFinish(FinishReason::error, dur_ms);
+        return;
+    }
+
     auto ctx = parsed.request.ctx;
-    const std::string model = ctx->model;
-
-    const char *mt_val = nullptr;
-    auto mt_it = ctx->params.find("max_tokens");
-    if (mt_it != ctx->params.end())
-        mt_val = mt_it->second.c_str();
-    LOG(INFO) << "[chat-stream] start req=" << ctx->request_id
-              << " model=" << ctx->model
-              << " session=" << ctx->session_id
-              << " stream=1"
-              << " agent=" << (ctx->use_agent ? 1 : 0)
-              << " max_tokens=" << (mt_val ? mt_val : "default");
-
-    // 备份客户端全量 messages（用于更新 history）
-    const std::vector<Message> client_messages = parsed.request.client_messages;
-
-    auto session = ctx->session;
 
     // 绑定 HttpStreamSession 生命周期（先不 Start）
     auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);
-    res_ptr->SetOnClose([ctx, http_session]
-                        {
-                            ctx->cancelled.store(true);
-                            http_session->Close();
-                        });
 
     // writer：将 OpenAI chunk -> SSE string -> session->Write
     auto writer = std::make_shared<OpenAIStreamWriter>(
@@ -1138,65 +1158,19 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
         writer->OnChunk(chunk);
     };
 
-    // on_finish：仅 stop/length 更新 history；然后关闭 SSE
-    ctx->on_finish = [this, session, ctx, client_messages, http_session, start_time, mgr = session_mgr_.get()](FinishReason r)
-    {
-        if (r == FinishReason::stop || r == FinishReason::length)
+    chat_service_->RunStream(
+        chat_request,
+        [res_ptr](std::function<void()> on_close)
         {
-            std::vector<Message> history_snapshot;
-            {
-                std::lock_guard<std::mutex> lk(session->mu);
-                session->history = client_messages;
-                session->history.push_back({"assistant", ctx->final_text});
-                session->touch();
-                history_snapshot = session->history;
-            }
-            if (mgr)
-            {
-                mgr->PersistHistory(session->session_id, history_snapshot);
-            }
-        }
-        http_session->Close();
-
-        const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time)
-                                .count();
-        RecordFinish(r, dur_ms);
-        LOG(INFO) << "[chat-stream] done req=" << ctx->request_id
-                  << " model=" << ctx->model
-                  << " dur_ms=" << dur_ms
-                  << " prompt_tokens=" << ctx->usage.prompt_tokens
-                  << " completion_tokens=" << ctx->usage.completion_tokens
-                  << " reason=" << finish_reason_to_str(r);
-    };
-
-    // accepted 后再发 SSE 头（避免队列满却先发 200 event-stream）
-    http_session->Start();
-
-    // 同 session 串行执行（只 Execute 一次）
-    bool accepted  = session_executor_.Submit(session, [this, ctx, client_messages]
-    {
-        prepare_session_delta(ctx, client_messages);
-        if (ctx->rag_options.enabled && rag_executor_ && !rag_executor_->Apply(ctx))
+            res_ptr->SetOnClose(std::move(on_close));
+        },
+        [http_session]()
         {
-            ctx->EmitFinish(FinishReason::error);
-            return;
-        }
-        if (ctx->rag_options.enabled)
-            RecordRagMetrics(*ctx);
-        if (ctx->use_agent && agent_executor_)
+            http_session->Start();
+        },
+        [http_session]()
         {
-            agent_executor_->Run(ctx);
-            return;
-        }
-        executor_.Execute(ctx);
-        // executor 内部会在 queue full 时 EmitFinish(error)，writer 会输出对应 SSE 并结束
-    });
-
-    if (!accepted)
-    {
-        ctx->error_message = "SessionExecutor: session queue full, session=" + ctx->session_id;
-        ctx->params["error_code"] = "overloaded";
-        ctx->EmitFinish(FinishReason::error);
-    }
+            http_session->Close();
+        },
+        start_time);
 }

@@ -14,6 +14,7 @@
 #include "serving/core/SessionExecutor.h"
 #include "serving/core/ThreadPool.h"
 #include "serving/service/AdminStatusService.h"
+#include "serving/service/ChatService.h"
 #include "serving/service/HealthService.h"
 #include "serving/service/ModelCatalogService.h"
 #include "serving/service/StatusTypes.h"
@@ -77,6 +78,7 @@ private:
     EngineExecutor executor_; // 共享一个 executor，所有请求都走这里
     std::unique_ptr<AgentExecutor> agent_executor_;
     std::unique_ptr<RAGExecutor> rag_executor_;
+    std::unique_ptr<ChatService> chat_service_;
     HealthService health_service_;
     AdminStatusService admin_status_service_;
     ModelCatalogService model_catalog_service_;
