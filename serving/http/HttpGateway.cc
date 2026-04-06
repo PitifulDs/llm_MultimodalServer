@@ -609,7 +609,11 @@ void HttpGateway::HandleAgentDebug(const HttpRequest &req, HttpResponse &res)
         mode = "web_research";
     if (mode != "code_analysis" && mode != "web_research")
     {
-        WriteError(res, 400, "only code_analysis and web_research are supported by /v1/agent/debug", "invalid_request_error", "invalid_mode");
+        WriteError(res,
+                   400,
+                   "only public modes code_analysis and web_research are supported by /v1/agent/debug; generic remains internal-only",
+                   "invalid_request_error",
+                   "invalid_mode");
         const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - start_time)
                                 .count();

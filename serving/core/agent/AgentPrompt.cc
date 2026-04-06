@@ -82,7 +82,7 @@ std::string BuildToolPrompt(const std::string &agent_mode,
         return oss.str();
     }
 
-    oss << "You are an agent inside EdgeLLM-Serving.\n";
+    oss << "You are an internal experimental agent inside EdgeLLM-Serving.\n";
     oss << "You may either answer directly or call one tool.\n";
     oss << "Available tools: " << tools_desc << ".\n";
     oss << "If the user asks about server status, metrics, configuration, defaults, models, APIs, docs, architecture, files, or any repository-specific fact, you must call a tool before answering.\n";

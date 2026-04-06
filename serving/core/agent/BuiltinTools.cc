@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -516,6 +517,68 @@ bool is_safe_web_url(const std::string &url, std::string &error)
     }
 }
 
+std::string shell_single_quote(const std::string &value)
+{
+    std::string out = "'";
+    for (char ch : value)
+    {
+        if (ch == '\'')
+            out += "'\\''";
+        else
+            out.push_back(ch);
+    }
+    out.push_back('\'');
+    return out;
+}
+
+bool curl_get_text(const std::string &url,
+                   const std::string &user_agent,
+                   std::string &body,
+                   std::string &content_type,
+                   std::string &error)
+{
+    const std::string marker = "__EDGE_CONTENT_TYPE__:";
+    const std::string command =
+        "curl -fsSL --connect-timeout 5 --max-time 12 "
+        "-A " + shell_single_quote(user_agent) + " "
+        "-H " + shell_single_quote("Accept: text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8") + " "
+        "-H " + shell_single_quote("Accept-Language: en-US,en;q=0.8,zh-CN;q=0.6") + " "
+        + shell_single_quote(url) + " "
+        "-w " + shell_single_quote("\\n" + marker + "%{content_type}\\n");
+
+    FILE *pipe = popen(command.c_str(), "r");
+    if (!pipe)
+    {
+        error = "curl fallback failed: popen returned null.";
+        return false;
+    }
+
+    std::string output;
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
+        output.append(buffer);
+
+    const int rc = pclose(pipe);
+    if (rc != 0)
+    {
+        error = "curl fallback exited with status " + std::to_string(rc) + ".";
+        return false;
+    }
+
+    const auto marker_pos = output.rfind(marker);
+    if (marker_pos == std::string::npos)
+    {
+        error = "curl fallback missing content type marker.";
+        return false;
+    }
+
+    body = output.substr(0, marker_pos);
+    content_type = trim_copy(output.substr(marker_pos + marker.size()));
+    if (!body.empty() && body.back() == '\n')
+        body.pop_back();
+    return true;
+}
+
 bool http_get_text(const std::string &url,
                    const std::string &user_agent,
                    std::string &body,
@@ -525,6 +588,10 @@ bool http_get_text(const std::string &url,
     try
     {
         const auto parts = parse_http_url(url);
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+        if (parts.scheme == "https")
+            return curl_get_text(url, user_agent, body, content_type, error);
+#endif
         httplib::Client cli(parts.scheme + "://" + parts.host + ":" + std::to_string(parts.port));
         if (!parts.user.empty())
             cli.set_basic_auth(parts.user, parts.password);
@@ -703,6 +770,26 @@ std::string normalize_web_url(std::string raw)
     return raw;
 }
 
+std::string extract_first_http_url(const std::string &text)
+{
+    static const std::regex kUrlRe(R"((https?://[^\s<>"']+))",
+                                   std::regex::icase | std::regex::optimize);
+    std::smatch match;
+    if (!std::regex_search(text, match, kUrlRe) || match.size() < 2)
+        return "";
+
+    std::string url = match[1].str();
+    while (!url.empty())
+    {
+        const char tail = url.back();
+        if (tail == '.' || tail == ',' || tail == ';' || tail == ')' || tail == ']' || tail == '}' || tail == '"' || tail == '\'')
+            url.pop_back();
+        else
+            break;
+    }
+    return normalize_web_url(url);
+}
+
 std::vector<WebSearchResult> parse_duckduckgo_lite_results(const std::string &html, int limit)
 {
     std::vector<WebSearchResult> results;
@@ -822,6 +909,30 @@ std::string search_web_tool(const BuiltinToolsOptions &options, const nlohmann::
     const std::string query = trim_copy(get_first_string_value(input, {"query", "search", "keyword", "text", "pattern"}, true));
     if (query.empty())
         return "search_web requires a non-empty query.";
+
+    const std::string direct_url = extract_first_http_url(query);
+    if (!direct_url.empty())
+    {
+        std::string error;
+        if (!is_safe_web_url(direct_url, error))
+            return "search_web blocked: " + error;
+
+        std::string title = direct_url;
+        try
+        {
+            const auto parts = parse_http_url(direct_url);
+            title = parts.host.empty() ? direct_url : parts.host + parts.path;
+        }
+        catch (...)
+        {
+        }
+
+        std::ostringstream oss;
+        oss << "Web search hits for query: " << query << "\n";
+        oss << "- title=" << title << " url=" << direct_url << "\n";
+        oss << "  snippet=Direct URL supplied in query; use fetch_url to collect webpage evidence.\n";
+        return truncate_text(oss.str(), options.max_tool_output_chars);
+    }
 
     const int top_k = std::max(1, std::min(get_int_value(input, "top_k", 5), 8));
     const std::string endpoint = "https://lite.duckduckgo.com/lite/?q=" + url_encode_component(query);

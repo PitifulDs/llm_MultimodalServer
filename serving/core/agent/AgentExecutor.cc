@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -31,8 +32,8 @@ constexpr size_t kAgentToolResultForModelMaxChars = 900;
 constexpr size_t kAgentAssistantStateMaxChars = 700;
 constexpr size_t kAgentModelInputMaxMessages = 14;
 constexpr size_t kAgentModelInputMaxChars = 6000;
-constexpr int kWebResearchDecompositionMaxTokens = 220;
-constexpr int kWebResearchSynthesisMaxTokens = 360;
+constexpr int kWebResearchDecompositionMaxTokens = 120;
+constexpr int kWebResearchSynthesisMaxTokens = 180;
 
 std::string normalize_agent_mode(const std::string &mode)
 {
@@ -391,6 +392,26 @@ std::string normalize_subquery_source(std::string source)
     return {};
 }
 
+std::string extract_first_http_url(std::string text)
+{
+    static const std::regex kUrlRe(R"((https?://[^\s<>"']+))",
+                                   std::regex::icase | std::regex::optimize);
+    std::smatch match;
+    if (!std::regex_search(text, match, kUrlRe) || match.size() < 2)
+        return {};
+
+    text = trim_copy(match[1].str());
+    while (!text.empty())
+    {
+        const char tail = text.back();
+        if (tail == '.' || tail == ',' || tail == ';' || tail == ')' || tail == ']' || tail == '}' || tail == '"' || tail == '\'')
+            text.pop_back();
+        else
+            break;
+    }
+    return text;
+}
+
 std::vector<WebResearchSubquery> BuildWebResearchSubqueries(const std::string &question,
                                                             const std::vector<std::string> &allowed_tools)
 {
@@ -399,6 +420,7 @@ std::vector<WebResearchSubquery> BuildWebResearchSubqueries(const std::string &q
     const std::string raw_question = TrimCodeAnalysisText(question, 160);
     const std::string code_query = BuildPrimarySearchQuery(question, hints);
     const std::string repo_query = code_query.empty() ? raw_question : code_query;
+    const std::string direct_url = extract_first_http_url(question);
     const std::string lower = to_lower_copy(trim_copy(question));
     const bool has_latest_signal =
         lower.find("最新") != std::string::npos ||
@@ -445,6 +467,8 @@ std::vector<WebResearchSubquery> BuildWebResearchSubqueries(const std::string &q
         add("local_code", "local", code_query);
     if (question_type == CodeAnalysisQuestionType::config_interface || question_type == CodeAnalysisQuestionType::troubleshooting)
         add("local_docs", "local", raw_question + " docs");
+    if (!direct_url.empty())
+        add("web_direct_url", "web", direct_url);
     add(has_latest_signal ? "cross_check_latest" : "cross_check", has_web_tools && has_local_tools ? "hybrid" : (has_local_tools ? "local" : "web"), raw_question);
     add("web_background", "web", raw_question);
     if (has_latest_signal)
@@ -804,6 +828,7 @@ void AgentExecutor::RunWebResearch(const std::shared_ptr<ServingContext> &ctx,
                                    int max_steps)
 {
     const std::string question = extract_last_user_query(ctx->messages);
+    const std::string direct_url = extract_first_http_url(question);
     const CodeAnalysisQuestionType question_type = ClassifyCodeAnalysisQuestion(question);
     const CodeAnalysisQuestionHints hints = ExtractCodeAnalysisHints(question);
     CodeAnalysisEvidenceStore evidence_store;
@@ -872,7 +897,8 @@ void AgentExecutor::RunWebResearch(const std::shared_ptr<ServingContext> &ctx,
 
     std::vector<WebResearchSubquery> subqueries = BuildWebResearchSubqueries(question, allowed_tools);
     nlohmann::json decomposition_json;
-    if (run_model_json(BuildWebResearchDecompositionPrompt(),
+    if (direct_url.empty() &&
+        run_model_json(BuildWebResearchDecompositionPrompt(),
                        BuildWebResearchDecompositionUserMessage(question, question_type, hints),
                        kWebResearchDecompositionMaxTokens,
                        "[agent] web_research planning\n",

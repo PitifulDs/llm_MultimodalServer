@@ -125,8 +125,8 @@
                 <div class="field">
                   <label for="agentMode">Agent Mode</label>
                   <select id="agentMode">
-                    <option value="code_analysis" selected>Code Analysis</option>
-                    <option value="web_research">Web Research</option>
+                    <option value="code_analysis" selected>Code Analysis (Primary)</option>
+                    <option value="web_research">Web Research (Cross-check)</option>
                   </select>
                 </div>
                 <div class="field">
@@ -149,7 +149,7 @@
                 </div>
                 <div class="field">
                   <label>Mode Hint</label>
-                  <p id="agentModeHint" class="microcopy mode-hint">Repo-focused analysis with local tools only.</p>
+                  <p id="agentModeHint" class="microcopy mode-hint">Primary recommended mode. Read-only, evidence-first analysis that prioritizes repository and local evidence.</p>
                 </div>
               </div>
 
@@ -163,10 +163,10 @@
                     <label for="agentTools">Allowed Tools</label>
                     <input
                       id="agentTools"
-                      value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
+                      value="search_kb,open_chunk,search_code,read_file,list_files,search_docs,get_config,get_server_status"
                       placeholder="Comma-separated tools"
                     />
-                    <p class="microcopy">Only add tools when the answer should be grounded in repo, docs, config, or live status.</p>
+                    <p class="microcopy">`code_analysis` is the primary read-only mode. `web_research` is a supplemental cross-check mode and should only add controlled web tools when external verification is required.</p>
                   </div>
                 </div>
               </details>

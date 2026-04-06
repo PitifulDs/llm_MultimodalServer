@@ -12,6 +12,17 @@ CONFIG_PATH="${CONFIG_PATH:-$ROOT/config.json}"
 pass() { echo "[PASS] $1"; }
 fail() { echo "[FAIL] $1"; exit 1; }
 
+wait_for_server() {
+  local deadline=$((SECONDS + TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 mkdir -p "$LOG_DIR"
 rm -f "$LOG_DIR"/server.log "$LOG_DIR"/*.json "$LOG_DIR"/server.pid
 
@@ -25,7 +36,7 @@ trap cleanup EXIT
 
 CONFIG_PATH="$CONFIG_PATH" "$SERVER_BIN" "$PORT" >"$LOG_DIR/server.log" 2>&1 &
 echo $! > "$LOG_DIR/server.pid"
-sleep 3
+wait_for_server || fail "server did not become healthy in time"
 
 kb_payload="$(cat <<JSON
 {

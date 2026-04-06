@@ -24,8 +24,8 @@
       'Agent mode: ' + ns.AgentConfig.agentModeLabel(mode),
       'Allowed tools: ' + (tools.length ? tools.join(', ') : '(none)'),
       mode === 'web_research'
-        ? 'Use this when you want mixed repo, docs, and web evidence. The model decomposes and synthesizes while external access stays behind controlled search_web and fetch_url.'
-        : 'Use this only when the answer should come from repo files, docs, config, or live server state.',
+        ? 'Supplemental cross-check mode. Prefer repo evidence first, then use controlled search_web and fetch_url for external verification.'
+        : 'Primary public mode. Use this when the answer should come from repo files, docs, config, or live server state.',
       'Server-side tool calls are logged as: [agent] req=... step=... tool=...',
     ].join('\n');
   }

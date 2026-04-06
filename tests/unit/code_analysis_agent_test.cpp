@@ -415,6 +415,17 @@ bool test_request_fields_and_backward_compat()
     EXPECT_TRUE(web.request.ctx->use_agent);
     EXPECT_EQ(web.request.ctx->agent_mode, std::string("web_research"));
 
+    const std::string generic_body = R"json({
+        "model":"llama",
+        "agent":true,
+        "agent_mode":"generic",
+        "messages":[{"role":"user","content":"hello"}]
+    })json";
+    auto generic = ParseChatRequestBody(generic_body, false, session_mgr, "llama", 128, "req-generic");
+    EXPECT_TRUE(generic.ok);
+    EXPECT_TRUE(generic.request.ctx->use_agent);
+    EXPECT_EQ(generic.request.ctx->agent_mode, std::string("code_analysis"));
+
     const std::string plain_body = R"json({
         "model":"llama",
         "messages":[{"role":"user","content":"hello"}]

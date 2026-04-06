@@ -2,8 +2,8 @@
   const ns = window.EdgeLLMDemo = window.EdgeLLMDemo || {};
 
   const DEFAULT_AGENT_TOOLS = {
-    code_analysis: ['search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
-    web_research: ['search_kb', 'open_chunk', 'search_code', 'read_file', 'search_docs', 'search_web', 'fetch_url'],
+    code_analysis: ['search_kb', 'open_chunk', 'search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
+    web_research: ['search_kb', 'open_chunk', 'search_code', 'read_file', 'list_files', 'search_docs', 'search_web', 'fetch_url', 'get_config', 'get_server_status'],
   };
 
   const AGENT_PRESETS = {
@@ -13,17 +13,17 @@
       maxTokens: 768,
       maxSteps: 4,
       tools: DEFAULT_AGENT_TOOLS.code_analysis,
-      system: 'You are a concise read-only code analysis agent for EdgeLLM-Serving.',
-      prompt: 'HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？请基于仓库代码回答，并指出相关文件。',
+      system: 'You are a concise read-only code-analysis agent for EdgeLLM-Serving. Prefer repository and local evidence first.',
+      prompt: 'HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？请基于仓库代码和本地证据回答，并指出相关文件。',
     },
     research: {
       enableAgent: true,
       mode: 'web_research',
       maxTokens: 896,
-      maxSteps: 6,
+      maxSteps: 8,
       tools: DEFAULT_AGENT_TOOLS.web_research,
-      system: 'You are a concise hybrid research agent for EdgeLLM-Serving. Prefer repo evidence first, then controlled web evidence.',
-      prompt: '结合仓库和外部网页资料，说明 EdgeLLM-Serving 的 references 输出链路，并区分 repo_code 与 web 证据。',
+      system: 'You are a concise read-only web-research agent for EdgeLLM-Serving. Use repository evidence first and web evidence only for cross-checking.',
+      prompt: '结合仓库和外部网页资料，交叉验证 EdgeLLM-Serving 的 references 输出链路，并区分 repo_code 与 web 证据。',
     },
     status: {
       enableAgent: true,
@@ -63,9 +63,9 @@
 
   function getAgentModeHint(mode) {
     if (mode === 'web_research') {
-      return 'Hybrid repo, docs, and web research. The model plans and synthesizes while the server performs controlled search_web and fetch_url access.';
+      return 'Supplemental cross-check mode. Start from repo/docs evidence, then use controlled search_web and fetch_url only when external verification is needed.';
     }
-    return 'Repo-focused analysis with local tools only.';
+    return 'Primary recommended mode. Read-only, evidence-first analysis that prioritizes repository and local evidence.';
   }
 
   function parseToolsInput(value) {

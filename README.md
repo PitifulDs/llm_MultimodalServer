@@ -325,24 +325,39 @@ python3 tools/rag/eval_answer.py --base-url http://127.0.0.1:8080 --model llama
 
 若索引文件缺失，请求会返回明确错误，不会导致服务崩溃；`mode=lexical` 的旧请求格式仍可直接复用。
 
-**Code Analysis Agent V1**
+**Read-only Code Analysis Agent**
 
-`agent_mode=code_analysis` 现在走稳定的 `planner + evidence + formatter` 主链路，不再只靠模型自由决定工具。它的目标不是“万能 agent”，而是“能稳定分析当前仓库代码”的只读分析能力。
+当前对外主能力不是通用自治 agent，而是只读、证据优先的 code-analysis agent。稳定主链路是 `planner + evidence + formatter`，目标是基于仓库和本地证据稳定回答代码、配置、接口和排障问题。
+
+对外模式边界：
+- `code_analysis`：主推模式，也是默认模式；优先仓库、本地文档、配置和运行时证据
+- `web_research`：增强模式；仅在需要外部资料交叉验证时补充受控 `search_web / fetch_url`
+- `generic`：保留内部实验用途，不作为对外宣传能力，也不是公开接口模式
 
 当前特性：
 - 支持模块职责、调用链、函数/类行为、接口/配置定位、流式链路定位、排障类问题
 - 优先走 deterministic tool strategy，先检索再精读，最后输出结构化结论
 - 所有证据统一映射为 `CodeEvidence`
 - 非流式 debug 可直接返回 `agent_trace / evidence / agent_result`
-- 新增 `POST /v1/agent/debug`，方便前端和评测脚本直接调试 planner 过程
+- `POST /v1/agent/debug` 便于前端、smoke test 和评测脚本直接调试 planner 过程
 
-默认工具优先级：
+当前迭代边界：
+- 优先做稳定性修正，不继续扩展新工具、新模式或新的 planner 分支
+- 允许继续收敛的问题范围：bug、trace、references、返回格式、评测、文档
+
+`code_analysis` 默认工具优先级：
 - `search_kb`
 - `open_chunk`
 - `search_code`
 - `read_file`
 - `list_files`
-- `search_docs` / `get_config` / `get_server_status`
+- `search_docs`
+- `get_config`
+- `get_server_status`
+
+`web_research` 额外工具：
+- `search_web`
+- `fetch_url`
 
 支持的问题类型：
 - 模块职责
@@ -356,18 +371,21 @@ python3 tools/rag/eval_answer.py --base-url http://127.0.0.1:8080 --model llama
 - 先粗召回，再精读上下文
 - 先拿证据，再给结论
 - 没证据不下强结论
+- `web_research` 也先优先本地证据，再做外部交叉验证
 - 回答里尽量先给结论，再给分析、证据、风险和下一步
 
 与普通 chat / RAG 的区别：
 - 普通 chat 直接走模型
 - RAG 是把检索结果注入 prompt
 - `code_analysis` 是 agent 先多步取证，再输出结构化结论，且响应里保留 `evidence`
+- `web_research` 复用同一套 evidence/formatter 收口，但会补充 web 侧证据和 references
 
 请求字段：
 - `agent_debug`: 返回 `agent_trace`
 - `agent_output_format`: `text | structured`
 - `agent_include_trace`: 非 debug 模式下也可显式返回 trace
-- `tools`: 可选工具白名单；如果不传，会自动填充 `code_analysis` 默认工具集
+- `agent_mode`: 对外仅推荐 `code_analysis` 和 `web_research`；未传默认 `code_analysis`
+- `tools`: 可选工具白名单；如果不传，会按 `agent_mode` 自动填默认工具集
 - `max_steps`: 最大 planner 步数，解析阶段会限制在 `8` 以内
 
 structured output 示例：
@@ -436,26 +454,39 @@ curl -s -X POST "http://127.0.0.1:8080/v1/agent/debug" \
 - `final_answer`
 - `content`
 
+`web_research` 交叉验证示例：
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/agent/debug" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"llama",
+    "mode":"web_research",
+    "debug":true,
+    "tools":["search_kb","open_chunk","search_code","read_file","search_docs","search_web","fetch_url"],
+    "query":"结合仓库和 http://example.com/ 页面，说明 web_research 的 references 是否会保留外部 URL。"
+  }' | jq
+```
+
 可直接跑的验证脚本：
 ```bash
 bash scripts/smoke_test_agent_code_analysis.sh
+bash scripts/smoke_test_agent_web_research.sh
 python3 tools/agent/eval_code_analysis.py --base-url http://127.0.0.1:8080 --model llama
+python3 tools/agent/eval_code_analysis.py --mode web_research --base-url http://127.0.0.1:8080 --model llama
 ```
 
 当前内置评测集：
 - 位置：`tools/agent/eval_dataset.jsonl`
 - 样例数：20
 - 覆盖：`HttpGateway` / `SessionExecutor` 关系、`references` 拼装位置、`stream metadata` 输出层、`search_kb/open_chunk` 使用方式、`rag mode=hybrid` 主链路等
-
-最新一轮小评测结果：
-- `path_hit = 20/20`
-- `symbol_hit = 20/20`
-- `answer_term_hit = 20/20`
-- `evidence_present = 20/20`
+- 位置：`tools/agent/eval_dataset_web_research.jsonl`
+- 样例数：4
+- 覆盖：SSE、`Transfer-Encoding: chunked`、`Content-Length`、`411 Length Required` 等“仓库实现 + 外部资料交叉验证”问题
 
 更多说明见：
 - `docs/智能体使用说明.md`
 - `docs/API调用示例.md`
+- `docs/调试说明.md`
 
 **流式请求兼容说明**
 

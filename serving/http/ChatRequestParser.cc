@@ -53,6 +53,10 @@ std::string get_agent_mode(const json &body)
         mode = "code_analysis";
     if (mode == "web" || mode == "research")
         mode = "web_research";
+    // `generic` remains an internal experimental fallback and is not exposed as a
+    // stable HTTP mode. Public requests fall back to the read-only code_analysis mode.
+    if (mode == "generic")
+        return "code_analysis";
     if (mode != "code_analysis" && mode != "web_research")
         return "code_analysis";
     return mode;
