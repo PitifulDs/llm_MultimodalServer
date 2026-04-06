@@ -204,8 +204,14 @@ bool test_admin_status_uses_unified_backend_runtime_fields()
     const auto model_status = json::parse(model_status_res.body);
     EXPECT_EQ(model_status["data"].size(), static_cast<size_t>(1));
     EXPECT_EQ(model_status["data"][0]["id"].get<std::string>(), std::string("platform-model"));
+    EXPECT_TRUE(model_status["data"][0]["registered"].get<bool>());
+    EXPECT_TRUE(model_status["data"][0]["available"].get<bool>());
+    EXPECT_EQ(model_status["data"][0]["default_backend"].get<std::string>(), std::string("local"));
+    EXPECT_EQ(model_status["data"][0]["gateway_default_backend"].get<std::string>(), std::string("local"));
     EXPECT_TRUE(model_status["data"][0]["capabilities"].is_array());
+    EXPECT_TRUE(model_status["data"][0]["declared_backends"].is_array());
     EXPECT_EQ(model_status["data"][0]["available_backends"][0].get<std::string>(), std::string("local"));
+    EXPECT_EQ(model_status["data"][0]["failure_summary"].get<std::string>(), std::string(""));
 
     FakeRequest backend_status_req;
     FakeResponse backend_status_res;
@@ -214,10 +220,41 @@ bool test_admin_status_uses_unified_backend_runtime_fields()
     const auto backend_status = json::parse(backend_status_res.body);
     EXPECT_EQ(backend_status["data"].size(), static_cast<size_t>(1));
     EXPECT_EQ(backend_status["data"][0]["backend"].get<std::string>(), std::string("local"));
+    EXPECT_EQ(backend_status["data"][0]["gateway_backend"].get<std::string>(), std::string("local"));
+    EXPECT_TRUE(backend_status["data"][0]["connected"].get<bool>());
+    EXPECT_EQ(backend_status["data"][0]["model_count"].get<int>(), 1);
     EXPECT_TRUE(backend_status["data"][0]["capabilities"].is_array());
+    EXPECT_TRUE(backend_status["data"][0]["loaded_engine_count"].is_number_integer());
+    EXPECT_TRUE(backend_status["data"][0]["queue_length"].get<int>() >= 0);
     EXPECT_EQ(backend_status["data"][0]["requests_total"].get<int>(), 2);
     EXPECT_EQ(backend_status["data"][0]["requests_error_total"].get<int>(), 0);
     EXPECT_EQ(backend_status["data"][0]["requests_cancelled_total"].get<int>(), 0);
+    EXPECT_EQ(backend_status["data"][0]["requests_timeout_total"].get<int>(), 0);
+    EXPECT_EQ(backend_status["data"][0]["requests_rate_limited_total"].get<int>(), 0);
+    EXPECT_EQ(backend_status["data"][0]["last_error"].get<std::string>(), std::string(""));
+    EXPECT_EQ(backend_status["data"][0]["timeout_total"].get<int>(), 0);
+    EXPECT_EQ(backend_status["data"][0]["cancelled_total"].get<int>(), 0);
+    EXPECT_TRUE(backend_status["data"][0]["prompt_tokens_total"].get<int>() > 0);
+    EXPECT_EQ(backend_status["data"][0]["completion_tokens_total"].get<int>(), 0);
+    EXPECT_TRUE(backend_status["data"][0]["total_tokens_total"].get<int>() > 0);
+    EXPECT_EQ(backend_status["data"][0]["requests_in_flight"].get<int>(), 0);
+
+    FakeRequest metrics_req;
+    FakeResponse metrics_res;
+    gateway.HandleMetrics(metrics_req, metrics_res);
+    EXPECT_EQ(metrics_res.status, 200);
+    const auto metrics = json::parse(metrics_res.body);
+    EXPECT_EQ(metrics["requests_total"].get<int>(), 2);
+    EXPECT_EQ(metrics["requests_in_flight"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_stream_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_error_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_cancelled_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_timeout_total"].get<int>(), 0);
+    EXPECT_EQ(metrics["requests_rate_limited_total"].get<int>(), 0);
+    EXPECT_TRUE(metrics["prompt_tokens_total"].get<int>() > 0);
+    EXPECT_EQ(metrics["completion_tokens_total"].get<int>(), 0);
+    EXPECT_TRUE(metrics["total_tokens_total"].get<int>() > 0);
+    EXPECT_TRUE(metrics["avg_latency_ms"].is_number());
 
     std::error_code ec;
     std::filesystem::remove_all(temp_dir, ec);

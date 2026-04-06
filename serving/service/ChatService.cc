@@ -270,8 +270,13 @@ void ChatService::AttachNonStreamFinishHandler(const ChatExecutionRequest &reque
 {
     auto ctx = request.ctx;
     const auto client_messages = request.client_messages;
-    ctx->on_finish = [this, ctx, client_messages, start_time](FinishReason reason)
+    std::weak_ptr<ServingContext> weak_ctx = ctx;
+    ctx->on_finish = [this, weak_ctx, client_messages, start_time](FinishReason reason)
     {
+        auto ctx = weak_ctx.lock();
+        if (!ctx)
+            return;
+
         if (reason == FinishReason::stop || reason == FinishReason::length)
             UpdateSessionHistory(ChatExecutionRequest{ctx, client_messages});
 
@@ -300,8 +305,13 @@ void ChatService::AttachStreamFinishHandler(const ChatExecutionRequest &request,
 {
     auto ctx = request.ctx;
     const auto client_messages = request.client_messages;
-    ctx->on_finish = [this, ctx, client_messages, close_stream, start_time](FinishReason reason)
+    std::weak_ptr<ServingContext> weak_ctx = ctx;
+    ctx->on_finish = [this, weak_ctx, client_messages, close_stream, start_time](FinishReason reason)
     {
+        auto ctx = weak_ctx.lock();
+        if (!ctx)
+            return;
+
         if (reason == FinishReason::stop || reason == FinishReason::length)
             UpdateSessionHistory(ChatExecutionRequest{ctx, client_messages});
 

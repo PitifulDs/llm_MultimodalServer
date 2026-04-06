@@ -34,6 +34,12 @@ add_executable(chat_gateway_test
 target_include_directories(chat_gateway_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
 target_link_libraries(chat_gateway_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
 
+add_executable(http_gateway_governance_test
+    http_gateway_governance_test.cpp
+)
+target_include_directories(http_gateway_governance_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
+target_link_libraries(http_gateway_governance_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
+
 add_executable(embeddings_gateway_test
     embeddings_gateway_test.cpp
 )
