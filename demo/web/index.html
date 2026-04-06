@@ -4,1554 +4,244 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>LLM Multimodal Server Demo</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-
-    :root {
-      --bg-1: #0b0f1a;
-      --bg-2: #141a2e;
-      --accent: #f5b700;
-      --accent-2: #00d1ff;
-      --text: #e8edf5;
-      --muted: #9aa6bd;
-      --card: rgba(255, 255, 255, 0.06);
-      --border: rgba(255, 255, 255, 0.12);
-      --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      font-family: "Space Grotesk", system-ui, sans-serif;
-      color: var(--text);
-      background: radial-gradient(1200px 600px at 20% -10%, #1c2b57 0%, transparent 60%),
-                  radial-gradient(1000px 700px at 90% 10%, #2a1f46 0%, transparent 55%),
-                  linear-gradient(180deg, var(--bg-1), var(--bg-2));
-      min-height: 100vh;
-    }
-
-    .wrap {
-      max-width: 1100px;
-      margin: 40px auto 80px;
-      padding: 0 20px;
-    }
-
-    .hero {
-      display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 24px;
-      align-items: center;
-    }
-
-    .title {
-      font-size: clamp(28px, 4vw, 48px);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      margin: 0 0 8px;
-    }
-
-    .subtitle {
-      color: var(--muted);
-      margin: 0 0 24px;
-      font-size: 16px;
-      line-height: 1.6;
-    }
-
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.04);
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 16px;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      align-items: start;
-      gap: 20px;
-      margin-top: 28px;
-    }
-
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 18px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(8px);
-    }
-
-    .response-card {
-      position: sticky;
-      top: 24px;
-      display: flex;
-      flex-direction: column;
-      align-self: start;
-    }
-
-    label {
-      display: block;
-      font-size: 12px;
-      color: var(--muted);
-      margin: 10px 0 6px;
-    }
-
-    .hint {
-      margin-top: 6px;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-
-    input, textarea, select {
-      width: 100%;
-      background: rgba(10, 16, 31, 0.8);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 14px;
-      outline: none;
-    }
-
-    textarea { min-height: 120px; resize: vertical; }
-
-    .row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-    }
-
-    .mode-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      margin-top: 12px;
-    }
-
-    .mode-card {
-      padding: 12px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: rgba(10, 16, 31, 0.52);
-    }
-
-    .mode-card strong {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 13px;
-    }
-
-    .mode-card p {
-      margin: 0;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-
-    .section-title {
-      margin-top: 16px;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-
-    .agent-shell {
-      margin-top: 10px;
-      padding: 14px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(10, 16, 31, 0.42);
-    }
-
-    .agent-toggle {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .agent-panel[hidden] {
-      display: none !important;
-    }
-
-    .actions {
-      display: flex;
-      gap: 10px;
-      margin-top: 12px;
-    }
-
-    button {
-      border: none;
-      cursor: pointer;
-      padding: 10px 14px;
-      border-radius: 10px;
-      font-weight: 600;
-      font-size: 14px;
-    }
-
-    .btn-primary {
-      background: linear-gradient(135deg, var(--accent), #ffdd6b);
-      color: #1b1b1b;
-    }
-
-    .btn-ghost {
-      background: transparent;
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-
-    .output {
-      font-family: "JetBrains Mono", ui-monospace, monospace;
-      font-size: 13px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      min-height: 320px;
-      max-height: min(70vh, 960px);
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      padding-right: 8px;
-    }
-
-    .meta {
-      display: flex;
-      gap: 18px;
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 10px;
-    }
-
-    .refs-card {
-      margin-top: 16px;
-      padding-top: 14px;
-      border-top: 1px solid var(--border);
-    }
-
-    .refs-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 10px;
-    }
-
-    .refs-box[hidden] {
-      display: none !important;
-    }
-
-    .refs-empty {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.6;
-    }
-
-    .refs-list {
-      display: grid;
-      gap: 10px;
-    }
-
-    .ref-item {
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: rgba(10, 16, 31, 0.48);
-      border: 1px solid var(--border);
-    }
-
-    .ref-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 10px;
-    }
-
-    .ref-title {
-      font-size: 13px;
-      font-weight: 600;
-      line-height: 1.5;
-      word-break: break-word;
-    }
-
-    .ref-meta {
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.6;
-      word-break: break-word;
-    }
-
-    .ref-snippet {
-      margin-top: 8px;
-      color: var(--text);
-      font-size: 12px;
-      line-height: 1.65;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .ref-link {
-      color: var(--accent-2);
-      text-decoration: none;
-    }
-
-    .ref-link:hover {
-      text-decoration: underline;
-    }
-
-    .badge {
-      color: #0b0f1a;
-      background: var(--accent-2);
-      padding: 4px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 700;
-    }
-
-    .footer {
-      margin-top: 32px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .debug-card {
-      margin-top: 20px;
-    }
-
-    .debug-box {
-      margin-top: 12px;
-      padding: 12px;
-      border-radius: 12px;
-      background: rgba(10, 16, 31, 0.72);
-      border: 1px solid var(--border);
-    }
-
-    .debug-title {
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-
-    .debug-hint {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.6;
-      white-space: pre-wrap;
-    }
-
-    .debug-code {
-      margin: 0;
-      font-family: "JetBrains Mono", ui-monospace, monospace;
-      font-size: 12px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    @media (max-width: 900px) {
-      .hero { grid-template-columns: 1fr; }
-      .grid { grid-template-columns: 1fr; }
-      .row { grid-template-columns: 1fr; }
-      .response-card { position: static; }
-      .output { max-height: 55vh; }
-    }
-  </style>
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="wrap">
-    <div class="hero">
-      <div>
-        <div class="pill">
-          <span class="badge">LIVE</span>
-          Local OpenAI-compatible SSE demo
-        </div>
-        <h1 class="title">LLM Multimodal Server — Chat Demo</h1>
-        <p class="subtitle">
-          Stream or fetch responses from your local server. This page can switch between
-          <code>/v1/chat/completions</code> (with JSON <code>"stream": true</code>) and the non-streaming endpoint.
-        </p>
+  <div class="app-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">Native Demo</div>
+        <h1>LLM Multimodal Server</h1>
+        <p>Send a chat request first. Expand advanced, agent, references, or debug only when needed.</p>
       </div>
-      <div class="card">
-        <div><strong>Endpoint</strong></div>
-        <div style="margin-top:8px; color: var(--muted); font-size: 13px;">
-          Default: <code>http://127.0.0.1:8080</code>
-        </div>
-        <div style="margin-top:12px; color: var(--muted); font-size: 12px;">
-          Tip: Keep the server running in another terminal.
-        </div>
-      </div>
-    </div>
+    </header>
 
-    <div class="grid">
-      <div class="card">
-        <div><strong>Request</strong></div>
-        <label>Base URL</label>
-        <input id="baseUrl" value="" placeholder="http://127.0.0.1:8080" />
+    <main class="layout">
+      <div class="controls-column">
+        <section class="panel panel-primary">
+          <div class="panel-header">
+            <div>
+              <h2>Quick Request</h2>
+              <p class="panel-copy">Keep the first screen focused on the request you send most often.</p>
+            </div>
+          </div>
 
-        <div class="row">
-          <div>
-            <label>Model</label>
-            <select id="model">
-              <option value="qwen2.5-1.5b" selected>qwen2.5-1.5b</option>
-            </select>
-          </div>
-          <div>
-            <label>Inference Backend</label>
-            <select id="inferenceBackend">
-              <option value="local" selected>Local llama.cpp</option>
-              <option value="rpc">RPC / Worker</option>
-            </select>
-          </div>
-        </div>
+          <div class="field-stack">
+            <div class="field">
+              <label for="baseUrl">Base URL</label>
+              <input id="baseUrl" value="" placeholder="http://127.0.0.1:8080" />
+            </div>
 
-        <div class="hint">
-          `Local` means this Linux server loads the GGUF directly. `RPC / Worker` means the HTTP server forwards the request to a remote StackFlow worker.
-        </div>
-        <div id="backendSupportHint" class="hint"></div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="model">Model</label>
+                <select id="model">
+                  <option value="qwen2.5-1.5b" selected>qwen2.5-1.5b</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="streamMode">Response Mode</label>
+                <select id="streamMode">
+                  <option value="stream" selected>Stream (SSE)</option>
+                  <option value="non-stream">Non-stream</option>
+                </select>
+              </div>
+            </div>
 
-        <div class="row">
-          <div>
-            <label>Max Tokens</label>
-            <input id="maxTokens" type="number" min="1" max="4096" value="512" />
+            <div class="field">
+              <label for="prompt">User Prompt</label>
+              <textarea
+                id="prompt"
+                placeholder="Ask the model something useful."
+              >Introduce yourself in one sentence.</textarea>
+            </div>
           </div>
-          <div>
-            <label>Mode</label>
-            <select id="streamMode">
-              <option value="stream" selected>Stream (SSE)</option>
-              <option value="non-stream">Non-stream</option>
-            </select>
-          </div>
-        </div>
 
-        <div class="mode-grid">
-          <div class="mode-card">
-            <strong>Normal Chat</strong>
-            <p>Ask the model directly. Use this for regular Q&amp;A, writing, translation, and normal conversation.</p>
+          <div class="actions">
+            <button id="sendBtn" class="btn btn-primary">Send Request</button>
+            <button id="stopBtn" class="btn btn-secondary" disabled>Stop</button>
           </div>
-          <div class="mode-card">
-            <strong>Agent Mode</strong>
-            <p>Use tools before answering. Best for repo search, config lookup, docs lookup, and server status inspection.</p>
-          </div>
-        </div>
+        </section>
 
-        <div class="section-title">Request Type</div>
-        <div class="agent-shell">
-          <div class="agent-toggle">
-            <label style="display:flex; align-items:center; gap:8px; margin:0;">
-              <input id="enableAgent" type="checkbox" style="width:auto; margin:0;" />
+        <details class="panel collapsible" id="advancedSection">
+          <summary>
+            <span>Advanced Settings</span>
+            <span class="summary-meta">Backend, tokens, system, session</span>
+          </summary>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="inferenceBackend">Inference Backend</label>
+                <select id="inferenceBackend">
+                  <option value="local" selected>Local llama.cpp</option>
+                  <option value="rpc">RPC / Worker</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="maxTokens">Max Tokens</label>
+                <input id="maxTokens" type="number" min="1" max="4096" value="512" />
+              </div>
+            </div>
+
+            <p id="backendSupportHint" class="microcopy"></p>
+
+            <div class="field">
+              <label for="system">System Prompt</label>
+              <input id="system" placeholder="You are a helpful assistant." />
+              <p class="microcopy">Leave empty unless you need a specific role or answer style.</p>
+            </div>
+
+            <div class="field">
+              <label for="sessionId">Session</label>
+              <div class="field-grid session-grid">
+                <input id="sessionId" placeholder="Auto-generate per request" />
+                <label class="checkbox-row">
+                  <input id="newSessionEach" type="checkbox" checked />
+                  <span>New session per request</span>
+                </label>
+              </div>
+              <p class="microcopy">Turn this off to keep context across turns with the same session ID.</p>
+            </div>
+          </div>
+        </details>
+
+        <details class="panel collapsible" id="agentSection">
+          <summary>
+            <span>Agent Settings</span>
+            <span id="agentStatus" class="summary-meta">Disabled. Requests go directly to the model.</span>
+          </summary>
+          <div class="panel-body">
+            <label class="checkbox-row checkbox-row-strong">
+              <input id="enableAgent" type="checkbox" />
               <span>Enable Agent</span>
             </label>
-            <div id="requestModeHint" class="hint" style="margin-top:0; text-align:right;">
-              Agent is off. The model will answer directly.
+
+            <p id="agentDisabledState" class="microcopy">
+              Agent is off. Turn it on when the answer should come from tools, repo context, docs, or server status.
+            </p>
+
+            <div id="agentConfig" hidden>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="agentMode">Agent Mode</label>
+                  <select id="agentMode">
+                    <option value="code_analysis" selected>Code Analysis</option>
+                    <option value="web_research">Web Research</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="agentMaxSteps">Max Steps</label>
+                  <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
+                </div>
+              </div>
+
+              <div class="field-grid">
+                <div class="field">
+                  <label for="agentPreset">Agent Preset</label>
+                  <select id="agentPreset">
+                    <option value="" selected>Custom</option>
+                    <option value="analysis">Code Analysis</option>
+                    <option value="research">Web Research</option>
+                    <option value="status">Server Status</option>
+                    <option value="config">Default Model &amp; Config</option>
+                    <option value="docs">Streaming &amp; Docs</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Mode Hint</label>
+                  <p id="agentModeHint" class="microcopy mode-hint">Repo-focused analysis with local tools only.</p>
+                </div>
+              </div>
+
+              <details class="sub-collapsible" id="agentToolsSection">
+                <summary>
+                  <span>Agent Tools</span>
+                  <span id="agentToolsCount" class="summary-meta">(0)</span>
+                </summary>
+                <div class="sub-body">
+                  <div class="field">
+                    <label for="agentTools">Allowed Tools</label>
+                    <input
+                      id="agentTools"
+                      value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
+                      placeholder="Comma-separated tools"
+                    />
+                    <p class="microcopy">Only add tools when the answer should be grounded in repo, docs, config, or live status.</p>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
+        </details>
+      </div>
 
-	          <div id="agentPanel" class="agent-panel" hidden>
-	            <div class="row">
-	              <div>
-	                <label>Agent Mode</label>
-	                <select id="agentMode">
-	                  <option value="code_analysis" selected>Code Analysis</option>
-	                  <option value="web_research">Web Research</option>
-	                </select>
-	              </div>
-	              <div>
-	                <label>Max Steps</label>
-	                <input id="agentMaxSteps" type="number" min="1" max="8" value="4" />
-	              </div>
-	            </div>
-	            <div class="row">
-	              <div>
-	                <label>Agent Preset</label>
-	                <select id="agentPreset">
-	                  <option value="" selected>Custom</option>
-	                  <option value="analysis">Code Analysis</option>
-	                  <option value="research">Web Research</option>
-	                  <option value="status">Server Status</option>
-	                  <option value="config">Default Model & Config</option>
-	                  <option value="docs">Streaming & Docs</option>
-	                </select>
-	              </div>
-	              <div>
-	                <label>Mode Hint</label>
-	                <div id="agentModeHint" class="hint" style="margin-top:10px;">
-	                  Repo-focused analysis with local tools only.
-	                </div>
-	              </div>
-	            </div>
-
-	            <label>Agent Tools</label>
-	            <input
-	              id="agentTools"
-              value="search_code,read_file,list_files,search_docs,get_config,get_server_status"
-              placeholder="Comma-separated tools"
-            />
-            <div class="hint">
-              Agent tools are only needed when the answer should come from code, config, docs, or live server status.
+      <aside class="response-column">
+        <section class="panel response-panel">
+          <div class="panel-header panel-header-tight">
+            <div>
+              <h2>Response</h2>
             </div>
+            <span id="status" class="status-badge" data-state="idle">IDLE</span>
           </div>
-        </div>
 
-        <label>System (optional)</label>
-        <input id="system" placeholder="You are a helpful assistant." />
-        <div class="hint">
-          Leave this empty for normal usage. Only add a system prompt when you want to force a specific style or role.
-        </div>
+          <div
+            id="output"
+            class="output"
+            data-placeholder="Model output will appear here."
+          ></div>
 
-        <label>Session</label>
-        <div class="row">
-          <div>
-            <input id="sessionId" placeholder="Auto-generate per request" />
+          <div class="meta-line">
+            <span>TTFB <strong id="ttfb">-</strong></span>
+            <span>Tokens <strong id="tokCount">0</strong></span>
+            <span>Finish <strong id="finishReason">-</strong></span>
+            <span>Duration <strong id="dur">-</strong></span>
           </div>
-          <div>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:0;">
-              <input id="newSessionEach" type="checkbox" checked style="width:auto; margin:0;" />
-              <span>New session per request</span>
-            </label>
-          </div>
+
+          <details class="sub-collapsible references-panel" id="referencesSection">
+            <summary>
+              <span>References</span>
+              <span id="refsCount" class="summary-meta">(0)</span>
+            </summary>
+            <div class="sub-body">
+              <p id="referencesEmpty" class="microcopy">No references collected yet.</p>
+              <div id="referencesList" class="references-list" hidden></div>
+            </div>
+          </details>
+        </section>
+      </aside>
+    </main>
+
+    <details class="panel collapsible debug-panel" id="debugSection">
+      <summary>
+        <span>Show Debug</span>
+        <span id="debugMode" class="summary-meta">CHAT</span>
+      </summary>
+      <div class="panel-body debug-grid">
+        <div class="debug-block">
+          <div class="debug-label">Request Target</div>
+          <div id="debugTarget" class="debug-value">No request sent yet.</div>
         </div>
-        <div class="hint">
-          Turn off <code>New session per request</code> if you want a multi-turn conversation that keeps context.
+
+        <div class="debug-block">
+          <div class="debug-label">Agent Hint</div>
+          <div id="agentHint" class="debug-value">Agent is disabled.</div>
         </div>
 
-        <label>User Prompt</label>
-        <textarea id="prompt">Introduce yourself in one sentence.</textarea>
-
-        <div class="actions">
-          <button id="sendBtn" class="btn-primary">Send</button>
-          <button id="stopBtn" class="btn-ghost" disabled>Stop</button>
+        <div class="debug-block debug-block-wide">
+          <div class="debug-label">Last Sent Payload</div>
+          <pre id="payloadPreview" class="debug-code">No request sent yet.</pre>
         </div>
       </div>
-
-	      <div class="card response-card">
-	        <div style="display:flex; justify-content:space-between; align-items:center;">
-	          <strong>Response</strong>
-	          <span id="status" class="badge">IDLE</span>
-	        </div>
-	        <div id="output" class="output"></div>
-	        <div class="meta">
-	          <div>TTFB: <span id="ttfb">-</span></div>
-	          <div>Tokens (approx): <span id="tokCount">0</span></div>
-	          <div>Finish: <span id="finishReason">-</span></div>
-	          <div>Duration: <span id="dur">-</span></div>
-	        </div>
-	        <div class="refs-card">
-	          <div class="refs-head">
-	            <strong>References</strong>
-	            <span id="refsCount" class="badge">0</span>
-	          </div>
-	          <div id="refsBox" class="refs-box" hidden>
-	            <div id="refsList" class="refs-list"></div>
-	          </div>
-	          <div id="refsEmpty" class="refs-empty">
-	            No references collected yet.
-	          </div>
-	        </div>
-	      </div>
-	    </div>
-
-    <div class="card debug-card">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <strong>Debug</strong>
-        <span id="debugMode" class="badge">CHAT</span>
-      </div>
-
-      <div class="debug-box">
-        <div class="debug-title">Request Target</div>
-        <div id="debugTarget" class="debug-hint">No request sent yet.</div>
-      </div>
-
-      <div class="debug-box">
-        <div class="debug-title">Agent Hint</div>
-        <div id="agentHint" class="debug-hint">Agent is disabled.</div>
-      </div>
-
-      <div class="debug-box">
-        <div class="debug-title">Last Sent Payload</div>
-        <pre id="payloadPreview" class="debug-code">No request sent yet.</pre>
-      </div>
-    </div>
-
-    <div class="footer">
-      This is a lightweight demo UI. It assumes your server implements OpenAI-like SSE streaming.
-    </div>
+    </details>
   </div>
 
-  <script>
-	    const output = document.getElementById('output');
-	    const refsCountEl = document.getElementById('refsCount');
-	    const refsBoxEl = document.getElementById('refsBox');
-	    const refsListEl = document.getElementById('refsList');
-	    const refsEmptyEl = document.getElementById('refsEmpty');
-	    const statusEl = document.getElementById('status');
-    const ttfbEl = document.getElementById('ttfb');
-    const tokEl = document.getElementById('tokCount');
-    const finishReasonEl = document.getElementById('finishReason');
-    const durEl = document.getElementById('dur');
-    const debugModeEl = document.getElementById('debugMode');
-    const debugTargetEl = document.getElementById('debugTarget');
-    const agentHintEl = document.getElementById('agentHint');
-    const payloadPreviewEl = document.getElementById('payloadPreview');
-    const baseUrlEl = document.getElementById('baseUrl');
-    const backendSupportHintEl = document.getElementById('backendSupportHint');
-    const maxTokensEl = document.getElementById('maxTokens');
-    const sendBtn = document.getElementById('sendBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const modeEl = document.getElementById('streamMode');
-    const modelEl = document.getElementById('model');
-    const backendEl = document.getElementById('inferenceBackend');
-    const sessionIdEl = document.getElementById('sessionId');
-    const newSessionEachEl = document.getElementById('newSessionEach');
-	    const enableAgentEl = document.getElementById('enableAgent');
-	    const agentModeEl = document.getElementById('agentMode');
-	    const agentMaxStepsEl = document.getElementById('agentMaxSteps');
-	    const agentPresetEl = document.getElementById('agentPreset');
-	    const agentToolsEl = document.getElementById('agentTools');
-	    const agentPanelEl = document.getElementById('agentPanel');
-	    const agentModeHintEl = document.getElementById('agentModeHint');
-	    const requestModeHintEl = document.getElementById('requestModeHint');
-	    const systemEl = document.getElementById('system');
-	    const promptEl = document.getElementById('prompt');
-
-	    const DEFAULT_AGENT_TOOLS = {
-	      code_analysis: ['search_code', 'read_file', 'list_files', 'search_docs', 'get_config', 'get_server_status'],
-	      web_research: ['search_kb', 'open_chunk', 'search_code', 'read_file', 'search_docs', 'search_web', 'fetch_url'],
-	    };
-
-	    const AGENT_PRESETS = {
-	      analysis: {
-	        enableAgent: true,
-	        mode: 'code_analysis',
-	        maxTokens: 768,
-	        maxSteps: 4,
-	        tools: DEFAULT_AGENT_TOOLS.code_analysis,
-	        system: 'You are a concise read-only code analysis agent for EdgeLLM-Serving.',
-	        prompt: 'HttpGateway 里 agent 请求是怎么进入 AgentExecutor 的？请基于仓库代码回答，并指出相关文件。',
-	      },
-	      research: {
-	        enableAgent: true,
-	        mode: 'web_research',
-	        maxTokens: 896,
-	        maxSteps: 6,
-	        tools: DEFAULT_AGENT_TOOLS.web_research,
-	        system: 'You are a concise hybrid research agent for EdgeLLM-Serving. Prefer repo evidence first, then controlled web evidence.',
-	        prompt: '结合仓库和外部网页资料，说明 EdgeLLM-Serving 的 references 输出链路，并区分 repo_code 与 web 证据。',
-	      },
-	      status: {
-	        enableAgent: true,
-	        mode: 'code_analysis',
-	        maxTokens: 384,
-	        maxSteps: 3,
-	        tools: ['get_server_status'],
-        system: 'You are a concise operations assistant for EdgeLLM-Serving.',
-        prompt: '当前服务健康状态怎么样？有多少请求正在处理中？请基于真实状态回答。',
-      },
-	      config: {
-	        enableAgent: true,
-	        mode: 'code_analysis',
-	        maxTokens: 384,
-	        maxSteps: 4,
-	        tools: ['get_config'],
-        system: 'You are a concise configuration assistant for EdgeLLM-Serving.',
-        prompt: '默认模型是什么？默认 max_tokens 是多少？如果能查到，也说明当前后端类型。',
-      },
-	      docs: {
-	        enableAgent: true,
-	        mode: 'code_analysis',
-	        maxTokens: 512,
-	        maxSteps: 4,
-	        tools: ['search_docs'],
-        system: 'You are a concise documentation assistant for EdgeLLM-Serving.',
-        prompt: '这个项目是否支持流式输出？接口怎么调用？请基于项目文档回答。',
-      },
-    };
-
-    let aborter = null;
-    let modelCatalog = [];
-	    let rawResponseText = '';
-	    let lastReferences = [];
-	    let lastPresetSystemPrompt = '';
-    let lastFinishReason = '-';
-    let shouldStickOutputToBottom = true;
-    let isAutoContinuing = false;
-
-    const MIN_CHAT_MAX_TOKENS = 512;
-    const MIN_AGENT_MAX_TOKENS = 768;
-    const MAX_AUTO_CONTINUES = 4;
-    const MAX_CONTINUATION_TOKENS = 2048;
-
-    function setStatus(text) {
-      statusEl.textContent = text;
-    }
-
-    function genId(prefix = 'sess') {
-      if (crypto && crypto.randomUUID) {
-        return `${prefix}-${crypto.randomUUID()}`;
-      }
-      return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    }
-
-    function approxTokens(text) {
-      return Math.max(0, Math.round(text.length / 4));
-    }
-
-    function stripThinkBlocks(text) {
-      let remaining = text || '';
-      let out = '';
-
-      while (remaining) {
-        const start = remaining.indexOf('<think>');
-        if (start === -1) {
-          out += remaining;
-          break;
-        }
-
-        out += remaining.slice(0, start);
-        const afterStart = remaining.slice(start + '<think>'.length);
-        const end = afterStart.indexOf('</think>');
-        if (end === -1) {
-          out += afterStart;
-          break;
-        }
-        remaining = afterStart.slice(end + '</think>'.length);
-      }
-
-      return out.replace(/<\/?think>/g, '');
-    }
-
-    function decodeJsonStringFragment(value) {
-      try {
-        return JSON.parse(`"${value}"`);
-      } catch (err) {
-        return value
-          .replace(/\\n/g, '\n')
-          .replace(/\\t/g, '\t')
-          .replace(/\\r/g, '\r')
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\');
-      }
-    }
-
-    function formatAnswerValue(value) {
-      if (typeof value === 'string') return value;
-      if (Array.isArray(value)) {
-        return value
-          .map((item) => formatAnswerValue(item))
-          .filter(Boolean)
-          .join('\n');
-      }
-      if (value && typeof value === 'object') {
-        if (typeof value.answer === 'string') return value.answer;
-        try {
-          return JSON.stringify(value, null, 2);
-        } catch (err) {
-          return String(value);
-        }
-      }
-      if (value == null) return '';
-      return String(value);
-    }
-
-    function extractJsonObject(text) {
-      const first = text.indexOf('{');
-      const last = text.lastIndexOf('}');
-      if (first === -1 || last === -1 || first >= last) {
-        return '';
-      }
-      return text.slice(first, last + 1);
-    }
-
-    function extractWrappedAnswer(text) {
-      const candidate = extractJsonObject(text.trim());
-      if (candidate) {
-        try {
-          const parsed = JSON.parse(candidate);
-          if (Object.prototype.hasOwnProperty.call(parsed, 'answer')) {
-            return formatAnswerValue(parsed.answer);
-          }
-        } catch (err) {
-        }
-      }
-
-      const match = text.match(/"answer"\s*:\s*"((?:\\.|[^"\\])*)"/s);
-      if (match) {
-        return decodeJsonStringFragment(match[1]);
-      }
-
-      return null;
-    }
-
-	    function sanitizeAssistantText(rawText) {
-      const withoutThink = stripThinkBlocks(rawText || '').trim();
-      if (!withoutThink) {
-        return '';
-      }
-
-      const wrappedAnswer = extractWrappedAnswer(withoutThink);
-      if (wrappedAnswer !== null) {
-        return wrappedAnswer.trim();
-      }
-
-	      return withoutThink;
-	    }
-
-	    function escapeHtml(value) {
-	      return String(value == null ? '' : value)
-	        .replace(/&/g, '&amp;')
-	        .replace(/</g, '&lt;')
-	        .replace(/>/g, '&gt;')
-	        .replace(/"/g, '&quot;')
-	        .replace(/'/g, '&#39;');
-	    }
-
-	    function normalizeReferences(items) {
-	      if (!Array.isArray(items)) return [];
-	      const out = [];
-	      const seen = new Set();
-	      for (const item of items) {
-	        if (!item || typeof item !== 'object') continue;
-	        const source = item.source || item.reference_source || item.kb || '';
-	        const path = item.path || '';
-	        const url = item.url || '';
-	        const chunkId = item.chunk_id || '';
-	        const title = item.title || item.symbol || path || url || chunkId || '(unknown)';
-	        const key = [source, path, url, chunkId, item.start_line || 0, item.end_line || 0].join('|');
-	        if (seen.has(key)) continue;
-	        seen.add(key);
-	        out.push({
-	          source,
-	          title,
-	          path,
-	          url,
-	          chunkId,
-	          symbol: item.symbol || '',
-	          startLine: item.start_line || 0,
-	          endLine: item.end_line || 0,
-	          snippet: item.snippet || '',
-	        });
-	      }
-	      return out;
-	    }
-
-	    function extractReferencesFromResponse(json) {
-	      if (Array.isArray(json?.references)) return normalizeReferences(json.references);
-	      if (Array.isArray(json?.agent_result?.references)) return normalizeReferences(json.agent_result.references);
-	      return [];
-	    }
-
-	    function updateReferences(items) {
-	      const normalized = normalizeReferences(items);
-	      if (!normalized.length) return;
-	      lastReferences = normalizeReferences([...lastReferences, ...normalized]);
-	      renderReferences();
-	    }
-
-	    function resetReferences() {
-	      lastReferences = [];
-	      renderReferences();
-	    }
-
-	    function renderReferences() {
-	      const refs = lastReferences;
-	      refsCountEl.textContent = String(refs.length);
-	      if (!refs.length) {
-	        refsBoxEl.hidden = true;
-	        refsEmptyEl.hidden = false;
-	        refsListEl.innerHTML = '';
-	        return;
-	      }
-
-	      refsBoxEl.hidden = false;
-	      refsEmptyEl.hidden = true;
-	      refsListEl.innerHTML = refs.map((item) => {
-	        const source = escapeHtml(item.source || 'unknown');
-	        const title = escapeHtml(item.title);
-	        const symbol = item.symbol ? ` · ${escapeHtml(item.symbol)}` : '';
-	        const range = item.startLine
-	          ? `:${item.startLine}${item.endLine && item.endLine > item.startLine ? `-${item.endLine}` : ''}`
-	          : '';
-	        const location = item.url
-	          ? `<a class="ref-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>`
-	          : `${escapeHtml(item.path || item.chunkId || '')}${range}`;
-	        const snippet = item.snippet ? `<div class="ref-snippet">${escapeHtml(item.snippet)}</div>` : '';
-	        return `
-	          <div class="ref-item">
-	            <div class="ref-top">
-	              <div class="ref-title">${title}</div>
-	              <span class="badge">${source}</span>
-	            </div>
-	            <div class="ref-meta">${location}${symbol}</div>
-	            ${snippet}
-	          </div>
-	        `;
-	      }).join('');
-	    }
-
-	    function isOutputNearBottom() {
-      const remaining = output.scrollHeight - output.scrollTop - output.clientHeight;
-      return remaining < 32;
-    }
-
-    function scrollOutputToBottom() {
-      output.scrollTop = output.scrollHeight;
-      shouldStickOutputToBottom = true;
-    }
-
-    function renderAssistantText() {
-      const keepBottom = shouldStickOutputToBottom || isOutputNearBottom();
-      let cleaned = sanitizeAssistantText(rawResponseText);
-      if (lastFinishReason === 'length' && cleaned && !isAutoContinuing) {
-        cleaned += '\n\n[truncated: reached max_tokens]';
-      }
-      output.textContent = cleaned;
-      tokEl.textContent = String(approxTokens(cleaned));
-      finishReasonEl.textContent = lastFinishReason;
-      if (keepBottom) {
-        scrollOutputToBottom();
-      }
-    }
-
-    function countMatches(text, pattern) {
-      const matches = text.match(pattern);
-      return matches ? matches.length : 0;
-    }
-
-    function looksIncompleteAnswer(text) {
-      const value = (text || '').trimEnd();
-      if (!value) return false;
-
-      const fenceCount = countMatches(value, /```/g);
-      if (fenceCount % 2 === 1) {
-        return true;
-      }
-
-      const hasCodeSignals = /#include|class\s+\w+|int\s+\w+\s*\(|using namespace|vector<|```(?:cpp|c\+\+)?/i.test(value);
-      if (!hasCodeSignals) {
-        return false;
-      }
-
-      const braceBalance = countMatches(value, /\{/g) - countMatches(value, /\}/g);
-      if (braceBalance > 0) {
-        return true;
-      }
-
-      const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
-      const lastLine = lines.length ? lines[lines.length - 1] : '';
-      if (!lastLine) {
-        return false;
-      }
-
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(lastLine)) {
-        return true;
-      }
-
-      if (/[=,+\-*/(]$/.test(lastLine)) {
-        return true;
-      }
-
-      return false;
-    }
-
-    function shouldAutoContinue(reason, text) {
-      if (!text) return false;
-      if (reason === 'length') return true;
-      if (reason === 'stop') return looksIncompleteAnswer(text);
-      return false;
-    }
-
-    function buildContinuationPayload({ model, maxTokens, system, prompt, currentAnswer }) {
-      const continuationMaxTokens = Math.max(
-        Math.min(maxTokens * 2, MAX_CONTINUATION_TOKENS),
-        maxTokens
-      );
-      const messages = [];
-      if (system) messages.push({ role: 'system', content: system });
-      messages.push({ role: 'user', content: prompt });
-      messages.push({ role: 'assistant', content: currentAnswer });
-      messages.push({
-        role: 'user',
-        content: 'Continue exactly from where you stopped. Do not repeat previous content. Finish the remaining answer only.',
-      });
-
-      return {
-        model,
-        inference_backend: backendEl.value,
-        max_tokens: continuationMaxTokens,
-        messages,
-        session_id: genId('sess-continue'),
-        request_id: genId('req'),
-      };
-    }
-
-    async function autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt }) {
-      let attempts = 0;
-
-      try {
-        while (attempts < MAX_AUTO_CONTINUES) {
-          const currentAnswer = sanitizeAssistantText(rawResponseText);
-          if (!shouldAutoContinue(lastFinishReason, currentAnswer)) {
-            return;
-          }
-
-          attempts += 1;
-          isAutoContinuing = true;
-          setStatus(`CONTINUING ${attempts}/${MAX_AUTO_CONTINUES}`);
-          renderAssistantText();
-
-          const payload = buildContinuationPayload({
-            model,
-            maxTokens,
-            system,
-            prompt,
-            currentAnswer,
-          });
-
-          const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            cache: 'no-store',
-            signal: aborter?.signal,
-          });
-
-          if (!resp.ok) {
-            return;
-          }
-
-          const json = await resp.json();
-          const content = json.choices?.[0]?.message?.content || '';
-          if (!content) {
-            return;
-          }
-
-          lastFinishReason = json.choices?.[0]?.finish_reason || lastFinishReason;
-          rawResponseText += content;
-          isAutoContinuing = false;
-          renderAssistantText();
-        }
-      } finally {
-        if (isAutoContinuing) {
-          isAutoContinuing = false;
-          renderAssistantText();
-        }
-      }
-    }
-
-    function backendLabel(value) {
-      return value === 'rpc' ? 'RPC / Worker' : 'Local llama.cpp';
-    }
-
-    function getSuggestedBaseUrl() {
-      const defaultUrl = 'http://127.0.0.1:8080';
-      if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') {
-        return defaultUrl;
-      }
-
-      const host = window.location.hostname;
-      if (!host) {
-        return defaultUrl;
-      }
-
-      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-      return `${protocol}//${host}:8080`;
-    }
-
-    function ensureBaseUrlDefault() {
-      const current = baseUrlEl.value.trim();
-      if (!current || current === 'http://127.0.0.1:8080') {
-        baseUrlEl.value = getSuggestedBaseUrl();
-      }
-    }
-
-    function formatFetchError(baseUrl, err) {
-      const raw = err && err.message ? err.message : String(err);
-      if (raw.includes('Failed to fetch')) {
-        return [
-          `[network error] ${raw}`,
-          `Request target: ${baseUrl}`,
-          'If this page is opened from another machine, do not use 127.0.0.1 unless the API server is also running on that same machine.',
-          'Use the Linux server IP or hostname instead, for example: http://<server-ip>:8080',
-        ].join('\n');
-      }
-      return `[error] ${raw}`;
-    }
-
-    function getModelInfo(modelId) {
-      return modelCatalog.find((item) => item?.id === modelId) || null;
-    }
-
-    function getSupportedBackends(modelId) {
-      const info = getModelInfo(modelId);
-      const backends = Array.isArray(info?.backends) ? info.backends.filter((v) => v === 'local' || v === 'rpc') : [];
-      if (!backends.length) return [];
-      return Array.from(new Set(backends));
-    }
-
-    function getGatewayBackends(modelId) {
-      const info = getModelInfo(modelId);
-      const backends = Array.isArray(info?.gateway_backends)
-        ? info.gateway_backends.filter((v) => v === 'local' || v === 'rpc')
-        : [];
-      if (!backends.length) return ['local', 'rpc'];
-      return Array.from(new Set(backends));
-    }
-
-    function syncBackendOptions() {
-      const configured = getSupportedBackends(modelEl.value);
-      const gateway = getGatewayBackends(modelEl.value);
-      let nextValue = backendEl.value;
-
-      Array.from(backendEl.options).forEach((option) => {
-        option.disabled = false;
-        option.hidden = false;
-      });
-
-      if (nextValue !== 'local' && nextValue !== 'rpc') {
-        nextValue = 'local';
-      }
-      if (nextValue) {
-        backendEl.value = nextValue;
-      }
-
-      const configuredText = configured.length ? configured.join(', ') : '(none)';
-      const gatewayText = gateway.join(', ');
-      if (backendEl.value === 'rpc') {
-        backendSupportHintEl.textContent = `Backend is request-level on the same logical model. configured_backends=[${configuredText}], gateway_backends=[${gatewayText}]. RPC requires unit-manager and node/test worker.`;
-      } else {
-        backendSupportHintEl.textContent = `Backend is request-level on the same logical model. configured_backends=[${configuredText}], gateway_backends=[${gatewayText}].`;
-      }
-    }
-
-    function setButtonLabel() {
-      const modeLabel = modeEl.value === 'stream' ? 'Send (stream)' : 'Send (non-stream)';
-      sendBtn.textContent = enableAgentEl.checked ? `${modeLabel} [agent]` : modeLabel;
-      debugModeEl.textContent = enableAgentEl.checked ? 'AGENT' : 'CHAT';
-    }
-
-	    function updateAgentUI() {
-	      const enabled = enableAgentEl.checked;
-	      agentPanelEl.hidden = !enabled;
-	      syncAgentModeDefaults(false);
-	      if (!enabled && systemEl.value.trim() && systemEl.value.trim() === lastPresetSystemPrompt) {
-	        systemEl.value = '';
-	      }
-	      requestModeHintEl.textContent = enabled
-	        ? `Agent is on. Mode=${agentModeLabel(agentModeEl.value)}. The model may call tools before answering.`
-	        : 'Agent is off. The model will answer directly.';
-	      setButtonLabel();
-	      renderDebugPanel();
-	    }
-
-	    function parseAgentTools() {
-	      return agentToolsEl.value
-	        .split(',')
-	        .map((item) => item.trim())
-	        .filter(Boolean);
-	    }
-
-	    function agentModeLabel(mode) {
-	      return mode === 'web_research' ? 'web_research' : 'code_analysis';
-	    }
-
-	    function getDefaultAgentTools(mode) {
-	      return DEFAULT_AGENT_TOOLS[mode] || DEFAULT_AGENT_TOOLS.code_analysis;
-	    }
-
-	    function normalizeTools(tools) {
-	      return tools.map((item) => item.trim()).filter(Boolean).join(',');
-	    }
-
-	    function syncAgentModeDefaults(force = false) {
-	      const selectedMode = agentModeEl.value || 'code_analysis';
-	      const current = normalizeTools(parseAgentTools());
-	      const knownDefaults = Object.values(DEFAULT_AGENT_TOOLS).map((tools) => normalizeTools(tools));
-	      if (force || !current || knownDefaults.includes(current)) {
-	        agentToolsEl.value = getDefaultAgentTools(selectedMode).join(',');
-	      }
-	      if (selectedMode === 'web_research' && parseInt(agentMaxStepsEl.value, 10) < 8) {
-	        agentMaxStepsEl.value = '8';
-	      }
-	      agentModeHintEl.textContent = selectedMode === 'web_research'
-	        ? 'Hybrid repo/docs/web research. The model only plans/synthesizes; the server executes controlled search_web/fetch_url.'
-	        : 'Repo-focused analysis with local tools only.';
-	    }
-
-	    function getEffectiveMaxTokens(rawValue) {
-	      const parsed = parseInt(rawValue, 10) || 0;
-      if (enableAgentEl.checked) {
-        return Math.max(parsed || MIN_AGENT_MAX_TOKENS, MIN_AGENT_MAX_TOKENS);
-      }
-      return Math.max(parsed || MIN_CHAT_MAX_TOKENS, MIN_CHAT_MAX_TOKENS);
-    }
-
-    function buildPayload({ model, maxTokens, system, prompt, sessionId }) {
-      const messages = [];
-      if (system) messages.push({ role: 'system', content: system });
-      messages.push({ role: 'user', content: prompt });
-
-      const payload = {
-        model,
-        inference_backend: backendEl.value,
-        max_tokens: maxTokens,
-        messages,
-        session_id: sessionId,
-        request_id: genId('req'),
-      };
-
-	      if (enableAgentEl.checked) {
-	        payload.agent = true;
-	        payload.agent_mode = agentModeEl.value || 'code_analysis';
-	        payload.max_steps = parseInt(agentMaxStepsEl.value, 10) || 4;
-	        payload.tools = parseAgentTools();
-	      }
-
-      return payload;
-    }
-
-    function buildAgentHint() {
-      if (!enableAgentEl.checked) {
-        return [
-          'Current mode: normal chat',
-          `Inference backend: ${backendLabel(backendEl.value)}`,
-          'Requests go directly to /v1/chat/completions.',
-          'Use this for ordinary conversation, writing, translation, or quick model checks.',
-        ].join('\n');
-      }
-
-	      const tools = parseAgentTools();
-	      const mode = agentModeEl.value || 'code_analysis';
-	      return [
-	        'Current mode: agent',
-	        `Inference backend: ${backendLabel(backendEl.value)}`,
-	        `Agent mode: ${agentModeLabel(mode)}`,
-	        `Allowed tools: ${tools.length ? tools.join(', ') : '(none)'}`,
-	        mode === 'web_research'
-	          ? 'Use this when you want mixed repo/docs/web evidence. The model only does decomposition/synthesis; external access stays behind controlled search_web/fetch_url.'
-	          : 'Use this only when the answer should come from repo files, docs, config, or live server state.',
-	        'Server-side tool calls are logged as: [agent] req=... step=... tool=...',
-	      ].join('\n');
-	    }
-
-    function renderDebugPanel({ baseUrl = '', endpoint = '', payload = null } = {}) {
-      agentHintEl.textContent = buildAgentHint();
-
-      if (!payload) {
-        return;
-      }
-
-      debugTargetEl.textContent = `${baseUrl}${endpoint}`;
-      payloadPreviewEl.textContent = JSON.stringify(payload, null, 2);
-    }
-
-    async function loadModels() {
-      const baseUrl = baseUrlEl.value.trim();
-      if (!baseUrl) return;
-
-      try {
-        const resp = await fetch(`${baseUrl}/v1/models`, { cache: 'no-store' });
-        if (!resp.ok) return;
-
-        const json = await resp.json();
-        const items = Array.isArray(json.data) ? json.data : [];
-        if (!items.length) return;
-        modelCatalog = items;
-
-        const currentValue = modelEl.value;
-        modelEl.innerHTML = '';
-
-        let selectedValue = currentValue;
-        items.forEach((item) => {
-          const id = item?.id;
-          if (!id) return;
-          const option = document.createElement('option');
-          option.value = id;
-          option.textContent = item.default ? `${id} (default)` : id;
-          if (item.default) selectedValue = id;
-          modelEl.appendChild(option);
-        });
-
-        const values = items.map((item) => item?.id).filter(Boolean);
-        if (currentValue && values.includes(currentValue)) {
-          selectedValue = currentValue;
-        }
-        modelEl.value = selectedValue;
-        syncBackendOptions();
-      } catch (err) {
-        // ignore and keep fallback option
-        syncBackendOptions();
-      }
-    }
-
-	    function applyPreset(name) {
-	      const preset = AGENT_PRESETS[name];
-	      if (!preset) {
-	        lastPresetSystemPrompt = '';
-	        return;
-	      }
-
-	      enableAgentEl.checked = !!preset.enableAgent;
-	      if (preset.mode) {
-	        agentModeEl.value = preset.mode;
-	      }
-	      if (preset.maxTokens) {
-	        maxTokensEl.value = String(preset.maxTokens);
-	      }
-	      agentMaxStepsEl.value = String(preset.maxSteps || 4);
-	      agentToolsEl.value = (preset.tools || []).join(',');
-	      systemEl.value = preset.system || '';
-	      lastPresetSystemPrompt = preset.system || '';
-	      promptEl.value = preset.prompt || '';
-	      syncAgentModeDefaults(true);
-	      updateAgentUI();
-	    }
-
-    async function streamChat() {
-      const baseUrl = baseUrlEl.value.trim();
-      const model = document.getElementById('model').value.trim();
-      const maxTokens = getEffectiveMaxTokens(maxTokensEl.value);
-      const system = systemEl.value.trim();
-      const prompt = promptEl.value.trim();
-      let sessionId = sessionIdEl.value.trim();
-
-      if (!baseUrl || !prompt) return;
-
-      if (newSessionEachEl.checked || !sessionId) {
-        sessionId = genId('sess');
-        sessionIdEl.value = sessionId;
-      }
-
-	      output.textContent = '';
-	      rawResponseText = '';
-	      resetReferences();
-	      lastFinishReason = '-';
-      shouldStickOutputToBottom = true;
-      output.scrollTop = 0;
-      ttfbEl.textContent = '-';
-      tokEl.textContent = '0';
-      finishReasonEl.textContent = '-';
-      durEl.textContent = '-';
-      setStatus('STREAMING');
-
-      sendBtn.disabled = true;
-      stopBtn.disabled = false;
-
-      const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
-      payload.stream = true;
-      renderDebugPanel({
-        baseUrl,
-        endpoint: '/v1/chat/completions',
-        payload,
-      });
-
-      aborter = new AbortController();
-      const start = performance.now();
-      let firstByteAt = null;
-
-      try {
-        const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          cache: 'no-store',
-          signal: aborter.signal,
-        });
-
-        if (!resp.ok || !resp.body) {
-          setStatus('ERROR');
-          output.textContent = `HTTP ${resp.status}`;
-          return;
-        }
-
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        let sawDone = false;
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (!firstByteAt) {
-            firstByteAt = performance.now();
-            ttfbEl.textContent = `${Math.round(firstByteAt - start)} ms`;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split('\n\n');
-          buffer = parts.pop() || '';
-
-          for (const part of parts) {
-            const lines = part.split('\n');
-            for (const line of lines) {
-              if (!line.startsWith('data:')) continue;
-              const data = line.slice(5).trim();
-              if (data === '[DONE]') {
-                finishReasonEl.textContent = lastFinishReason;
-                sawDone = true;
-                break;
-              }
-              try {
-	                const json = JSON.parse(data);
-	                if (Array.isArray(json?.metadata?.references)) {
-	                  updateReferences(json.metadata.references);
-	                }
-	                const delta = json.choices?.[0]?.delta?.content || '';
-                const finishReason = json.choices?.[0]?.finish_reason;
-                if (finishReason) {
-                  lastFinishReason = finishReason;
-                  finishReasonEl.textContent = lastFinishReason;
-                  renderAssistantText();
-                }
-                if (delta) {
-                  rawResponseText += delta;
-                  renderAssistantText();
-                }
-              } catch (e) {
-                // ignore partial JSON
-              }
-            }
-            if (sawDone) break;
-          }
-          if (sawDone) break;
-        }
-
-        await autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt });
-        setStatus('DONE');
-        durEl.textContent = `${Math.round(performance.now() - start)} ms`;
-      } catch (err) {
-        setStatus('STOPPED');
-        output.textContent += `\n${formatFetchError(baseUrl, err)}`;
-      } finally {
-        sendBtn.disabled = false;
-        stopBtn.disabled = true;
-      }
-    }
-
-    async function nonStreamChat() {
-      const baseUrl = baseUrlEl.value.trim();
-      const model = document.getElementById('model').value.trim();
-      const maxTokens = getEffectiveMaxTokens(maxTokensEl.value);
-      const system = systemEl.value.trim();
-      const prompt = promptEl.value.trim();
-      let sessionId = sessionIdEl.value.trim();
-
-      if (!baseUrl || !prompt) return;
-
-      if (newSessionEachEl.checked || !sessionId) {
-        sessionId = genId('sess');
-        sessionIdEl.value = sessionId;
-      }
-
-	      output.textContent = '';
-	      rawResponseText = '';
-	      resetReferences();
-	      lastFinishReason = '-';
-      shouldStickOutputToBottom = true;
-      output.scrollTop = 0;
-      ttfbEl.textContent = '-';
-      tokEl.textContent = '0';
-      finishReasonEl.textContent = '-';
-      durEl.textContent = '-';
-      setStatus('SENDING');
-
-      sendBtn.disabled = true;
-      stopBtn.disabled = false;
-
-      const payload = buildPayload({ model, maxTokens, system, prompt, sessionId });
-      renderDebugPanel({
-        baseUrl,
-        endpoint: '/v1/chat/completions',
-        payload,
-      });
-      aborter = new AbortController();
-      const start = performance.now();
-
-      try {
-        const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          cache: 'no-store',
-          signal: aborter.signal,
-        });
-
-        const end = performance.now();
-        ttfbEl.textContent = `${Math.round(end - start)} ms`;
-        durEl.textContent = `${Math.round(end - start)} ms`;
-
-        if (!resp.ok) {
-          setStatus('ERROR');
-          output.textContent = `HTTP ${resp.status}`;
-          return;
-        }
-
-	        const json = await resp.json();
-	        updateReferences(extractReferencesFromResponse(json));
-	        const content = json.choices?.[0]?.message?.content || '';
-        lastFinishReason = json.choices?.[0]?.finish_reason || '-';
-        rawResponseText = content;
-        renderAssistantText();
-        await autoContinueIfNeeded({ baseUrl, model, maxTokens, system, prompt });
-        setStatus('DONE');
-      } catch (err) {
-        setStatus('STOPPED');
-        output.textContent += `\n${formatFetchError(baseUrl, err)}`;
-      } finally {
-        sendBtn.disabled = false;
-        stopBtn.disabled = true;
-      }
-    }
-
-    sendBtn.addEventListener('click', () => {
-      if (modeEl.value === 'stream') {
-        streamChat();
-      } else {
-        nonStreamChat();
-      }
-    });
-    stopBtn.addEventListener('click', () => {
-      if (aborter) aborter.abort();
-    });
-    output.addEventListener('scroll', () => {
-      shouldStickOutputToBottom = isOutputNearBottom();
-    });
-
-    modeEl.addEventListener('change', setButtonLabel);
-    modelEl.addEventListener('change', () => {
-      syncBackendOptions();
-      renderDebugPanel();
-    });
-	    enableAgentEl.addEventListener('change', () => {
-	      updateAgentUI();
-	    });
-	    agentModeEl.addEventListener('change', () => {
-	      syncAgentModeDefaults(false);
-	      updateAgentUI();
-	    });
-	    baseUrlEl.addEventListener('change', loadModels);
-	    agentPresetEl.addEventListener('change', () => {
-	      applyPreset(agentPresetEl.value);
-	    });
-    agentMaxStepsEl.addEventListener('input', () => renderDebugPanel());
-    agentToolsEl.addEventListener('input', () => renderDebugPanel());
-    backendEl.addEventListener('change', () => {
-      syncBackendOptions();
-      renderDebugPanel();
-    });
-    systemEl.addEventListener('input', () => renderDebugPanel());
-    promptEl.addEventListener('input', () => renderDebugPanel());
-	    modeEl.addEventListener('change', () => renderDebugPanel());
-	    ensureBaseUrlDefault();
-	    syncBackendOptions();
-	    resetReferences();
-	    updateAgentUI();
-	    loadModels();
-	  </script>
+  <script src="./state.js"></script>
+  <script src="./agent-presets.js"></script>
+  <script src="./references.js"></script>
+  <script src="./debug-panel.js"></script>
+  <script src="./continuation.js"></script>
+  <script src="./api.js"></script>
+  <script src="./ui.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
