@@ -11,13 +11,26 @@ using json = nlohmann::json;
 
 namespace
 {
+std::string safe_json_dump(const json &value)
+{
+    return value.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 bool decode_stream_payload(const std::string &in,
                            std::string &out,
                            std::unordered_map<int, std::string> &stream_buff)
 {
-    json body = json::parse(in);
-    const int index = body.value("index", 0);
-    const bool finish = body.value("finish", false);
+    const json body = json::parse(in, nullptr, false);
+    if (body.is_discarded() || !body.is_object())
+        throw std::runtime_error("invalid stream payload");
+
+    int index = 0;
+    if (body.contains("index") && body["index"].is_number_integer())
+        index = body["index"].get<int>();
+
+    bool finish = false;
+    if (body.contains("finish") && body["finish"].is_boolean())
+        finish = body["finish"].get<bool>();
 
     std::string delta;
     if (body.contains("delta"))
@@ -25,8 +38,10 @@ bool decode_stream_payload(const std::string &in,
         const auto &raw_delta = body["delta"];
         if (raw_delta.is_string())
             delta = raw_delta.get<std::string>();
+        else if (raw_delta.is_null())
+            delta.clear();
         else
-            delta = raw_delta.dump();
+            delta = safe_json_dump(raw_delta);
     }
 
     stream_buff[index] = delta;
@@ -204,11 +219,8 @@ int llm_llm::setup(const std::string &work_id, const std::string &object, const 
     auto llm_channel = get_channel(work_id);
     auto llm_task_obj = std::make_shared<llm_task>(work_id);
     json config_body;
-    try
-    {
-        config_body = json::parse(data);
-    }
-    catch (...)
+    config_body = json::parse(data, nullptr, false);
+    if (config_body.is_discarded() || !config_body.is_object())
     {
         error_body["code"] = -2;
         error_body["message"] = "json format error.";

@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <sstream>
 
+#include "utils/json.hpp"
 #include "serving/core/agent/code_analysis/CodeAnalysisHeuristics.h"
 
 namespace
 {
+using json = nlohmann::json;
+
 std::string to_lower_copy(std::string s)
 {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch)
@@ -55,6 +58,129 @@ std::string fallback_summary(CodeAnalysisQuestionType question_type)
     default:
         return "当前证据不足以给出强结论。";
     }
+}
+
+bool try_parse_json_object(const std::string &raw, json &out)
+{
+    out = json::parse(raw, nullptr, false);
+    return !out.is_discarded() && out.is_object();
+}
+
+std::string json_scalar_to_string(const json &value)
+{
+    if (value.is_string())
+        return value.get<std::string>();
+    if (value.is_boolean())
+        return value.get<bool>() ? "true" : "false";
+    if (value.is_number_integer())
+        return std::to_string(value.get<long long>());
+    if (value.is_number_unsigned())
+        return std::to_string(value.get<unsigned long long>());
+    if (value.is_number_float())
+    {
+        std::ostringstream oss;
+        oss << value.get<double>();
+        return oss.str();
+    }
+    if (value.is_null())
+        return "null";
+    return value.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+bool load_config_json(const std::vector<CodeEvidence> &evidence, json &cfg)
+{
+    for (const auto &item : evidence)
+    {
+        if (item.source_type != "config" && item.path != "config.json" && item.path != "runtime")
+            continue;
+        if (try_parse_json_object(item.snippet, cfg))
+            return true;
+    }
+    return false;
+}
+
+bool has_any_evidence_text(const std::vector<CodeEvidence> &evidence, const std::vector<std::string> &terms)
+{
+    for (const auto &item : evidence)
+    {
+        const std::string path = to_lower_copy(item.path);
+        const std::string symbol = to_lower_copy(item.symbol);
+        const std::string snippet = to_lower_copy(item.snippet);
+        for (const auto &term : terms)
+        {
+            if ((!path.empty() && path.find(term) != std::string::npos) ||
+                (!symbol.empty() && symbol.find(term) != std::string::npos) ||
+                (!snippet.empty() && snippet.find(term) != std::string::npos))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::string build_config_summary(const std::string &question,
+                                 const std::vector<CodeEvidence> &evidence)
+{
+    const std::string lower_question = to_lower_copy(question);
+    json cfg;
+    const bool has_cfg = load_config_json(evidence, cfg);
+    std::vector<std::string> parts;
+
+    if (lower_question.find("默认模型") != std::string::npos ||
+        lower_question.find("default model") != std::string::npos ||
+        lower_question.find("model") != std::string::npos)
+    {
+        if (has_cfg && cfg.contains("default_model"))
+            parts.push_back("默认模型是 `" + json_scalar_to_string(cfg["default_model"]) + "`");
+    }
+
+    if (lower_question.find("max_tokens") != std::string::npos ||
+        lower_question.find("max token") != std::string::npos)
+    {
+        if (has_cfg && cfg.contains("default_max_tokens"))
+            parts.push_back("服务默认 `max_tokens` 是 `" + json_scalar_to_string(cfg["default_max_tokens"]) + "`");
+    }
+
+    if (lower_question.find("后端") != std::string::npos ||
+        lower_question.find("backend") != std::string::npos)
+    {
+        std::string backend_fact;
+        std::string backend_tail;
+        if (has_cfg && cfg.contains("default_model") && cfg["default_model"].is_string() &&
+            cfg.contains("models") && cfg["models"].is_object())
+        {
+            const std::string default_model = cfg["default_model"].get<std::string>();
+            const auto model_it = cfg["models"].find(default_model);
+            if (model_it != cfg["models"].end() && model_it->is_object() &&
+                model_it->contains("backend"))
+            {
+                backend_fact = "默认模型 `" + default_model + "` 在配置里声明的后端是 `" +
+                               json_scalar_to_string((*model_it)["backend"]) + "`";
+            }
+        }
+        if (backend_fact.empty() && has_cfg && cfg.contains("serving_backend"))
+            backend_fact = "服务默认后端配置是 `" + json_scalar_to_string(cfg["serving_backend"]) + "`";
+        if (has_any_evidence_text(evidence, {"inference_backend", "get_inference_backend", "chatrequestparser"}))
+            backend_tail = "；但具体某一次请求实际走 `local` 还是 `rpc`，要看请求里的 `inference_backend` 字段";
+        else if (!backend_fact.empty())
+            backend_tail = "；仅凭当前问题无法确认你这一次请求实际选的是 `local` 还是 `rpc`";
+        if (!backend_fact.empty())
+            parts.push_back(backend_fact + backend_tail);
+    }
+
+    if (parts.empty())
+        return "";
+
+    std::ostringstream oss;
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        if (i > 0)
+            oss << "；";
+        oss << parts[i];
+    }
+    oss << "。";
+    return oss.str();
 }
 
 CodeAnalysisFinalAnswer build_web_research_fallback(const std::string &question,
@@ -156,6 +282,13 @@ CodeAnalysisFinalAnswer CodeAnalysisFormatter::Build(const std::string &question
     const auto &top = evidence.front();
     answer.summary = "针对“" + TrimCodeAnalysisText(question, 48) + "”，最相关实现位于 " + evidence_ref(top) + "。";
 
+    if (question_type == CodeAnalysisQuestionType::config_interface)
+    {
+        const std::string config_summary = build_config_summary(question, evidence);
+        if (!config_summary.empty())
+            answer.summary = config_summary;
+    }
+
     if (!trace.empty())
     {
         std::ostringstream trace_line;
@@ -194,9 +327,14 @@ CodeAnalysisFinalAnswer CodeAnalysisFormatter::Build(const std::string &question
 
     if (question_type == CodeAnalysisQuestionType::call_chain && evidence.size() < 2)
         answer.next_steps.push_back("继续针对关键 symbol 做 search_code，并 read_file 查看上下游调用点。");
-    if (question_type == CodeAnalysisQuestionType::config_interface)
+    const bool has_direct_config_summary =
+        question_type == CodeAnalysisQuestionType::config_interface &&
+        answer.summary != fallback_summary(question_type);
+    if (has_direct_config_summary)
+        answer.next_steps.clear();
+    else if (question_type == CodeAnalysisQuestionType::config_interface)
         answer.next_steps.push_back("如需确认配置生效链路，可继续查看 get_config 命中的字段与 HttpGateway/SessionExecutor 的读取位置。");
-    if (answer.next_steps.empty())
+    if (!has_direct_config_summary && answer.next_steps.empty())
         answer.next_steps.push_back("若需要更完整结论，可继续围绕首个证据文件做 read_file 扩展上下文。");
 
     return answer;
@@ -226,7 +364,11 @@ CodeAnalysisFinalAnswer CodeAnalysisFormatter::BuildWebResearch(const std::strin
 std::string CodeAnalysisFormatter::ToText(const CodeAnalysisFinalAnswer &answer)
 {
     std::ostringstream oss;
-    oss << answer.summary;
+    if (!answer.summary.empty())
+    {
+        oss << "结论：\n";
+        oss << "- " << answer.summary;
+    }
 
     if (!answer.analysis.empty())
     {

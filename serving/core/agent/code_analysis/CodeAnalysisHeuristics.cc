@@ -106,7 +106,7 @@ CodeAnalysisQuestionType ClassifyCodeAnalysisQuestion(const std::string &questio
     const bool asks_location = contains_any(lower, {"在哪里", "哪一层", "哪一行", "哪个文件", "where", "locate", "在哪"});
     if (contains_any(lower, {"调用链", "调用关系", "依赖关系", "谁调用", "谁会调用", "怎么进入", "进入", "经过", "链路", "主链路", "关系", "call chain", "caller", "callee", "dependency"}))
         return CodeAnalysisQuestionType::call_chain;
-    if (contains_any(lower, {"做什么", "干什么", "what does", "what is", "函数", "类"}))
+    if (contains_any(lower, {"做什么", "干什么", "what does", "what is", "函数", "方法", "class", "struct", "这个类", "该类"}))
         return CodeAnalysisQuestionType::symbol_behavior;
     if (asks_location &&
         contains_any(lower, {"references"}) &&
@@ -114,7 +114,8 @@ CodeAnalysisQuestionType ClassifyCodeAnalysisQuestion(const std::string &questio
     {
         return CodeAnalysisQuestionType::location_lookup;
     }
-    if (contains_any(lower, {"配置", "参数", "环境变量", "接口", "api", "endpoint", "stream", "references"}))
+    if (contains_any(lower, {"配置", "参数", "环境变量", "接口", "api", "endpoint", "stream", "references",
+                             "默认", "default", "max_tokens", "backend", "后端", "模型"}))
         return CodeAnalysisQuestionType::config_interface;
     if (contains_any(lower, {"职责", "作用", "负责", "模块", "module responsibility", "what is this module for"}))
         return CodeAnalysisQuestionType::module_responsibility;
@@ -534,6 +535,13 @@ std::string BuildPrimarySearchQuery(const std::string &question,
         return "OpenAIStreamWriter OnChunk stream_metadata_json metadata_json";
     if (lower.find("references") != std::string::npos && lower.find("哪里") != std::string::npos)
         return "HandleChatCompletion build_rag_references references";
+    if ((lower.find("默认模型") != std::string::npos || lower.find("default model") != std::string::npos ||
+         lower.find("max_tokens") != std::string::npos || lower.find("后端") != std::string::npos ||
+         lower.find("backend") != std::string::npos) &&
+        (lower.find("当前") != std::string::npos || lower.find("默认") != std::string::npos || lower.find("default") != std::string::npos))
+    {
+        return "default_model default_max_tokens inference_backend get_inference_backend serving_backend";
+    }
     if (lower.find("search_kb") != std::string::npos && lower.find("open_chunk") != std::string::npos)
         return "RunCodeAnalysis NextStep search_kb open_chunk";
     if (lower.find("默认工具链") != std::string::npos)

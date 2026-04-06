@@ -240,6 +240,54 @@ static std::string utf8_sanitize(const std::string &s)
     return out;
 }
 
+static std::string safe_json_dump(const json &value)
+{
+    return value.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+static std::string json_value_to_text(const json &value)
+{
+    if (value.is_string())
+        return value.get<std::string>();
+    if (value.is_null())
+        return std::string();
+    if (value.is_array())
+    {
+        std::string out;
+        for (const auto &item : value)
+        {
+            if (item.is_object())
+            {
+                const auto type_it = item.find("type");
+                if (type_it != item.end() && type_it->is_string() && type_it->get<std::string>() == "text")
+                {
+                    const auto text_it = item.find("text");
+                    if (text_it != item.end())
+                        out += json_value_to_text(*text_it);
+                    continue;
+                }
+            }
+            out += json_value_to_text(item);
+        }
+        return out;
+    }
+    if (value.is_object())
+    {
+        const auto text_it = value.find("text");
+        if (text_it != value.end())
+            return json_value_to_text(*text_it);
+    }
+    return safe_json_dump(value);
+}
+
+static std::string json_string_field(const json &value, const char *key)
+{
+    const auto it = value.find(key);
+    if (it == value.end())
+        return std::string();
+    return json_value_to_text(*it);
+}
+
 llm_task::llm_task(const std::string &workid)
 {
     work_id_ = workid;
@@ -442,36 +490,30 @@ void llm_task::inference(const std::string &msg, const std::string &req_id, cons
     bool used_payload_messages = false;
     if (!msg.empty() && msg.front() == '{')
     {
-        try
+        const auto j = nlohmann::json::parse(msg, nullptr, false);
+        if (!j.is_discarded() && j.is_object() && j.contains("messages") && j["messages"].is_array())
         {
-            auto j = nlohmann::json::parse(msg);
-            if (j.contains("messages") && j["messages"].is_array())
+            bool has_system = false;
+            for (const auto &m : j["messages"])
             {
-                bool has_system = false;
-                for (const auto &m : j["messages"])
+                if (!m.is_object())
+                    continue;
+                const std::string role = json_string_field(m, "role");
+                if (role.empty())
+                    continue;
+                const std::string content = json_string_field(m, "content");
+                if (role == "system" && !content.empty())
+                    has_system = true;
+                ctx->messages.push_back({role, content});
+            }
+            if (!ctx->messages.empty())
+            {
+                used_payload_messages = true;
+                if (!has_system && !system_prompt_.empty())
                 {
-                    if (!m.is_object())
-                        continue;
-                    const std::string role = m.value("role", "");
-                    const std::string content = m.value("content", "");
-                    if (role.empty())
-                        continue;
-                    if (role == "system" && !content.empty())
-                        has_system = true;
-                    ctx->messages.push_back({role, content});
-                }
-                if (!ctx->messages.empty())
-                {
-                    used_payload_messages = true;
-                    if (!has_system && !system_prompt_.empty())
-                    {
-                        ctx->messages.insert(ctx->messages.begin(), {"system", system_prompt_});
-                    }
+                    ctx->messages.insert(ctx->messages.begin(), {"system", system_prompt_});
                 }
             }
-        }
-        catch (...)
-        {
         }
     }
     if (!used_payload_messages)

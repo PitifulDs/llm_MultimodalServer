@@ -18,6 +18,15 @@ std::string to_lower_copy(std::string s)
                    { return static_cast<char>(std::tolower(ch)); });
     return s;
 }
+
+bool looks_like_default_config_question(const std::string &lower)
+{
+    return lower.find("默认") != std::string::npos ||
+           lower.find("default") != std::string::npos ||
+           lower.find("max_tokens") != std::string::npos ||
+           lower.find("backend") != std::string::npos ||
+           lower.find("后端") != std::string::npos;
+}
 } // namespace
 
 CodeAnalysisPlanner::CodeAnalysisPlanner(std::string question,
@@ -86,6 +95,13 @@ CodeAnalysisPlanStep CodeAnalysisPlanner::NextStep(const CodeAnalysisEvidenceSto
         }
     }
 
+    if (question_type_ == CodeAnalysisQuestionType::config_interface &&
+        IsToolAllowed("get_config") &&
+        !HasToolTrace(trace, "get_config"))
+    {
+        return {"get_config", nlohmann::json::object(), "配置类问题还缺少 config 证据，继续补 get_config。", true};
+    }
+
     if (evidence_store.Size() >= 2 && evidence_store.HasFocusedContext())
         return {};
 
@@ -120,17 +136,17 @@ CodeAnalysisPlanStep CodeAnalysisPlanner::PickInitialStep() const
                              lower.find("参数") != std::string::npos ||
                              lower.find("环境变量") != std::string::npos ||
                              lower.find("api") != std::string::npos ||
-                             lower.find("接口") != std::string::npos;
-
-    if ((!hints_.primary_symbol.empty() || !hints_.primary_file_path.empty()) && IsToolAllowed("search_code"))
-    {
-        nlohmann::json input = {{"query", query}, {"limit", 8}, {"path", preferred_path}};
-        return {"search_code", input, "问题里出现了明确 symbol 或文件名，优先 search_code 做确定性定位。", true};
-    }
+                             lower.find("接口") != std::string::npos ||
+                             looks_like_default_config_question(lower);
 
     if (question_type_ == CodeAnalysisQuestionType::config_interface ||
         question_type_ == CodeAnalysisQuestionType::troubleshooting)
     {
+        if (question_type_ == CodeAnalysisQuestionType::config_interface &&
+            config_like && IsToolAllowed("get_config"))
+        {
+            return {"get_config", nlohmann::json::object(), "默认值、后端或配置问题先补 config 证据。", true};
+        }
         if (config_like && IsToolAllowed("search_docs"))
             return {"search_docs", {{"query", truncate_question(question_)}}, "配置、接口或排障问题先查 docs，避免一上来读整文件。", true};
         if (IsToolAllowed("search_code"))
@@ -139,6 +155,12 @@ CodeAnalysisPlanStep CodeAnalysisPlanner::PickInitialStep() const
             return {"search_kb", {{"kb", "repo_code"}, {"query", truncate_question(question_)}, {"top_k", 4}, {"mode", "hybrid"}}, "先从 repo_code 检索相关实现。", true};
         if (IsToolAllowed("get_config"))
             return {"get_config", nlohmann::json::object(), "没有 docs 工具时，先检查配置。", true};
+    }
+
+    if ((!hints_.primary_symbol.empty() || !hints_.primary_file_path.empty()) && IsToolAllowed("search_code"))
+    {
+        nlohmann::json input = {{"query", query}, {"limit", 8}, {"path", preferred_path}};
+        return {"search_code", input, "问题里出现了明确 symbol 或文件名，优先 search_code 做确定性定位。", true};
     }
 
     if ((question_type_ == CodeAnalysisQuestionType::call_chain ||

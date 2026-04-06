@@ -96,7 +96,7 @@ namespace StackFlows
             else
                 out_body["error"] = error_msg;
 
-            std::string out = out_body.dump();
+            std::string out = out_body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
             out += "\n";
 
             send_raw_to_pub(out);

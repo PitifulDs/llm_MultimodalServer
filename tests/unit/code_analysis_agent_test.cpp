@@ -319,6 +319,19 @@ bool test_planner_strategy_selection()
     return true;
 }
 
+bool test_planner_config_question_prefers_get_config()
+{
+    CodeAnalysisPlanner planner("默认模型是什么？默认 max_tokens 是多少？当前后端类型是什么？",
+                                {"get_config", "search_code", "read_file"},
+                                4);
+    CodeAnalysisEvidenceStore store;
+    std::vector<AgentTraceStep> trace;
+
+    const auto first = planner.NextStep(store, trace);
+    EXPECT_EQ(first.tool_name, std::string("get_config"));
+    return true;
+}
+
 bool test_structured_final_answer_formatting()
 {
     std::vector<CodeEvidence> evidence = {
@@ -336,6 +349,38 @@ bool test_structured_final_answer_formatting()
     EXPECT_TRUE(out["analysis"].is_array());
     EXPECT_TRUE(out["evidence"].is_array());
     EXPECT_TRUE(!out["evidence"].empty());
+    return true;
+}
+
+bool test_config_answer_formatting_is_direct()
+{
+    std::vector<CodeEvidence> evidence = {
+        {"config", "docs", "", "config.json", "", "", 0, 0, "", R"json({
+  "default_model": "qwen3.5-2b",
+  "default_max_tokens": 512,
+  "models": {
+    "qwen3.5-2b": {"backend": "local"}
+  },
+  "serving_backend": "local"
+})json", "这里包含默认模型和默认 token 配置。", 1.0},
+        {"search_code", "repo_code", "", "serving/http/ChatRequestParser.cc", "", "", 33, 41, "get_inference_backend", "if (body.contains(\"inference_backend\")) backend = body[\"inference_backend\"].get<std::string>();", "这里说明请求级后端由 inference_backend 决定。", 2.0},
+    };
+    std::vector<AgentTraceStep> trace = {
+        {1, "get_config", json::object(), "config ...", 1, "先拿配置"},
+        {2, "search_code", {{"query", "inference_backend"}}, "Code matches ...", 2, "再看请求级后端选择"},
+    };
+
+    const auto answer = CodeAnalysisFormatter::Build("默认模型是什么？默认 max_tokens 是多少？当前后端类型是什么？",
+                                                     CodeAnalysisQuestionType::config_interface,
+                                                     evidence,
+                                                     trace);
+    EXPECT_TRUE(answer.summary.find("qwen3.5-2b") != std::string::npos);
+    EXPECT_TRUE(answer.summary.find("512") != std::string::npos);
+    EXPECT_TRUE(answer.summary.find("local") != std::string::npos);
+    EXPECT_TRUE(answer.next_steps.empty());
+
+    const auto text = CodeAnalysisFormatter::ToText(answer);
+    EXPECT_TRUE(text.find("结论：") != std::string::npos);
     return true;
 }
 
@@ -536,7 +581,9 @@ int main(int argc, char **argv)
     ok = ok && test_evidence_dedup();
     ok = ok && test_primary_search_query_smart_pointer_topic();
     ok = ok && test_planner_strategy_selection();
+    ok = ok && test_planner_config_question_prefers_get_config();
     ok = ok && test_structured_final_answer_formatting();
+    ok = ok && test_config_answer_formatting_is_direct();
     ok = ok && test_request_fields_and_backward_compat();
     ok = ok && test_web_research_evidence_formatting();
     ok = ok && test_gateway_structured_debug_response(artifacts);

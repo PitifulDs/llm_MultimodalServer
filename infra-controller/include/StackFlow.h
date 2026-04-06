@@ -142,12 +142,12 @@ public:
 
         if (zmq_url.empty()) {
             pzmq _zmq(out_zmq_url_, ZMQ_PUSH);
-            std::string out = out_body.dump();
+            std::string out = out_body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
             out += "\n";
             return _zmq.send_data(out);
         } else {
             pzmq _zmq(zmq_url, ZMQ_PUSH);
-            std::string out = out_body.dump();
+            std::string out = out_body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
             out += "\n";
             return _zmq.send_data(out);
         }

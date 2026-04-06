@@ -197,10 +197,16 @@ void usr_print_error(const std::string &request_id, const std::string &work_id, 
     out_body["request_id"] = request_id;
     out_body["work_id"]    = work_id;
     out_body["created"]    = time(NULL);
-    out_body["error"]      = nlohmann::json::parse(error_msg);
+    out_body["error"]      = nlohmann::json::parse(error_msg, nullptr, false);
+    if (out_body["error"].is_discarded()) {
+        out_body["error"] = {
+            {"code", -2},
+            {"message", "json format error"},
+        };
+    }
     out_body["object"]     = std::string("None");
     out_body["data"]       = std::string("None");
-    std::string out        = out_body.dump();
+    std::string out        = out_body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     // 异常数据发送-PUSH
     zmq_com_send(zmq_out, out);
 }

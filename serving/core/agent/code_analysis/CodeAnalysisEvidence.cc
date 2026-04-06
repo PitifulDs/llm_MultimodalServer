@@ -123,7 +123,7 @@ size_t CodeAnalysisEvidenceStore::AddToolOutput(const std::string &tool_name,
         evidence.source_type = tool_name == "get_config" ? "config" : "docs";
         evidence.reference_source = "docs";
         evidence.path = tool_name == "get_server_status" ? "runtime" : "";
-        evidence.snippet = TrimCodeAnalysisText(tool_output, 260);
+        evidence.snippet = TrimCodeAnalysisText(tool_output, tool_name == "get_config" ? 1600 : 260);
         evidence.score = 1.0;
         evidence.why_relevant = BuildWhyRelevant(tool_name, question, question_type, "", evidence.path);
         added += AddEvidence(std::move(evidence));
