@@ -1,40 +1,21 @@
 #pragma once
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
-#include <string>
-#include <vector>
-#include <unordered_map>
 #include <mutex>
-#include <condition_variable>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "glog/logging.h"
+#include "serving/core/CompletionTypes.h"
+#include "serving/core/ModelCapability.h"
 #include "serving/core/agent/code_analysis/CodeAnalysisTypes.h"
 #include "serving/rag/Chunk.h"
-struct Session;
+
 class ModelEngine;
-
-enum class FinishReason
-{
-    stop,
-    length,
-    cancelled,
-    error
-};
-
-struct Message
-{
-    std::string role;
-    std::string content;
-};
-
-struct StreamChunk
-{
-    std::string delta;
-    std::string metadata_json;
-    bool is_finished = false; // 是否为“最后一个 chunk”
-    FinishReason finish_reason = FinishReason::stop;
-};
+struct Session;
 
 struct ServingContext
 {
@@ -51,6 +32,7 @@ struct ServingContext
     std::string session_id;
     std::string model;
     std::string inference_backend;
+    ModelCapability capability = ModelCapability::Chat;
 
     // ===== Request Type =====
     bool is_chat = false;
@@ -100,14 +82,7 @@ struct ServingContext
     std::string error_message;
 
     // ===== Usage (OpenAI-compatible) =====
-    struct Usage
-    {
-        int prompt_tokens = 0;
-        int completion_tokens = 0;
-        int total_tokens = 0;
-    };
-
-    Usage usage;
+    UsageInfo usage;
 
     std::shared_ptr<ModelEngine> engine;
 

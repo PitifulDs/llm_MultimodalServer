@@ -2,17 +2,30 @@
 
 #include "utils/json.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using json = nlohmann::json;
 
 namespace
 {
+struct ResolvedModelRoute
+{
+    bool valid = false;
+    std::string model_id;
+    std::string backend;
+    std::string default_backend;
+    std::vector<std::string> capabilities;
+    const json *model_entry = nullptr;
+    const json *backend_entry = nullptr;
+};
+
 std::string get_env_string(const char *name, const char *fallback)
 {
     const char *val = std::getenv(name);
@@ -84,6 +97,71 @@ bool json_or_default(const json &j, const char *key, bool fallback)
     return fallback;
 }
 
+std::string json_string_from_sources(const json &primary,
+                                     const json &secondary,
+                                     const char *key,
+                                     const char *alt_key,
+                                     const std::string &fallback)
+{
+    const std::string with_primary = json_or_default(primary, key, std::string());
+    if (!with_primary.empty())
+        return with_primary;
+
+    if (alt_key)
+    {
+        const std::string with_primary_alt = json_or_default(primary, alt_key, std::string());
+        if (!with_primary_alt.empty())
+            return with_primary_alt;
+    }
+
+    const std::string with_secondary = json_or_default(secondary, key, std::string());
+    if (!with_secondary.empty())
+        return with_secondary;
+
+    if (alt_key)
+    {
+        const std::string with_secondary_alt = json_or_default(secondary, alt_key, std::string());
+        if (!with_secondary_alt.empty())
+            return with_secondary_alt;
+    }
+
+    return fallback;
+}
+
+int json_int_from_sources(const json &primary,
+                          const json &secondary,
+                          const char *key,
+                          const char *alt_key,
+                          int fallback)
+{
+    if (primary.contains(key) && primary[key].is_number_integer())
+        return primary[key].get<int>();
+    if (alt_key && primary.contains(alt_key) && primary[alt_key].is_number_integer())
+        return primary[alt_key].get<int>();
+    if (secondary.contains(key) && secondary[key].is_number_integer())
+        return secondary[key].get<int>();
+    if (alt_key && secondary.contains(alt_key) && secondary[alt_key].is_number_integer())
+        return secondary[alt_key].get<int>();
+    return fallback;
+}
+
+bool json_bool_from_sources(const json &primary,
+                            const json &secondary,
+                            const char *key,
+                            const char *alt_key,
+                            bool fallback)
+{
+    if (primary.contains(key))
+        return json_or_default(primary, key, fallback);
+    if (alt_key && primary.contains(alt_key))
+        return json_or_default(primary, alt_key, fallback);
+    if (secondary.contains(key))
+        return json_or_default(secondary, key, fallback);
+    if (alt_key && secondary.contains(alt_key))
+        return json_or_default(secondary, alt_key, fallback);
+    return fallback;
+}
+
 std::string to_lower_copy(std::string s)
 {
     for (char &ch : s)
@@ -114,9 +192,208 @@ std::string display_model_name(const std::string &name)
     return name;
 }
 
-const json *find_model_entry(const json &models, const std::string &requested, const std::string &preferred_backend)
+void add_unique_string(std::vector<std::string> &values, const std::string &value)
 {
-    auto find_object = [&](const std::string &name) -> const json * {
+    if (value.empty())
+        return;
+    if (std::find(values.begin(), values.end(), value) == values.end())
+        values.push_back(value);
+}
+
+bool contains_string(const std::vector<std::string> &values, const std::string &target)
+{
+    return std::find(values.begin(), values.end(), target) != values.end();
+}
+
+std::vector<std::string> extract_capabilities(const json &node, const std::vector<std::string> &fallback)
+{
+    if (!node.is_array())
+        return fallback;
+
+    std::vector<std::string> out;
+    for (const auto &item : node)
+    {
+        if (!item.is_string())
+            continue;
+
+        ModelCapability capability;
+        if (ParseModelCapability(item.get<std::string>(), capability))
+            add_unique_string(out, ToString(capability));
+    }
+
+    return out.empty() ? fallback : out;
+}
+
+std::vector<std::string> merge_capabilities(const std::vector<std::string> &lhs,
+                                            const std::vector<std::string> &rhs)
+{
+    std::vector<std::string> merged = lhs;
+    for (const auto &value : rhs)
+        add_unique_string(merged, value);
+    return merged;
+}
+
+std::string infer_legacy_backend_name(const std::string &model_name, const json &entry)
+{
+    if (ends_with(model_name, "-remote"))
+        return "stackflow";
+
+    const std::string backend = normalize_backend_name(json_or_default(entry, "backend", std::string()));
+    if (!backend.empty())
+        return backend;
+
+    const std::string engine = to_lower_copy(json_or_default(entry, "engine", std::string()));
+    if (engine == "stackflow")
+        return "stackflow";
+    if (engine == "dummy")
+        return "dummy";
+    return "local";
+}
+
+bool is_structured_model_entry(const json &entry)
+{
+    return entry.is_object() &&
+           (entry.contains("backends") || entry.contains("capabilities") || entry.contains("default_backend"));
+}
+
+const json *find_object_entry(const json &models, const std::string &name)
+{
+    auto it = models.find(name);
+    if (it != models.end() && it->is_object())
+        return &(*it);
+    return nullptr;
+}
+
+std::vector<std::pair<std::string, const json *>> collect_structured_backends(const json &model_entry)
+{
+    std::vector<std::pair<std::string, const json *>> backends;
+    if (!model_entry.contains("backends") || !model_entry["backends"].is_object())
+        return backends;
+
+    for (auto it = model_entry["backends"].begin(); it != model_entry["backends"].end(); ++it)
+    {
+        if (!it->is_object())
+            continue;
+
+        const std::string normalized = normalize_backend_name(it.key());
+        if (normalized.empty())
+            continue;
+
+        bool replaced = false;
+        for (auto &item : backends)
+        {
+            if (item.first == normalized)
+            {
+                item.second = &(*it);
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+            backends.push_back({normalized, &(*it)});
+    }
+    return backends;
+}
+
+std::string select_structured_default_backend(const json &model_entry,
+                                              const std::vector<std::pair<std::string, const json *>> &backends)
+{
+    std::string default_backend = normalize_backend_name(json_or_default(model_entry, "default_backend", std::string()));
+    if (!default_backend.empty())
+    {
+        for (const auto &item : backends)
+        {
+            if (item.first == default_backend)
+                return default_backend;
+        }
+    }
+
+    if (!backends.empty())
+    {
+        for (const auto &item : backends)
+        {
+            if (item.first == "local")
+                return item.first;
+        }
+        return backends.front().first;
+    }
+
+    return default_backend;
+}
+
+std::vector<std::string> capabilities_for_structured_backend(const json &model_entry, const json &backend_entry)
+{
+    const std::vector<std::string> model_caps = extract_capabilities(
+        model_entry.contains("capabilities") ? model_entry["capabilities"] : json::array(),
+        std::vector<std::string>{"chat"});
+
+    return extract_capabilities(
+        backend_entry.contains("capabilities") ? backend_entry["capabilities"] : json::array(),
+        model_caps);
+}
+
+ResolvedModelRoute resolve_structured_model_route(const json &models,
+                                                  const std::string &requested_name,
+                                                  const std::string &preferred_backend)
+{
+    const std::string model_id = display_model_name(requested_name);
+    const json *model_entry = find_object_entry(models, model_id);
+    if (!model_entry || !is_structured_model_entry(*model_entry))
+        return {};
+
+    const auto backends = collect_structured_backends(*model_entry);
+    if (backends.empty())
+        return {};
+
+    std::string selected_backend = normalize_backend_name(preferred_backend);
+    const json *backend_entry = nullptr;
+    if (!selected_backend.empty())
+    {
+        for (const auto &item : backends)
+        {
+            if (item.first == selected_backend)
+            {
+                backend_entry = item.second;
+                break;
+            }
+        }
+        if (!backend_entry)
+            return {};
+    }
+    else
+    {
+        selected_backend = select_structured_default_backend(*model_entry, backends);
+        for (const auto &item : backends)
+        {
+            if (item.first == selected_backend)
+            {
+                backend_entry = item.second;
+                break;
+            }
+        }
+        if (!backend_entry)
+        {
+            selected_backend = backends.front().first;
+            backend_entry = backends.front().second;
+        }
+    }
+
+    ResolvedModelRoute route;
+    route.valid = backend_entry != nullptr;
+    route.model_id = model_id;
+    route.backend = selected_backend;
+    route.default_backend = select_structured_default_backend(*model_entry, backends);
+    route.capabilities = capabilities_for_structured_backend(*model_entry, *backend_entry);
+    route.model_entry = model_entry;
+    route.backend_entry = backend_entry;
+    return route;
+}
+
+const json *find_legacy_model_entry(const json &models,
+                                    const std::string &requested,
+                                    const std::string &preferred_backend)
+{
+    const auto find_object = [&](const std::string &name) -> const json * {
         auto it = models.find(name);
         if (it != models.end() && it->is_object())
             return &(*it);
@@ -151,53 +428,63 @@ const json *find_model_entry(const json &models, const std::string &requested, c
     return find_object(requested);
 }
 
-ModelSpec build_stackflow_spec(const std::string &requested_name, const json &source, const json &cfg)
+ModelSpec build_stackflow_spec(const std::string &requested_name,
+                               const std::string &model_id,
+                               const std::string &default_backend,
+                               const std::vector<std::string> &capabilities,
+                               const json &source,
+                               const json &fallback_source,
+                               const json &cfg)
 {
     ModelSpec spec;
     spec.valid = true;
     spec.requested_name = requested_name;
+    spec.model_id = model_id.empty() ? display_model_name(requested_name) : model_id;
     spec.backend = "stackflow";
+    spec.default_backend = default_backend.empty() ? "stackflow" : default_backend;
     spec.engine = "stackflow";
-    spec.stackflow_host = json_or_default(source, "host",
-        json_or_default(source, "stackflow_host",
-            get_env_string("STACKFLOW_HOST", json_or_default(cfg, "stackflow_host", std::string("127.0.0.1")).c_str())));
-    spec.stackflow_port = json_or_default(source, "port",
-        json_or_default(source, "stackflow_port",
-            get_env_int("STACKFLOW_PORT", json_or_default(cfg, "stackflow_port", 10001))));
-    spec.stackflow_unit = json_or_default(source, "unit",
-        json_or_default(source, "stackflow_unit",
-            get_env_string("STACKFLOW_UNIT", json_or_default(cfg, "stackflow_unit", std::string("llm")).c_str())));
-    spec.stackflow_response_format = json_or_default(source, "response_format",
+    spec.capabilities = capabilities.empty() ? std::vector<std::string>{"chat"} : capabilities;
+    spec.stackflow_host = json_string_from_sources(source, fallback_source, "host", "stackflow_host",
+        get_env_string("STACKFLOW_HOST", json_or_default(cfg, "stackflow_host", std::string("127.0.0.1")).c_str()));
+    spec.stackflow_port = json_int_from_sources(source, fallback_source, "port", "stackflow_port",
+        get_env_int("STACKFLOW_PORT", json_or_default(cfg, "stackflow_port", 10001)));
+    spec.stackflow_unit = json_string_from_sources(source, fallback_source, "unit", "stackflow_unit",
+        get_env_string("STACKFLOW_UNIT", json_or_default(cfg, "stackflow_unit", std::string("llm")).c_str()));
+    spec.stackflow_response_format = json_string_from_sources(source, fallback_source, "response_format", nullptr,
         get_env_string("STACKFLOW_RESPONSE_FORMAT", "llm.utf-8"));
-    spec.stackflow_response_format_stream = json_or_default(source, "response_format_stream",
+    spec.stackflow_response_format_stream = json_string_from_sources(source, fallback_source, "response_format_stream", nullptr,
         get_env_string("STACKFLOW_RESPONSE_FORMAT_STREAM", "llm.utf-8.stream"));
-    spec.stackflow_timeout_ms = json_or_default(source, "timeout_ms",
-        json_or_default(source, "stackflow_timeout_ms",
-            get_env_int("STACKFLOW_TIMEOUT_MS", json_or_default(cfg, "stackflow_timeout_ms", 10000))));
-    spec.stackflow_infer_timeout_ms = json_or_default(source, "infer_timeout_ms",
-        json_or_default(source, "stackflow_infer_timeout_ms",
-            get_env_int("STACKFLOW_INFER_TIMEOUT_MS", json_or_default(cfg, "stackflow_infer_timeout_ms", 0))));
-    spec.stackflow_reuse_work_id = json_or_default(source, "reuse_work_id",
-        json_or_default(source, "stackflow_reuse_work_id",
-            get_env_bool("STACKFLOW_REUSE_WORK_ID", json_or_default(cfg, "stackflow_reuse_work_id", true))));
-    spec.stackflow_serialize_reuse = json_or_default(source, "serialize_reuse",
-        json_or_default(source, "stackflow_serialize_reuse",
-            get_env_bool("STACKFLOW_SERIALIZE_REUSE", json_or_default(cfg, "stackflow_serialize_reuse", true))));
+    spec.stackflow_timeout_ms = json_int_from_sources(source, fallback_source, "timeout_ms", "stackflow_timeout_ms",
+        get_env_int("STACKFLOW_TIMEOUT_MS", json_or_default(cfg, "stackflow_timeout_ms", 10000)));
+    spec.stackflow_infer_timeout_ms = json_int_from_sources(source, fallback_source, "infer_timeout_ms", "stackflow_infer_timeout_ms",
+        get_env_int("STACKFLOW_INFER_TIMEOUT_MS", json_or_default(cfg, "stackflow_infer_timeout_ms", 0)));
+    spec.stackflow_reuse_work_id = json_bool_from_sources(source, fallback_source, "reuse_work_id", "stackflow_reuse_work_id",
+        get_env_bool("STACKFLOW_REUSE_WORK_ID", json_or_default(cfg, "stackflow_reuse_work_id", true)));
+    spec.stackflow_serialize_reuse = json_bool_from_sources(source, fallback_source, "serialize_reuse", "stackflow_serialize_reuse",
+        get_env_bool("STACKFLOW_SERIALIZE_REUSE", json_or_default(cfg, "stackflow_serialize_reuse", true)));
     return spec;
 }
 
-ModelSpec build_local_llama_spec(const std::string &requested_name, const json &source, const json &cfg)
+ModelSpec build_local_llama_spec(const std::string &requested_name,
+                                 const std::string &model_id,
+                                 const std::string &default_backend,
+                                 const std::vector<std::string> &capabilities,
+                                 const json &source,
+                                 const json &fallback_source,
+                                 const json &cfg)
 {
     ModelSpec spec;
     spec.valid = true;
     spec.requested_name = requested_name;
+    spec.model_id = model_id.empty() ? display_model_name(requested_name) : model_id;
     spec.backend = "local";
+    spec.default_backend = default_backend.empty() ? "local" : default_backend;
     spec.engine = "llama";
-    spec.model_path = json_or_default(source, "model_path",
-        json_or_default(source, "llama_model_path",
-            get_env_string("LLAMA_MODEL_PATH",
-                json_or_default(cfg, "llama_model_path",
-                    std::string("models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf")).c_str())));
+    spec.capabilities = capabilities.empty() ? std::vector<std::string>{"chat"} : capabilities;
+    spec.model_path = json_string_from_sources(source, fallback_source, "model_path", "llama_model_path",
+        get_env_string("LLAMA_MODEL_PATH",
+            json_or_default(cfg, "llama_model_path",
+                std::string("models/qwen2.5-1.5b/qwen2.5-1.5b-instruct-q4_0.gguf")).c_str()));
     return spec;
 }
 } // namespace
@@ -211,46 +498,70 @@ ModelSpec ModelRegistry::Resolve(const std::string &model_name, const std::strin
     if (cfg.contains("models") && cfg["models"].is_object())
     {
         const auto &models = cfg["models"];
-        const json *entry = find_model_entry(models, requested, normalized_backend);
+
+        const ResolvedModelRoute structured = resolve_structured_model_route(models, requested, normalized_backend);
+        if (structured.valid && structured.backend_entry && structured.model_entry)
+        {
+            if (structured.backend == "stackflow")
+                return build_stackflow_spec(requested,
+                                            structured.model_id,
+                                            structured.default_backend,
+                                            structured.capabilities,
+                                            *structured.backend_entry,
+                                            *structured.model_entry,
+                                            cfg);
+            if (structured.backend == "local")
+                return build_local_llama_spec(requested,
+                                              structured.model_id,
+                                              structured.default_backend,
+                                              structured.capabilities,
+                                              *structured.backend_entry,
+                                              *structured.model_entry,
+                                              cfg);
+        }
+
+        const json *entry = find_legacy_model_entry(models, requested, normalized_backend);
         if (entry)
         {
-            const json &source = *entry;
-            if (normalized_backend == "stackflow")
-                return build_stackflow_spec(requested, source, cfg);
-            if (normalized_backend == "local")
-                return build_local_llama_spec(requested, source, cfg);
+            const std::string backend = infer_legacy_backend_name(
+                normalized_backend == "stackflow" ? requested + "-remote" : requested,
+                *entry);
+            const std::string model_id = display_model_name(requested);
 
-            const std::string backend = json_or_default(source, "backend", std::string(""));
-            const std::string engine = json_or_default(source, "engine", std::string(""));
-
-            if (backend == "stackflow" || engine == "stackflow")
-                return build_stackflow_spec(requested, source, cfg);
-            if (backend == "local" || engine == "llama" || engine.empty())
-                return build_local_llama_spec(requested, source, cfg);
-            if (backend == "dummy" || engine == "dummy")
+            if (backend == "stackflow")
+                return build_stackflow_spec(requested, model_id, backend, {"chat"}, *entry, *entry, cfg);
+            if (backend == "local")
+                return build_local_llama_spec(requested, model_id, backend, {"chat"}, *entry, *entry, cfg);
+            if (backend == "dummy")
             {
                 ModelSpec spec;
                 spec.valid = true;
                 spec.requested_name = requested;
+                spec.model_id = model_id;
                 spec.backend = "dummy";
+                spec.default_backend = "dummy";
                 spec.engine = "dummy";
+                spec.capabilities = {"chat"};
                 return spec;
             }
         }
     }
 
     if (normalized_backend == "stackflow")
-        return build_stackflow_spec(requested, json::object(), cfg);
+        return build_stackflow_spec(requested, display_model_name(requested), "stackflow", {"chat"}, json::object(), json::object(), cfg);
     if (normalized_backend == "local")
-        return build_local_llama_spec(requested, json::object(), cfg);
+        return build_local_llama_spec(requested, display_model_name(requested), "local", {"chat"}, json::object(), json::object(), cfg);
 
     if (requested == "dummy")
     {
         ModelSpec spec;
         spec.valid = true;
         spec.requested_name = requested;
+        spec.model_id = requested;
         spec.backend = "dummy";
+        spec.default_backend = "dummy";
         spec.engine = "dummy";
+        spec.capabilities = {"chat"};
         return spec;
     }
 
@@ -258,9 +569,9 @@ ModelSpec ModelRegistry::Resolve(const std::string &model_name, const std::strin
         json_or_default(cfg, "serving_backend", std::string("local")).c_str());
 
     if (backend == "stackflow" || requested == "stackflow")
-        return build_stackflow_spec(requested, json::object(), cfg);
+        return build_stackflow_spec(requested, display_model_name(requested), "stackflow", {"chat"}, json::object(), json::object(), cfg);
 
-    return build_local_llama_spec(requested, json::object(), cfg);
+    return build_local_llama_spec(requested, display_model_name(requested), "local", {"chat"}, json::object(), json::object(), cfg);
 }
 
 std::string ModelRegistry::GetDefaultModel()
@@ -306,23 +617,45 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
             info.id = id;
             info.is_default = id == default_model;
 
-            const std::string backend = normalize_backend_name(json_or_default(*it, "backend", std::string("")));
-            const std::string engine = normalize_backend_name(json_or_default(*it, "engine", std::string("")));
+            if (is_structured_model_entry(*it))
+            {
+                const auto backends = collect_structured_backends(*it);
+                info.default_backend = select_structured_default_backend(*it, backends);
+                info.capabilities = extract_capabilities(
+                    it->contains("capabilities") ? (*it)["capabilities"] : json::array(),
+                    std::vector<std::string>{});
 
-            if (backend == "dummy" || engine == "dummy")
+                for (const auto &backend : backends)
+                {
+                    add_unique_string(info.backends, backend.first);
+                    if (backend.first == "local")
+                        info.has_local = true;
+                    else if (backend.first == "stackflow")
+                        info.has_rpc = true;
+
+                    info.capabilities = merge_capabilities(
+                        info.capabilities,
+                        capabilities_for_structured_backend(*it, *backend.second));
+                }
+
+                if (info.capabilities.empty())
+                    info.capabilities.push_back("chat");
                 continue;
+            }
 
-            // /v1/models.backends：反映配置中该逻辑模型“真实声明”的后端能力。
-            const bool is_remote_alias = ends_with(it.key(), "-remote");
-            const bool is_rpc_capable =
-                backend == "stackflow" ||
-                engine == "stackflow" ||
-                (backend.empty() && engine.empty() && is_remote_alias);
-
-            if (is_rpc_capable)
+            const std::string backend = infer_legacy_backend_name(it.key(), *it);
+            info.default_backend = backend == "stackflow" ? "stackflow" : "local";
+            info.capabilities = {"chat"};
+            if (backend == "stackflow")
+            {
                 info.has_rpc = true;
-            else
+                add_unique_string(info.backends, "stackflow");
+            }
+            else if (backend == "local")
+            {
                 info.has_local = true;
+                add_unique_string(info.backends, "local");
+            }
         }
     }
 
@@ -334,10 +667,18 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
         const ModelSpec spec = Resolve(default_model);
         if (spec.valid && spec.engine != "dummy")
         {
-            if (spec.engine == "stackflow")
+            info.default_backend = spec.default_backend;
+            info.capabilities = spec.capabilities.empty() ? std::vector<std::string>{"chat"} : spec.capabilities;
+            if (spec.backend == "stackflow")
+            {
                 info.has_rpc = true;
-            else
+                add_unique_string(info.backends, "stackflow");
+            }
+            else if (spec.backend == "local")
+            {
                 info.has_local = true;
+                add_unique_string(info.backends, "local");
+            }
         }
     }
 
@@ -346,4 +687,24 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
     for (auto &[_, info] : infos)
         out.push_back(info);
     return out;
+}
+
+bool ModelRegistry::SupportsCapability(const std::string &model_name,
+                                       ModelCapability capability,
+                                       const std::string &preferred_backend)
+{
+    const std::string target = ToString(capability);
+    if (!preferred_backend.empty())
+    {
+        const ModelSpec spec = Resolve(model_name, preferred_backend);
+        return spec.valid && contains_string(spec.capabilities, target);
+    }
+
+    const std::string logical_model = display_model_name(model_name);
+    for (const auto &info : ListModelInfos())
+    {
+        if (info.id == logical_model)
+            return contains_string(info.capabilities, target);
+    }
+    return false;
 }

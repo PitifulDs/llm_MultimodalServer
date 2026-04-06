@@ -441,7 +441,7 @@ void HttpGateway::HandleModels(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
     json items = json::array();
-    const auto models = ModelRegistry::ListModelInfos();
+    const auto models = model_catalog_service_.ListModels();
 
     for (const auto &model : models)
     {

@@ -16,7 +16,7 @@ std::string build_route_key(const std::shared_ptr<ServingContext> &ctx)
 {
     if (!ctx)
         return {};
-    return ctx->model + "||" + ctx->inference_backend;
+    return std::string(ToString(ctx->capability)) + "||" + ctx->model + "||" + ctx->inference_backend;
 }
 }
 
@@ -83,6 +83,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
         }
 
         LOG(INFO) << "[execQ] start model=" << ctx->model
+                  << " capability=" << ToString(ctx->capability)
                   << " backend=" << (ctx->inference_backend.empty() ? "auto" : ctx->inference_backend)
                   << " req=" << ctx->request_id
                   << " wait_ms=" << wait_ms;
@@ -103,6 +104,7 @@ bool EngineExecutor::Execute(std::shared_ptr<ServingContext> ctx)
             ctx->EmitFinish(FinishReason::error);
             return;
         }
+        ctx->engine = engine;
 
         // 引擎执行（内部会轮询 ctx->cancelled 并 EmitDelta/EmitFinish）
         engine->Run(ctx);

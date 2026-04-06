@@ -13,6 +13,7 @@
 #include "serving/core/EngineExecutor.h"
 #include "serving/core/SessionExecutor.h"
 #include "serving/core/ThreadPool.h"
+#include "serving/service/ModelCatalogService.h"
 #include "serving/rag/RAGExecutor.h"
 
 // 前向声明
@@ -69,6 +70,7 @@ private:
     EngineExecutor executor_; // 共享一个 executor，所有请求都走这里
     std::unique_ptr<AgentExecutor> agent_executor_;
     std::unique_ptr<RAGExecutor> rag_executor_;
+    ModelCatalogService model_catalog_service_;
     SessionExecutor session_executor_;
 
     std::chrono::steady_clock::time_point start_time_;
