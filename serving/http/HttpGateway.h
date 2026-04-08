@@ -46,25 +46,21 @@ public:
     HttpGateway();
     ~HttpGateway();
 
-    // 非流式 completion
-    void HandleCompletion(const HttpRequest &req, HttpResponse &res);
-
-    // 流式 completion（SSE）
-    void HandleCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr);
-
-    // 新增：Chat
+    // 主线 API handler
     void HandleChatCompletion(const HttpRequest &req, HttpResponse &res);
     void HandleChatCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr);
     void HandleEmbeddings(const HttpRequest &req, HttpResponse &res);
     void HandleRerank(const HttpRequest &req, HttpResponse &res);
-
-    // 健康检查 / 指标
-    void HandleHealth(const HttpRequest &req, HttpResponse &res);
     void HandleHealthz(const HttpRequest &req, HttpResponse &res);
-    void HandleMetrics(const HttpRequest &req, HttpResponse &res);
     void HandleModels(const HttpRequest &req, HttpResponse &res);
     void HandleAdminModelsStatus(const HttpRequest &req, HttpResponse &res);
     void HandleAdminBackendsStatus(const HttpRequest &req, HttpResponse &res);
+
+    // compatibility / experimental handler
+    void HandleCompletion(const HttpRequest &req, HttpResponse &res);
+    void HandleCompletionStream(const HttpRequest &req, std::shared_ptr<HttpResponse> res_ptr);
+    void HandleHealth(const HttpRequest &req, HttpResponse &res);
+    void HandleMetrics(const HttpRequest &req, HttpResponse &res);
     void HandleRetrievalSearch(const HttpRequest &req, HttpResponse &res);
     void HandleAgentDebug(const HttpRequest &req, HttpResponse &res);
     void HandleAdminRagReloadIndex(const HttpRequest &req, HttpResponse &res);

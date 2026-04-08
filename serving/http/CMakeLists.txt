@@ -75,6 +75,7 @@ target_compile_features(serving_core
 add_library(serving_http STATIC
     AdminStatusHandler.cc
     ChatRequestParser.cc
+    CompatibilityHandler.cc
     EmbeddingsHandler.cc
     HealthHandler.cc
     HttpGateway.cc

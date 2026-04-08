@@ -197,6 +197,117 @@ static void write_json_error(const std::shared_ptr<NetworkHttpResponse> &res_ptr
     res_ptr->Write(err.dump(-1, ' ', false, json::error_handler_t::replace));
     res_ptr->End();
 }
+
+static bool dispatch_mainline_route(HttpGateway *gateway,
+                                    const HttpRequest &req,
+                                    const std::shared_ptr<NetworkHttpResponse> &res_ptr,
+                                    const std::string &method,
+                                    const std::string &url,
+                                    bool is_stream)
+{
+    if (method == "GET" && url == "/healthz")
+    {
+        gateway->HandleHealthz(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "GET" && url == "/v1/models")
+    {
+        gateway->HandleModels(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "GET" && url == "/admin/models/status")
+    {
+        gateway->HandleAdminModelsStatus(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "GET" && url == "/admin/backends/status")
+    {
+        gateway->HandleAdminBackendsStatus(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/v1/chat/completions")
+    {
+        if (is_stream)
+            gateway->HandleChatCompletionStream(req, res_ptr);
+        else
+            gateway->HandleChatCompletion(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/v1/embeddings")
+    {
+        gateway->HandleEmbeddings(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/v1/rerank")
+    {
+        gateway->HandleRerank(req, *res_ptr);
+        return true;
+    }
+
+    return false;
+}
+
+static bool dispatch_compatibility_route(HttpGateway *gateway,
+                                         const HttpRequest &req,
+                                         const std::shared_ptr<NetworkHttpResponse> &res_ptr,
+                                         const std::string &method,
+                                         const std::string &url,
+                                         bool is_stream)
+{
+    if (method == "GET" && url == "/health")
+    {
+        gateway->HandleHealth(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "GET" && url == "/metrics")
+    {
+        gateway->HandleMetrics(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "GET" && url == "/admin/rag/status")
+    {
+        gateway->HandleAdminRagStatus(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/v1/completions")
+    {
+        if (is_stream)
+            gateway->HandleCompletionStream(req, res_ptr);
+        else
+            gateway->HandleCompletion(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/v1/retrieval/search")
+    {
+        gateway->HandleRetrievalSearch(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/v1/agent/debug")
+    {
+        gateway->HandleAgentDebug(req, *res_ptr);
+        return true;
+    }
+
+    if (method == "POST" && url == "/admin/rag/reload-index")
+    {
+        gateway->HandleAdminRagReloadIndex(req, *res_ptr);
+        return true;
+    }
+
+    return false;
+}
+
 NetworkHttpServer::NetworkHttpServer(EventLoop *loop,
                                      const InetAddress &listen_addr,
                                      HttpGateway *gateway)
@@ -345,47 +456,11 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
-    if (method == "GET" && url == "/health")
-    {
-        gateway_->HandleHealth(req, *res_ptr);
+    if (dispatch_mainline_route(gateway_, req, res_ptr, method, url, is_stream))
         return;
-    }
 
-    if (method == "GET" && url == "/healthz")
-    {
-        gateway_->HandleHealthz(req, *res_ptr);
+    if (dispatch_compatibility_route(gateway_, req, res_ptr, method, url, is_stream))
         return;
-    }
-
-    if (method == "GET" && url == "/metrics")
-    {
-        gateway_->HandleMetrics(req, *res_ptr);
-        return;
-    }
-
-    if (method == "GET" && url == "/v1/models")
-    {
-        gateway_->HandleModels(req, *res_ptr);
-        return;
-    }
-
-    if (method == "GET" && url == "/admin/models/status")
-    {
-        gateway_->HandleAdminModelsStatus(req, *res_ptr);
-        return;
-    }
-
-    if (method == "GET" && url == "/admin/backends/status")
-    {
-        gateway_->HandleAdminBackendsStatus(req, *res_ptr);
-        return;
-    }
-
-    if (method == "GET" && url == "/admin/rag/status")
-    {
-        gateway_->HandleAdminRagStatus(req, *res_ptr);
-        return;
-    }
 
     if (method != "POST")
     {
@@ -393,43 +468,5 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
-    if (method == "POST" && url == "/v1/completions")
-    {
-        if (is_stream)
-            gateway_->HandleCompletionStream(req, res_ptr);
-        else
-            gateway_->HandleCompletion(req, *res_ptr);
-    }else if(method == "POST" && url == "/v1/chat/completions")
-    {
-        if(is_stream){
-            gateway_->HandleChatCompletionStream(req, res_ptr);
-        }else{
-            gateway_->HandleChatCompletion(req, *res_ptr);
-        }
-
-    }
-    else if (method == "POST" && url == "/v1/retrieval/search")
-    {
-        gateway_->HandleRetrievalSearch(req, *res_ptr);
-    }
-    else if (method == "POST" && url == "/v1/embeddings")
-    {
-        gateway_->HandleEmbeddings(req, *res_ptr);
-    }
-    else if (method == "POST" && url == "/v1/rerank")
-    {
-        gateway_->HandleRerank(req, *res_ptr);
-    }
-    else if (method == "POST" && url == "/v1/agent/debug")
-    {
-        gateway_->HandleAgentDebug(req, *res_ptr);
-    }
-    else if (method == "POST" && url == "/admin/rag/reload-index")
-    {
-        gateway_->HandleAdminRagReloadIndex(req, *res_ptr);
-    }
-    else
-    {
-        write_json_error(res_ptr, 404, "Not Found", "invalid_request_error", "not_found");
-    }
+    write_json_error(res_ptr, 404, "Not Found", "invalid_request_error", "not_found");
 }
