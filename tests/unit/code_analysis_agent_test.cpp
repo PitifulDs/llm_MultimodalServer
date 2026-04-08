@@ -668,7 +668,7 @@ bool test_gateway_invalid_chat_request_status()
     gateway.HandleChatCompletion(req, res);
     EXPECT_EQ(res.status, 400);
     const auto out = json::parse(res.body);
-    EXPECT_EQ(out["error"]["code"].get<std::string>(), std::string("invalid_messages"));
+    EXPECT_EQ(out["error"]["code"].get<std::string>(), std::string("invalid_input"));
     return true;
 }
 } // namespace

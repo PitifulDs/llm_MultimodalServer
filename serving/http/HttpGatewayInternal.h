@@ -28,6 +28,8 @@ namespace http_gateway_internal
     std::string NormalizeBackendName(std::string backend);
     int64_t ParseInt64OrDefault(const std::string &value, int64_t default_value = 0);
     bool HasDeadline(std::chrono::steady_clock::time_point deadline);
+    void StartContextDeadlineWatchdog(const std::weak_ptr<ServingContext> &weak_ctx,
+                                      const std::string &timeout_message = "request timed out");
     void StartSyncCancelWatchdog(const std::shared_ptr<std::atomic<bool>> &cancel_flag,
                                  const std::shared_ptr<std::atomic<bool>> &done,
                                  const std::function<bool()> &is_client_alive);

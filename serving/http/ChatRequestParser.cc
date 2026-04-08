@@ -277,7 +277,7 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
     if (!body.contains("messages") || !body["messages"].is_array())
     {
         result.message = "messages must be array";
-        result.code = "invalid_messages";
+        result.code = "invalid_input";
         return result;
     }
 
@@ -291,7 +291,7 @@ ChatRequestParseResult ParseChatRequestBody(const std::string &body_text,
         if (!body["stream"].is_boolean())
         {
             result.message = "stream must be boolean";
-            result.code = "invalid_stream";
+            result.code = "invalid_input";
             return result;
         }
         stream = body["stream"].get<bool>();

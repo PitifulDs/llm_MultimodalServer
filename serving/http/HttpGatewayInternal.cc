@@ -151,6 +151,29 @@ namespace http_gateway_internal
         return deadline != std::chrono::steady_clock::time_point::max();
     }
 
+    void StartContextDeadlineWatchdog(const std::weak_ptr<ServingContext> &weak_ctx,
+                                      const std::string &timeout_message)
+    {
+        std::thread([weak_ctx, timeout_message]
+        {
+            while (auto ctx = weak_ctx.lock())
+            {
+                if (ctx->finished.load(std::memory_order_acquire))
+                    return;
+                if (ctx->DeadlineExceeded())
+                {
+                    ctx->cancelled.store(true, std::memory_order_release);
+                    ctx->params["error_code"] = "request_timeout";
+                    if (ctx->error_message.empty())
+                        ctx->error_message = timeout_message;
+                    ctx->EmitFinish(FinishReason::error);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }).detach();
+    }
+
     void StartSyncCancelWatchdog(const std::shared_ptr<std::atomic<bool>> &cancel_flag,
                                  const std::shared_ptr<std::atomic<bool>> &done,
                                  const std::function<bool()> &is_client_alive)

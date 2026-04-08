@@ -499,6 +499,11 @@ PlatformRuntimeSnapshot HttpGateway::BuildPlatformRuntimeSnapshot() const
     snapshot.prompt_tokens_total = prompt_tokens_total_.load(std::memory_order_relaxed);
     snapshot.completion_tokens_total = completion_tokens_total_.load(std::memory_order_relaxed);
     snapshot.total_tokens_total = total_tokens_total_.load(std::memory_order_relaxed);
+    snapshot.avg_latency_ms =
+        snapshot.requests_total > 0
+            ? static_cast<double>(total_latency_ms_.load(std::memory_order_relaxed)) /
+                  static_cast<double>(snapshot.requests_total)
+            : 0.0;
     return snapshot;
 }
 
@@ -668,26 +673,7 @@ void HttpGateway::HandleChatCompletion(const HttpRequest &req, HttpResponse &res
     if (request_timeout_ms_ > 0)
         ctx->deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
     if (HasDeadline(ctx->deadline))
-    {
-        std::weak_ptr<ServingContext> weak_ctx = ctx;
-        std::thread([weak_ctx]
-        {
-            while (auto live = weak_ctx.lock())
-            {
-                if (live->finished.load(std::memory_order_acquire))
-                    return;
-                if (live->DeadlineExceeded())
-                {
-                    live->cancelled.store(true, std::memory_order_release);
-                    live->params["error_code"] = "request_timeout";
-                    live->error_message = "request timed out";
-                    live->EmitFinish(FinishReason::error);
-                    return;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        }).detach();
-    }
+        StartContextDeadlineWatchdog(ctx, "request timed out");
 
     auto run_result = chat_service_->RunNonStream(
         chat_request,
@@ -845,26 +831,7 @@ void HttpGateway::HandleChatCompletionStream(const HttpRequest &req, std::shared
     if (request_timeout_ms_ > 0)
         ctx->deadline = start_time + std::chrono::milliseconds(request_timeout_ms_);
     if (HasDeadline(ctx->deadline))
-    {
-        std::weak_ptr<ServingContext> weak_ctx = ctx;
-        std::thread([weak_ctx]
-        {
-            while (auto live = weak_ctx.lock())
-            {
-                if (live->finished.load(std::memory_order_acquire))
-                    return;
-                if (live->DeadlineExceeded())
-                {
-                    live->cancelled.store(true, std::memory_order_release);
-                    live->params["error_code"] = "request_timeout";
-                    live->error_message = "request timed out";
-                    live->EmitFinish(FinishReason::error);
-                    return;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        }).detach();
-    }
+        StartContextDeadlineWatchdog(ctx, "request timed out");
 
     // 绑定 HttpStreamSession 生命周期（先不 Start）
     auto http_session = std::make_shared<HttpStreamSession>(ctx->request_id, res_ptr);

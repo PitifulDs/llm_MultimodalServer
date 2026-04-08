@@ -103,34 +103,12 @@ EmbeddingsService::Result EmbeddingsService::Run(const EmbeddingsRequest &reques
     result.response.model = spec.model_id.empty() ? request.model : spec.model_id;
     if (!facade.RunEmbeddings(request, result.response, result.response.error_message))
     {
-        const bool request_timed_out =
-            request.deadline != std::chrono::steady_clock::time_point::max() &&
-            std::chrono::steady_clock::now() >= request.deadline;
-        const bool request_cancelled =
-            request.cancelled && request.cancelled->load(std::memory_order_acquire);
-
-        if (request_timed_out)
-        {
-            result.error = {
-                EmbeddingsErrorKind::Timeout,
-                "request_timeout",
-                result.response.error_message.empty() ? "embeddings request timed out" : result.response.error_message};
-            return result;
-        }
-
-        if (request_cancelled)
-        {
-            result.error = {
-                EmbeddingsErrorKind::Cancelled,
-                "request_cancelled",
-                result.response.error_message.empty() ? "embeddings request cancelled" : result.response.error_message};
-            return result;
-        }
-
-        result.error = {
-            EmbeddingsErrorKind::Internal,
-            "internal_error",
-            result.response.error_message.empty() ? "embeddings execution failed" : result.response.error_message};
+        result.error = BuildGovernedExecutionError(request.cancelled,
+                                                   request.deadline,
+                                                   result.response.error_message,
+                                                   "embeddings request cancelled",
+                                                   "embeddings request timed out",
+                                                   "embeddings execution failed");
         return result;
     }
 

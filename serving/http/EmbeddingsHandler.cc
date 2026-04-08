@@ -88,7 +88,7 @@ namespace
             if (!body["encoding_format"].is_string())
             {
                 result.message = "encoding_format must be string";
-                result.code = "invalid_encoding_format";
+                result.code = "unsupported_encoding_format";
                 return result;
             }
             result.request.encoding_format = body["encoding_format"].get<std::string>();

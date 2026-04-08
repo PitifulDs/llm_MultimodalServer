@@ -49,22 +49,20 @@ void HttpGateway::HandleHealth(const HttpRequest &req, HttpResponse &res)
 void HttpGateway::HandleMetrics(const HttpRequest &req, HttpResponse &res)
 {
     (void)req;
-    const int64_t total = total_requests_.load(std::memory_order_relaxed);
-    const int64_t latency = total_latency_ms_.load(std::memory_order_relaxed);
-    const double avg_latency_ms = total > 0 ? static_cast<double>(latency) / static_cast<double>(total) : 0.0;
+    const PlatformRuntimeSnapshot snapshot = BuildPlatformRuntimeSnapshot();
 
     json out = {
-        {"requests_total", total},
-        {"requests_in_flight", in_flight_.load(std::memory_order_relaxed)},
-        {"requests_stream_total", stream_requests_.load(std::memory_order_relaxed)},
-        {"requests_error_total", error_requests_.load(std::memory_order_relaxed)},
-        {"requests_cancelled_total", cancelled_requests_.load(std::memory_order_relaxed)},
-        {"requests_timeout_total", timeout_requests_.load(std::memory_order_relaxed)},
-        {"requests_rate_limited_total", rate_limited_requests_.load(std::memory_order_relaxed)},
-        {"prompt_tokens_total", prompt_tokens_total_.load(std::memory_order_relaxed)},
-        {"completion_tokens_total", completion_tokens_total_.load(std::memory_order_relaxed)},
-        {"total_tokens_total", total_tokens_total_.load(std::memory_order_relaxed)},
-        {"avg_latency_ms", avg_latency_ms},
+        {"requests_total", snapshot.requests_total},
+        {"requests_in_flight", snapshot.requests_in_flight},
+        {"requests_stream_total", snapshot.requests_stream_total},
+        {"requests_error_total", snapshot.requests_error_total},
+        {"requests_cancelled_total", snapshot.requests_cancelled_total},
+        {"requests_timeout_total", snapshot.requests_timeout_total},
+        {"requests_rate_limited_total", snapshot.requests_rate_limited_total},
+        {"prompt_tokens_total", snapshot.prompt_tokens_total},
+        {"completion_tokens_total", snapshot.completion_tokens_total},
+        {"total_tokens_total", snapshot.total_tokens_total},
+        {"avg_latency_ms", snapshot.avg_latency_ms},
         {"rag_requests_total", rag_requests_total_.load(std::memory_order_relaxed)},
         {"rag_requests_total_by_kb",
          {

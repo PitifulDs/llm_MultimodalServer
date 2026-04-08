@@ -266,13 +266,6 @@ void ChatService::AttachNonStreamFinishHandler(const ChatExecutionRequest &reque
             callbacks_.record_finish(reason, dur_ms);
         if (callbacks_.record_governance)
             callbacks_.record_governance(*ctx, reason, std::max<int64_t>(0, dur_ms - queue_wait_ms));
-
-        LOG(INFO) << "[chat] req=" << ctx->request_id
-                  << " prompt_tokens=" << ctx->usage.prompt_tokens
-                  << " completion_tokens=" << ctx->usage.completion_tokens
-                  << " total_ms=" << dur_ms
-                  << " queue_wait_ms=" << queue_wait_ms
-                  << " reason=" << http_utils::finish_reason_to_str(reason);
         ctx->request_state.reset();
     };
 }
@@ -303,13 +296,6 @@ void ChatService::AttachStreamFinishHandler(const ChatExecutionRequest &request,
             callbacks_.record_finish(reason, dur_ms);
         if (callbacks_.record_governance)
             callbacks_.record_governance(*ctx, reason, std::max<int64_t>(0, dur_ms - queue_wait_ms));
-
-        LOG(INFO) << "[chat-stream] req=" << ctx->request_id
-                  << " prompt_tokens=" << ctx->usage.prompt_tokens
-                  << " completion_tokens=" << ctx->usage.completion_tokens
-                  << " total_ms=" << dur_ms
-                  << " queue_wait_ms=" << queue_wait_ms
-                  << " reason=" << http_utils::finish_reason_to_str(reason);
         ctx->request_state.reset();
     };
 }

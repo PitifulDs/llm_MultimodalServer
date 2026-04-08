@@ -19,6 +19,7 @@ struct PlatformRuntimeSnapshot
     int64_t prompt_tokens_total = 0;
     int64_t completion_tokens_total = 0;
     int64_t total_tokens_total = 0;
+    double avg_latency_ms = 0.0;
 };
 
 struct BackendRuntimeSnapshot

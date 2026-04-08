@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
+#include <memory>
 #include <string>
 
 enum class PlatformErrorKind
@@ -70,8 +73,10 @@ struct PlatformError
 inline bool IsPlatformInvalidRequestCode(const std::string &code)
 {
     return code == "invalid_request" ||
+           code == "invalid_json" ||
            code == "model_required" ||
            code == "invalid_input" ||
+           code == "invalid_encoding_format" ||
            code == "unsupported_encoding_format" ||
            code == "invalid_query" ||
            code == "invalid_documents" ||
@@ -100,6 +105,21 @@ inline bool IsPlatformRateLimitCode(const std::string &code)
     return code == "queue_full" || code == "queue_timeout" ||
            code == "rate_limit_global" || code == "rate_limit_model" ||
            code == "rate_limit_session";
+}
+
+inline bool HasPlatformDeadline(std::chrono::steady_clock::time_point deadline)
+{
+    return deadline != std::chrono::steady_clock::time_point::max();
+}
+
+inline bool PlatformRequestCancelled(const std::shared_ptr<std::atomic<bool>> &cancelled)
+{
+    return cancelled && cancelled->load(std::memory_order_acquire);
+}
+
+inline bool PlatformRequestTimedOut(std::chrono::steady_clock::time_point deadline)
+{
+    return HasPlatformDeadline(deadline) && std::chrono::steady_clock::now() >= deadline;
 }
 
 inline PlatformError BuildPlatformErrorFromCode(const std::string &code,
@@ -154,5 +174,34 @@ inline PlatformError BuildPlatformErrorFromCode(const std::string &code,
     return {
         PlatformErrorKind::Internal,
         code.empty() ? "internal_error" : code,
+        message.empty() ? std::string(internal_message) : message};
+}
+
+inline PlatformError BuildGovernedExecutionError(const std::shared_ptr<std::atomic<bool>> &cancelled,
+                                                 std::chrono::steady_clock::time_point deadline,
+                                                 const std::string &message,
+                                                 const char *cancelled_message,
+                                                 const char *timeout_message,
+                                                 const char *internal_message)
+{
+    if (PlatformRequestCancelled(cancelled))
+    {
+        return {
+            PlatformErrorKind::Cancelled,
+            "request_cancelled",
+            message.empty() ? std::string(cancelled_message) : message};
+    }
+
+    if (PlatformRequestTimedOut(deadline))
+    {
+        return {
+            PlatformErrorKind::Timeout,
+            "request_timeout",
+            message.empty() ? std::string(timeout_message) : message};
+    }
+
+    return {
+        PlatformErrorKind::Internal,
+        "internal_error",
         message.empty() ? std::string(internal_message) : message};
 }
