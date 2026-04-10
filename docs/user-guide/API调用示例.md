@@ -2,18 +2,9 @@
 
 默认服务地址：`http://127.0.0.1:8080`
 
-当前主线 API：
-- `GET /healthz`
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-- `POST /v1/embeddings`
-- `POST /v1/rerank`
-- `GET /admin/models/status`
-- `GET /admin/backends/status`
+接口范围与字段语义见：[`API接口.md`](API接口.md)。
 
-统一治理口径：
-- 主线错误码统一使用：`model_required`、`invalid_input`、`invalid_query`、`invalid_documents`、`invalid_top_n`、`model_not_found`、`capability_not_supported`、`backend_not_available`、`request_timeout`、`backend_timeout`、`request_cancelled`、`queue_full`、`queue_timeout`、`rate_limit_global`、`rate_limit_model`、`rate_limit_session`、`internal_error`
-- `/metrics`、`/admin/models/status`、`/admin/backends/status` 会累计 chat、embeddings、rerank 三条主链路的超时、取消、限流和 token 统计
+错误码、metrics/admin status 统计口径见：[`治理与错误码.md`](治理与错误码.md)。
 
 ## 1. 健康检查
 ```bash

@@ -975,7 +975,7 @@ agent 逻辑本次不直接删除，但要明确降级：
 - 保留兼容入口
 - 但不再作为主产品面向
 - 主 README 和主 demo 不再以 agent 为默认入口
-- `docs/API调用示例.md` 和用户默认操作路径改为以 chat / models / embeddings / rerank 为主
+- `docs/user-guide/API调用示例.md` 和用户默认操作路径改为以 chat / models / embeddings / rerank 为主
 
 ### 第 7 步：统一治理能力
 
