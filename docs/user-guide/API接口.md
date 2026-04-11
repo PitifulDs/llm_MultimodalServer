@@ -72,8 +72,10 @@ flowchart LR
 说明：
 
 - `id` 是逻辑模型名（用于请求里的 `model`）
-- `backends` 表示该逻辑模型在配置里声明的后端能力（模型级）
-- `gateway_backends` 表示网关支持的请求级后端切换模式（路由级）
+- `default_backend` 是配置层默认后端（内部命名：`local` / `stackflow`）
+- `declared_backends` 表示该逻辑模型在配置里声明的后端能力（模型级，内部命名：`local` / `stackflow`）
+- `backends` 表示该逻辑模型在网关侧可用的后端能力（对外命名：`local` / `rpc`；其中 `rpc` 会在内部归一为 `stackflow`）
+- `gateway_backends` 表示网关支持的“请求级后端切换模式”（路由级，对外命名：`local` / `rpc`）；它表示**网关支持切换**，不代表配置里一定为该模型声明了对应后端
 
 ## 3. Chat Completions
 
