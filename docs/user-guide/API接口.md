@@ -8,6 +8,8 @@
 
 这部分回答一个问题：当你调用主线 API（chat/embeddings/rerank）时，服务端内部大致按什么顺序处理，并在什么地方选本地或 RPC 后端。
 
+如果你想把每个接口的“实现入口文件 / 调用链路”直接对上代码，见：[`../architecture/接口实现映射.md`](../architecture/接口实现映射.md)。
+
 ### 0.1 Chat（非流式）
 
 ```mermaid

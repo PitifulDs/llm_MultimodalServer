@@ -5,6 +5,7 @@
 ## 从哪里开始
 
 - 架构总览与请求链路：[`系统架构.md`](系统架构.md)
+- 接口到实现的映射（路由/治理/后端选择）：[`接口实现映射.md`](接口实现映射.md)
 - 双后端（本地 vs RPC）心智：[`本地推理与RPC推理.md`](本地推理与RPC推理.md)
 - 关键技术取舍：[`技术取舍.md`](技术取舍.md)
 
@@ -12,4 +13,3 @@
 
 - API 与示例：[`../user-guide/API接口.md`](../user-guide/API接口.md)，[`../user-guide/API调用示例.md`](../user-guide/API调用示例.md)
 - 配置：[`../user-guide/配置说明.md`](../user-guide/配置说明.md)
-

@@ -11,6 +11,7 @@
 - 我想跑起来：[`user-guide/快速开始.md`](user-guide/快速开始.md)
 - 我想看接口与示例：[`user-guide/API接口.md`](user-guide/API接口.md)，[`user-guide/API调用示例.md`](user-guide/API调用示例.md)
 - 我想理解架构主线：[`architecture/系统架构.md`](architecture/系统架构.md)
+- 我想把“接口实现”对上代码：[`architecture/接口实现映射.md`](architecture/接口实现映射.md)
 - 我想理解双后端：[`architecture/本地推理与RPC推理.md`](architecture/本地推理与RPC推理.md)
 - 我想看治理与排障：[`user-guide/治理与错误码.md`](user-guide/治理与错误码.md)，[`user-guide/可观测性与排障.md`](user-guide/可观测性与排障.md)
 
