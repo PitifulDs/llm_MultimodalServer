@@ -102,6 +102,20 @@ ChatError ChatService::ValidateRequest(const ChatExecutionRequest &request) cons
             "model not found: " + ctx->model};
     }
 
+    if (!ctx->inference_backend.empty())
+    {
+        const ModelSpec spec = model_catalog_service_.ResolveModel(ctx->model,
+                                                                   ctx->capability,
+                                                                   ctx->inference_backend);
+        if (!spec.valid)
+        {
+            return {
+                ChatErrorKind::InvalidRequest,
+                "backend_not_available",
+                "requested backend is not declared or does not support capability for model: " + ctx->model};
+        }
+    }
+
     if (!model_catalog_service_.SupportsCapability(ctx->model, ctx->capability, ctx->inference_backend))
     {
         return {

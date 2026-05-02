@@ -1,6 +1,6 @@
 # API 接口（主线）
 
-默认服务地址：`http://127.0.0.1:8080`
+默认服务地址：`http://localhost:8080`
 
 可复制的 curl 示例见：[`API调用示例.md`](API调用示例.md)。
 
@@ -78,6 +78,7 @@ flowchart LR
 - `declared_backends` 表示该逻辑模型在配置里声明的后端能力（模型级，内部命名：`local` / `stackflow`）
 - `backends` 表示该逻辑模型在网关侧可用的后端能力（对外命名：`local` / `rpc`；其中 `rpc` 会在内部归一为 `stackflow`）
 - `gateway_backends` 表示网关支持的“请求级后端切换模式”（路由级，对外命名：`local` / `rpc`）；它表示**网关支持切换**，不代表配置里一定为该模型声明了对应后端
+- `capabilities` 表示调用方可依赖的模型能力；当前 `embeddings/rerank` 只通过本地 `LlamaEngine` 实现，未实现的 RPC 能力不会暴露
 
 ## 3. Chat Completions
 
@@ -96,6 +97,13 @@ flowchart LR
 - `inference_backend`：`local` 或 `rpc`（`rpc/remote/worker/stackflow` 会归一到 stackflow）
 - `session_id`：同一 session 串行执行；用于多轮上下文
 
+后端选择规则：
+
+- 未传 `inference_backend`：使用模型配置里的 `default_backend`
+- 传 `inference_backend=local`：只选择该模型声明的本地后端
+- 传 `inference_backend=rpc`：只选择该模型声明的 RPC/StackFlow 后端
+- 如果模型没有声明 RPC/StackFlow backend，请求 `inference_backend=rpc` 返回 `backend_not_available`，不会自动 fallback 到隐式 StackFlow
+
 错误码与治理口径见：[`治理与错误码.md`](治理与错误码.md)。
 
 ## 4. Embeddings
@@ -106,6 +114,9 @@ flowchart LR
 
 - `model`
 - `input`
+- `encoding_format`：可选；当前仅支持 `float`
+
+当前仅本地 `local` 后端实现 embeddings。调用前应以 `/v1/models` 的 `capabilities` 与 `backends` 为准。
 
 ## 5. Rerank
 
@@ -117,6 +128,8 @@ flowchart LR
 - `query`
 - `documents`
 - `top_n`
+
+当前仅本地 `local` 后端实现 rerank。调用前应以 `/v1/models` 的 `capabilities` 与 `backends` 为准。
 
 ## 6. Admin Status 与 Metrics
 

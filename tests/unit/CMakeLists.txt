@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(unit_tests)
 
+enable_testing()
+
 add_executable(http_utils_test http_utils_test.cpp)
 target_include_directories(http_utils_test PRIVATE ../../)
 
@@ -57,3 +59,30 @@ add_executable(admin_status_gateway_test
 )
 target_include_directories(admin_status_gateway_test PRIVATE ../../ ${SQLITE3_INCLUDE_DIR})
 target_link_libraries(admin_status_gateway_test PRIVATE serving_http serving_core ${SQLITE3_LIBRARY} ${GLOG_LIBRARY})
+
+add_executable(model_registry_test
+    model_registry_test.cpp
+)
+target_include_directories(model_registry_test PRIVATE ../../)
+target_link_libraries(model_registry_test PRIVATE serving_core)
+
+foreach(test_target
+    http_utils_test
+    rag_test
+    code_analysis_agent_test
+    chat_gateway_test
+    http_gateway_governance_test
+    embeddings_gateway_test
+    rerank_gateway_test
+    admin_status_gateway_test
+    model_registry_test
+)
+    add_test(NAME ${test_target} COMMAND ${test_target})
+endforeach()
+
+set_tests_properties(
+    embeddings_gateway_test
+    rerank_gateway_test
+    admin_status_gateway_test
+    PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

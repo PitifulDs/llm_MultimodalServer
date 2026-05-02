@@ -10,6 +10,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -179,6 +180,18 @@ std::optional<bool> parse_body_stream_hint(const std::string &body)
     {
     }
     return std::nullopt;
+}
+
+bool verbose_http_logging_enabled()
+{
+    const char *value = std::getenv("HTTP_VERBOSE_LOG_BODY");
+    if (!value || !*value)
+        value = std::getenv("HTTP_DEBUG_RAW_LOGS");
+    if (!value || !*value)
+        return false;
+
+    const std::string normalized = to_lower_copy(trim_copy(value));
+    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
 }
 
 static void write_json_error(const std::shared_ptr<NetworkHttpResponse> &res_ptr,
@@ -398,10 +411,14 @@ void NetworkHttpServer::handleHttpRequest(
         return;
     }
 
-    LOG(INFO) << "[http] header_len=" << header.size()
+    const bool verbose_http_logs = verbose_http_logging_enabled();
+    LOG(INFO) << "[http] method=" << head.method
+              << ", url=" << head.url
+              << ", header_len=" << header.size()
               << ", content_length=" << head.content_length
               << ", buffer_size=" << buffer.size();
-    LOG(INFO) << "[http] raw header >>>" << header << "<<<";
+    if (verbose_http_logs)
+        LOG(INFO) << "[http] raw header >>>" << header << "<<<";
 
     const size_t content_length = head.has_content_length ? head.content_length : 0;
     const size_t total_len = pos + 4 + content_length;
@@ -413,7 +430,9 @@ void NetworkHttpServer::handleHttpRequest(
     // 🔥 消费掉已处理的数据
     buffer.erase(0, total_len);
 
-    LOG(INFO) << "[http] body_len=" << body.size() << " raw body >>>" << body << "<<<";
+    LOG(INFO) << "[http] body_len=" << body.size();
+    if (verbose_http_logs)
+        LOG(INFO) << "[http] raw body >>>" << body << "<<<";
 
     std::string method = head.method;
     std::string url = head.url;

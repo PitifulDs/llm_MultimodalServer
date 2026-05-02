@@ -205,6 +205,32 @@ bool contains_string(const std::vector<std::string> &values, const std::string &
     return std::find(values.begin(), values.end(), target) != values.end();
 }
 
+bool legacy_entry_declares_backend(const json &entry, const std::string &backend)
+{
+    const std::string declared_backend = normalize_backend_name(json_or_default(entry, "backend", std::string()));
+    if (!declared_backend.empty())
+        return declared_backend == backend;
+
+    const std::string engine = to_lower_copy(json_or_default(entry, "engine", std::string()));
+    if (backend == "stackflow")
+        return engine == "stackflow";
+    if (backend == "local")
+        return engine == "llama";
+    return false;
+}
+
+std::vector<std::string> restrict_capabilities_for_backend(const std::string &backend,
+                                                           const std::vector<std::string> &capabilities)
+{
+    if (backend != "stackflow")
+        return capabilities;
+
+    std::vector<std::string> filtered;
+    if (contains_string(capabilities, "chat"))
+        filtered.push_back("chat");
+    return filtered;
+}
+
 std::vector<std::string> extract_capabilities(const json &node, const std::vector<std::string> &fallback)
 {
     if (!node.is_array())
@@ -332,6 +358,15 @@ std::vector<std::string> capabilities_for_structured_backend(const json &model_e
         model_caps);
 }
 
+std::vector<std::string> capabilities_for_structured_backend(const std::string &backend,
+                                                             const json &model_entry,
+                                                             const json &backend_entry)
+{
+    return restrict_capabilities_for_backend(
+        backend,
+        capabilities_for_structured_backend(model_entry, backend_entry));
+}
+
 ResolvedModelRoute resolve_structured_model_route(const json &models,
                                                   const std::string &requested_name,
                                                   const std::string &preferred_backend)
@@ -383,10 +418,22 @@ ResolvedModelRoute resolve_structured_model_route(const json &models,
     route.model_id = model_id;
     route.backend = selected_backend;
     route.default_backend = select_structured_default_backend(*model_entry, backends);
-    route.capabilities = capabilities_for_structured_backend(*model_entry, *backend_entry);
+    route.capabilities = capabilities_for_structured_backend(selected_backend, *model_entry, *backend_entry);
     route.model_entry = model_entry;
     route.backend_entry = backend_entry;
     return route;
+}
+
+bool has_configured_model(const json &models, const std::string &requested)
+{
+    if (find_object_entry(models, requested))
+        return true;
+
+    const std::string logical = display_model_name(requested);
+    if (find_object_entry(models, logical))
+        return true;
+
+    return find_object_entry(models, logical + "-remote") != nullptr;
 }
 
 const json *find_legacy_model_entry(const json &models,
@@ -405,13 +452,16 @@ const json *find_legacy_model_entry(const json &models,
     {
         if (const json *entry = find_object(requested + "-remote"))
             return entry;
-        if (const json *entry = find_object(requested))
+        if (const json *entry = find_object(requested);
+            entry && (ends_with(requested, "-remote") || legacy_entry_declares_backend(*entry, "stackflow")))
             return entry;
         if (ends_with(requested, "-remote"))
         {
-            if (const json *entry = find_object(requested))
+            if (const json *entry = find_object(requested);
+                entry && legacy_entry_declares_backend(*entry, "stackflow"))
                 return entry;
-            return find_object(display_model_name(requested));
+            const json *logical_entry = find_object(display_model_name(requested));
+            return (logical_entry && legacy_entry_declares_backend(*logical_entry, "stackflow")) ? logical_entry : nullptr;
         }
         return nullptr;
     }
@@ -521,7 +571,7 @@ ModelSpec ModelRegistry::Resolve(const std::string &model_name, const std::strin
         }
 
         const json *entry = find_legacy_model_entry(models, requested, normalized_backend);
-        if (entry)
+        if (entry && !is_structured_model_entry(*entry))
         {
             const std::string backend = infer_legacy_backend_name(
                 normalized_backend == "stackflow" ? requested + "-remote" : requested,
@@ -545,6 +595,9 @@ ModelSpec ModelRegistry::Resolve(const std::string &model_name, const std::strin
                 return spec;
             }
         }
+
+        if (!normalized_backend.empty() && has_configured_model(models, requested))
+            return {};
     }
 
     if (normalized_backend == "stackflow")
@@ -635,7 +688,7 @@ std::vector<ModelInfo> ModelRegistry::ListModelInfos()
 
                     info.capabilities = merge_capabilities(
                         info.capabilities,
-                        capabilities_for_structured_backend(*it, *backend.second));
+                        capabilities_for_structured_backend(backend.first, *it, *backend.second));
                 }
 
                 if (info.capabilities.empty())

@@ -192,6 +192,54 @@ bool test_non_chat_model_returns_400()
     std::filesystem::remove_all(temp_dir, ec);
     return true;
 }
+
+bool test_rpc_backend_without_declaration_returns_clear_error()
+{
+    const auto temp_dir = make_temp_dir();
+    const auto config_path = temp_dir / "config.json";
+
+    std::ofstream out(config_path);
+    out << R"json({
+  "default_model": "local-only",
+  "models": {
+    "local-only": {
+      "default_backend": "local",
+      "capabilities": ["chat"],
+      "backends": {
+        "local": {
+          "engine": "llama",
+          "model_path": "models/qwen3.5/Qwen3.5-2B-Q4_K_M.gguf",
+          "capabilities": ["chat"]
+        }
+      }
+    }
+  }
+})json";
+    out.close();
+
+    const ScopedEnvVar scoped_config("CONFIG_PATH", config_path.string());
+
+    HttpGateway gateway;
+    FakeRequest req;
+    req.body = R"json({
+        "model":"local-only",
+        "inference_backend":"rpc",
+        "messages":[{"role":"user","content":"hello"}]
+    })json";
+
+    FakeResponse res;
+    gateway.HandleChatCompletion(req, res);
+    EXPECT_EQ(res.status, 400);
+
+    const auto response = json::parse(res.body);
+    EXPECT_EQ(response["error"]["code"].get<std::string>(), std::string("backend_not_available"));
+    EXPECT_TRUE(response["error"]["message"].get<std::string>().find("requested backend") != std::string::npos);
+    EXPECT_TRUE(response["error"]["message"].get<std::string>().find("local-only") != std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    return true;
+}
 } // namespace
 
 int main()
@@ -199,6 +247,7 @@ int main()
     bool ok = true;
     ok = ok && test_unknown_model_returns_400();
     ok = ok && test_non_chat_model_returns_400();
+    ok = ok && test_rpc_backend_without_declaration_returns_clear_error();
 
     if (!ok)
         return 1;

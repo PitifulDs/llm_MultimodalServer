@@ -2,6 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 set(CMAKE_CXX_STANDARD 17)
 project(EdgeLLMInfra LANGUAGES CXX)
+enable_testing()
 
 # 先只挂 serving（不碰其他模块）
 
